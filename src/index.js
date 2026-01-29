@@ -194,9 +194,14 @@ function startRoundTimer(room) {
   room.roundTimer = setTimeout(() => {
     room.roundTimer = null;
     room.roundEndsAt = null;
+    const policy = room.timeoutPolicy || "RANDOM";
     for (const [userId, p] of room.players.entries()) {
       if (!room.committed.has(userId)) {
-        p.choice = Math.random() < 0.5 ? "A" : "B";
+        if (policy === "AUTO_PASS") {
+          p.choice = null; // 패스 — 득점 대상 제외
+        } else {
+          p.choice = Math.random() < 0.5 ? "A" : "B";
+        }
         room.committed.add(userId);
       }
     }
@@ -246,20 +251,21 @@ function doReveal(room) {
   const picks = Array.from(room.players.entries()).map(([userId, pp]) => ({
     userId,
     name: pp.name,
-    choice: pp.choice
+    choice: pp.choice // null = AUTO_PASS (패스)
   }));
-  const aCount = picks.filter(x => x.choice === "A").length;
-  const bCount = picks.filter(x => x.choice === "B").length;
-  const total = Math.max(1, picks.length);
+  const activePicks = picks.filter(x => x.choice === "A" || x.choice === "B");
+  const aCount = activePicks.filter(x => x.choice === "A").length;
+  const bCount = activePicks.filter(x => x.choice === "B").length;
+  const total = Math.max(1, activePicks.length);
 
   // 다수결 승자 결정
   let roundWinner = null; // "A" or "B" or null(동점)
   if (aCount > bCount) roundWinner = "A";
   else if (bCount > aCount) roundWinner = "B";
 
-  // 점수: 다수결 쪽을 고른 사람 +1, 동점이면 모두 0
+  // 점수: 다수결 쪽을 고른 사람 +1, 동점이면 모두 0, 패스(null)는 0점
   if (roundWinner) {
-    for (const p of picks) {
+    for (const p of activePicks) {
       if (p.choice === roundWinner) {
         room.scores[p.userId] = (room.scores[p.userId] || 0) + 1;
       }
@@ -295,15 +301,17 @@ function doReveal(room) {
   const revealPayload = {
     picks,
     percent: {
-      A: Math.round((aCount / total) * 100),
-      B: Math.round((bCount / total) * 100)
+      A: activePicks.length > 0 ? Math.round((aCount / total) * 100) : 0,
+      B: activePicks.length > 0 ? Math.round((bCount / total) * 100) : 0
     },
     roundWinner,
     winningCandidate: winnerCand.name,
+    isTie: !roundWinner,
     scores,
     roundIndex: room.roundIndex,
     totalMatches: room.totalMatches,
-    isLastRound: result.finished
+    isLastRound: result.finished,
+    timeoutPolicy: room.timeoutPolicy || "RANDOM"
   };
   room.lastReveal = revealPayload;
   io.to(room.id).emit("worldcup:reveal", revealPayload);
@@ -353,6 +361,7 @@ io.on("connection", (socket) => {
       disconnected: new Map(),
       timerEnabled: !!payload?.timerEnabled,
       timerSec: Math.min(180, Math.max(10, Number(payload?.timerSec) || 45)),
+      timeoutPolicy: payload?.timeoutPolicy === "AUTO_PASS" ? "AUTO_PASS" : "RANDOM",
       roundTimer: null,
       roundEndsAt: null
     };
