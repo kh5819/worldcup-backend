@@ -56,18 +56,65 @@ async function verify(accessToken) {
   return { id: data.user.id, email, isAdmin };
 }
 
-// 방 메모리 저장
+// =========================
+// 방 메모리
+// =========================
 const rooms = new Map();
-const GRACE_MS = 15000; // 재접속 유예: 15초
-const userRoomMap = new Map(); // userId -> roomId (현재 참가 중인 방)
+const GRACE_MS = 15000;
+const userRoomMap = new Map();
+
+// =========================
+// 타이머 정리 유틸
+// =========================
+function clearRoomTimers(room) {
+  if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
+  if (room.quizTimer) { clearTimeout(room.quizTimer); room.quizTimer = null; }
+  if (room.quizShowTimer) { clearTimeout(room.quizShowTimer); room.quizShowTimer = null; }
+}
+
+// =========================
+// 공통 Sync / Public 헬퍼
+// =========================
 
 function buildSyncPayload(room, userId) {
+  // ── 퀴즈 모드 (quiz 진행 중) ──
+  if (room.mode === "quiz" && room.quiz) {
+    const q = room.quiz;
+    const question = q.questions[q.questionIndex];
+    const remainingSec = room.roundEndsAt
+      ? Math.max(0, Math.ceil((room.roundEndsAt - Date.now()) / 1000))
+      : 0;
+
+    return {
+      roomId: room.id,
+      mode: "quiz",
+      phase: q.phase || "lobby",
+      content: room.content || null,
+      isHost: room.hostUserId === userId,
+      quiz: {
+        questionIndex: q.questionIndex,
+        totalQuestions: q.questions.length,
+        question: question ? safeQuestion(question, q.questionIndex, q.questions.length) : null,
+        myAnswer: q.answers.get(userId)?.answer ?? null,
+        submitted: q.answers.has(userId),
+        scores: buildQuizScores(room),
+        timer: { enabled: !!room.timerEnabled, sec: room.timerSec || 0, remainingSec },
+        youtube: q.youtube || null,
+        readyPlayers: Array.from(q.readyPlayers),
+        lastReveal: q.lastReveal || null,
+        lastScoreboard: q.lastScoreboard || null,
+      }
+    };
+  }
+
+  // ── 월드컵 모드 (기존) ──
   const player = room.players.get(userId);
   const remainingSec = room.roundEndsAt
     ? Math.max(0, Math.ceil((room.roundEndsAt - Date.now()) / 1000))
     : 0;
   return {
     roomId: room.id,
+    mode: room.mode || "worldcup",
     phase: room.phase || "lobby",
     roundIndex: room.roundIndex || 0,
     totalMatches: room.totalMatches || 0,
@@ -82,11 +129,51 @@ function buildSyncPayload(room, userId) {
   };
 }
 
-// --- 멀티 점수제 라운드: 후보 & 브라켓 헬퍼 ---
+function publicRoom(room) {
+  const playersList = Array.from(room.players.entries()).map(([userId, p]) => {
+    let status;
+    if (room.disconnected?.has(userId)) {
+      status = "재접속 대기…";
+    } else if (room.mode === "quiz" && room.quiz) {
+      const q = room.quiz;
+      if (q.phase === "answering") {
+        status = q.answers.has(userId) ? "제출 완료" : "답변 중…";
+      } else if (q.phase === "show") {
+        const curQ = q.questions[q.questionIndex];
+        if (curQ?.type === "audio_youtube") {
+          status = q.readyPlayers.has(userId) ? "준비 완료" : "준비 중…";
+        } else {
+          status = "대기 중…";
+        }
+      } else {
+        status = "대기 중…";
+      }
+    } else {
+      status = room.committed.has(userId) ? "선택 완료" : "선택 중…";
+    }
+    return { userId, name: p.name, status };
+  });
 
-// DB에서 콘텐츠 + 후보 로드 (visibility/권한 체크 포함)
+  return {
+    id: room.id,
+    hostUserId: room.hostUserId,
+    mode: room.mode || "worldcup",
+    phase: room.mode === "quiz"
+      ? (room.quiz?.phase || "lobby")
+      : (room.phase || "lobby"),
+    roundIndex: room.roundIndex || 0,
+    totalMatches: room.totalMatches || 0,
+    currentMatch: room.currentMatch || null,
+    content: room.content || null,
+    players: playersList
+  };
+}
+
+// =========================
+// 월드컵 헬퍼 (기존 그대로)
+// =========================
+
 async function loadCandidates(contentId, userId, isAdmin) {
-  // 1) 콘텐츠 조회
   const { data: content, error: cErr } = await supabaseAdmin
     .from("contents")
     .select("*")
@@ -96,15 +183,12 @@ async function loadCandidates(contentId, userId, isAdmin) {
   if (cErr || !content) return { error: "CONTENT_NOT_FOUND" };
   if (content.mode !== "worldcup") return { error: "NOT_WORLDCUP" };
 
-  // 2) 공개범위 체크
   if (content.visibility === "private") {
     if (content.owner_id !== userId && !isAdmin) {
       return { error: "NOT_ALLOWED" };
     }
   }
-  // public / unlisted → contentId를 아는 사람은 허용
 
-  // 3) 후보 조회
   const { data: rows, error: rErr } = await supabaseAdmin
     .from("worldcup_candidates")
     .select("*")
@@ -114,7 +198,6 @@ async function loadCandidates(contentId, userId, isAdmin) {
   if (rErr || !rows) return { error: "CANDIDATES_LOAD_FAILED" };
   if (rows.length < 2) return { error: "NOT_ENOUGH_CANDIDATES" };
 
-  // 4~32개 클램프
   const clamped = rows.slice(0, 32);
 
   return {
@@ -158,9 +241,7 @@ function nextMatch(room) {
   const idx = room.matchIndex;
   const candA = room.bracket[idx * 2];
   const candB = room.bracket[idx * 2 + 1];
-  // 내부용: 브라켓 진행에 사용 (full candidate objects)
   room._matchCands = { A: candA, B: candB };
-  // 클라이언트 전송용: A/B는 이름 문자열 유지 + 미디어 정보 추가
   room.currentMatch = {
     A: candA.name, B: candB.name,
     mediaA: { type: candA.mediaType, url: candA.mediaUrl, startSec: candA.startSec },
@@ -198,7 +279,7 @@ function startRoundTimer(room) {
     for (const [userId, p] of room.players.entries()) {
       if (!room.committed.has(userId)) {
         if (policy === "AUTO_PASS") {
-          p.choice = null; // 패스 — 득점 대상 제외
+          p.choice = null;
         } else {
           p.choice = Math.random() < 0.5 ? "A" : "B";
         }
@@ -211,36 +292,16 @@ function startRoundTimer(room) {
 }
 
 function buildScores(room) {
-  return Object.entries(room.scores).map(([userId, score]) => {
+  return Object.entries(room.scores || {}).map(([userId, score]) => {
     const player = room.players.get(userId);
     return { userId, name: player?.name || userId.slice(0, 6), score };
   }).sort((a, b) => b.score - a.score);
 }
 
-function publicRoom(room) {
-  return {
-    id: room.id,
-    hostUserId: room.hostUserId,
-    phase: room.phase || "lobby",
-    roundIndex: room.roundIndex || 0,
-    totalMatches: room.totalMatches || 0,
-    currentMatch: room.currentMatch || null,
-    content: room.content || null,
-    players: Array.from(room.players.entries()).map(([userId, p]) => ({
-      userId,
-      name: p.name,
-      status: room.disconnected?.has(userId) ? "재접속 대기…"
-        : room.committed.has(userId) ? "선택 완료" : "선택 중…"
-    }))
-  };
-}
-
-// reveal 로직 (중복 방지용 함수 분리)
 function doReveal(room) {
-  if (room.phase !== "playing") return; // 중복 reveal 방지
+  if (room.phase !== "playing") return;
   room.phase = "revealed";
 
-  // 타이머 정리
   if (room.roundTimer) {
     clearTimeout(room.roundTimer);
     room.roundTimer = null;
@@ -251,19 +312,17 @@ function doReveal(room) {
   const picks = Array.from(room.players.entries()).map(([userId, pp]) => ({
     userId,
     name: pp.name,
-    choice: pp.choice // null = AUTO_PASS (패스)
+    choice: pp.choice
   }));
   const activePicks = picks.filter(x => x.choice === "A" || x.choice === "B");
   const aCount = activePicks.filter(x => x.choice === "A").length;
   const bCount = activePicks.filter(x => x.choice === "B").length;
   const total = Math.max(1, activePicks.length);
 
-  // 다수결 승자 결정
-  let roundWinner = null; // "A" or "B" or null(동점)
+  let roundWinner = null;
   if (aCount > bCount) roundWinner = "A";
   else if (bCount > aCount) roundWinner = "B";
 
-  // 점수: 다수결 쪽을 고른 사람 +1, 동점이면 모두 0, 패스(null)는 0점
   if (roundWinner) {
     for (const p of activePicks) {
       if (p.choice === roundWinner) {
@@ -272,8 +331,6 @@ function doReveal(room) {
     }
   }
 
-  // 브라켓 진행: 승리 후보 결정 (동점이면 랜덤)
-  // _matchCands는 full candidate object, bracket 내부 진행에 사용
   const matchCands = room._matchCands;
   let winnerCand;
   if (roundWinner) {
@@ -284,7 +341,6 @@ function doReveal(room) {
 
   const result = advanceBracket(room, winnerCand);
 
-  // 히스토리 기록 (이름 문자열로 저장)
   room.picksHistory.push({
     roundIndex: room.roundIndex,
     match,
@@ -293,7 +349,7 @@ function doReveal(room) {
   });
 
   if (result.finished) {
-    room.champion = result.champion; // full candidate object
+    room.champion = result.champion;
   }
 
   const scores = buildScores(room);
@@ -317,6 +373,271 @@ function doReveal(room) {
   io.to(room.id).emit("worldcup:reveal", revealPayload);
 }
 
+// =========================
+// 퀴즈 헬퍼 (NEW)
+// =========================
+
+async function loadQuizQuestions(contentId, userId, isAdmin) {
+  const { data: content, error: cErr } = await supabaseAdmin
+    .from("contents")
+    .select("*")
+    .eq("id", contentId)
+    .single();
+
+  if (cErr || !content) return { error: "CONTENT_NOT_FOUND" };
+  if (content.mode !== "quiz") return { error: "NOT_QUIZ" };
+
+  if (content.visibility === "private") {
+    if (content.owner_id !== userId && !isAdmin) {
+      return { error: "NOT_ALLOWED" };
+    }
+  }
+
+  const { data: rows, error: rErr } = await supabaseAdmin
+    .from("quiz_questions")
+    .select("*")
+    .eq("content_id", contentId)
+    .order("sort_order", { ascending: true });
+
+  if (rErr || !rows) return { error: "QUESTIONS_LOAD_FAILED" };
+  if (rows.length < 1) return { error: "NO_QUESTIONS" };
+
+  return {
+    content: { id: content.id, title: content.title, visibility: content.visibility },
+    questions: rows.map(q => ({
+      id: q.id,
+      type: q.type,
+      prompt: q.prompt,
+      choices: q.choices || [],
+      answer: q.answer || [],
+      mediaType: q.media_type,
+      mediaUrl: q.media_url,
+      startSec: q.start_sec || 0,
+      durationSec: q.duration_sec || 10,
+      sortOrder: q.sort_order
+    }))
+  };
+}
+
+function extractVideoId(urlOrId) {
+  if (!urlOrId) return null;
+  if (!urlOrId.includes("/") && !urlOrId.includes(".")) return urlOrId;
+  try {
+    const url = new URL(urlOrId);
+    if (url.hostname.includes("youtu.be")) return url.pathname.slice(1);
+    return url.searchParams.get("v") || urlOrId;
+  } catch {
+    return urlOrId;
+  }
+}
+
+function checkAnswer(question, userAnswer) {
+  if (userAnswer === null || userAnswer === undefined) return false;
+
+  if (question.type === "mcq") {
+    const correctIndex = question.answer[0];
+    return Number(userAnswer) === Number(correctIndex);
+  }
+
+  // short / audio_youtube: 공백·대소문자 무시 + 동의어 배열
+  const normalized = String(userAnswer).trim().toLowerCase().replace(/\s+/g, "");
+  return question.answer.some(ans =>
+    String(ans).trim().toLowerCase().replace(/\s+/g, "") === normalized
+  );
+}
+
+// 클라이언트 전송용 문제 (정답 제외)
+function safeQuestion(q, index, total) {
+  const payload = {
+    index,
+    total,
+    type: q.type,
+    prompt: q.prompt,
+  };
+  if (q.type === "mcq") {
+    payload.choices = q.choices;
+  }
+  if (q.type === "audio_youtube") {
+    payload.mediaType = "youtube";
+    payload.videoId = extractVideoId(q.mediaUrl);
+    payload.startSec = q.startSec;
+    payload.durationSec = q.durationSec;
+  }
+  return payload;
+}
+
+function initQuizState(room, questions) {
+  room.quiz = {
+    questions,
+    questionIndex: 0,
+    phase: "show",
+    answers: new Map(),
+    scores: {},
+    readyPlayers: new Set(),
+    lastReveal: null,
+    lastScoreboard: null,
+    youtube: null,
+  };
+  for (const userId of room.players.keys()) {
+    room.quiz.scores[userId] = 0;
+  }
+}
+
+function buildQuizScores(room) {
+  const scores = room.quiz?.scores || {};
+  return Object.entries(scores).map(([userId, score]) => {
+    const player = room.players.get(userId);
+    return { userId, name: player?.name || userId.slice(0, 6), score };
+  }).sort((a, b) => b.score - a.score);
+}
+
+function advanceQuizQuestion(room) {
+  const q = room.quiz;
+  const question = q.questions[q.questionIndex];
+  q.phase = "show";
+  q.answers.clear();
+  q.readyPlayers.clear();
+  q.youtube = null;
+  q.lastReveal = null;
+
+  const questionPayload = safeQuestion(question, q.questionIndex, q.questions.length);
+  io.to(room.id).emit("quiz:question", questionPayload);
+  io.to(room.id).emit("room:state", publicRoom(room));
+
+  if (question.type === "audio_youtube") {
+    // 유튜브: 유저가 quiz:ready 보낼 때까지 대기
+  } else {
+    // 일반 문제: 2초 후 자동으로 answering 전환
+    room.quizShowTimer = setTimeout(() => {
+      room.quizShowTimer = null;
+      startQuizAnswering(room);
+    }, 2000);
+  }
+}
+
+function startQuizAnswering(room) {
+  const q = room.quiz;
+  q.phase = "answering";
+
+  const question = q.questions[q.questionIndex];
+  let youtubePayload = null;
+
+  if (question.type === "audio_youtube") {
+    const startAt = Date.now() + 3000; // 3초 후 재생
+    youtubePayload = {
+      startAt,
+      videoId: extractVideoId(question.mediaUrl),
+      startSec: question.startSec,
+      durationSec: question.durationSec,
+    };
+    q.youtube = youtubePayload;
+  }
+
+  io.to(room.id).emit("quiz:answering", {
+    questionIndex: q.questionIndex,
+    timer: { enabled: !!room.timerEnabled, sec: room.timerSec },
+    youtube: youtubePayload,
+  });
+  io.to(room.id).emit("room:state", publicRoom(room));
+
+  startQuizTimer(room);
+}
+
+function startQuizTimer(room) {
+  if (room.quizTimer) { clearTimeout(room.quizTimer); room.quizTimer = null; }
+  if (!room.timerEnabled) { room.roundEndsAt = null; return; }
+
+  room.roundEndsAt = Date.now() + room.timerSec * 1000;
+  room.quizTimer = setTimeout(() => {
+    room.quizTimer = null;
+    room.roundEndsAt = null;
+
+    // 미제출자 → 자동 패스(오답)
+    for (const [userId] of room.players.entries()) {
+      if (!room.quiz.answers.has(userId)) {
+        room.quiz.answers.set(userId, { submitted: true, answer: null, isCorrect: false });
+      }
+    }
+    io.to(room.id).emit("room:state", publicRoom(room));
+    doQuizReveal(room);
+  }, room.timerSec * 1000);
+}
+
+function doQuizReveal(room) {
+  const q = room.quiz;
+  if (q.phase !== "answering") return;
+  q.phase = "reveal";
+
+  if (room.quizTimer) { clearTimeout(room.quizTimer); room.quizTimer = null; }
+  room.roundEndsAt = null;
+
+  const question = q.questions[q.questionIndex];
+  const results = [];
+
+  for (const [userId, p] of room.players.entries()) {
+    const entry = q.answers.get(userId) || { submitted: false, answer: null, isCorrect: false };
+
+    if (entry.submitted && entry.answer !== null) {
+      entry.isCorrect = checkAnswer(question, entry.answer);
+    } else {
+      entry.isCorrect = false;
+    }
+
+    if (entry.isCorrect) {
+      q.scores[userId] = (q.scores[userId] || 0) + 1;
+    }
+
+    results.push({
+      userId,
+      name: p.name,
+      answer: entry.answer,
+      isCorrect: entry.isCorrect,
+      submitted: entry.submitted,
+    });
+  }
+
+  // 객관식 통계
+  let choiceStats = null;
+  if (question.type === "mcq" && question.choices?.length > 0) {
+    choiceStats = question.choices.map((label, i) => {
+      const count = results.filter(r => Number(r.answer) === i).length;
+      return {
+        index: i,
+        label,
+        count,
+        percent: results.length > 0 ? Math.round((count / results.length) * 100) : 0,
+      };
+    });
+  }
+
+  const correctAnswer = question.type === "mcq"
+    ? question.choices[question.answer[0]]
+    : question.answer[0];
+
+  const scores = buildQuizScores(room);
+
+  const revealPayload = {
+    questionIndex: q.questionIndex,
+    totalQuestions: q.questions.length,
+    type: question.type,
+    prompt: question.prompt,
+    correctAnswer,
+    correctAnswerRaw: question.answer,
+    results,
+    choiceStats,
+    scores,
+    isLastQuestion: q.questionIndex >= q.questions.length - 1,
+  };
+
+  q.lastReveal = revealPayload;
+  io.to(room.id).emit("quiz:reveal", revealPayload);
+  io.to(room.id).emit("room:state", publicRoom(room));
+}
+
+// =========================
+// Socket Auth 미들웨어
+// =========================
+
 io.use(async (socket, next) => {
   try {
     const token = socket.handshake.auth?.accessToken;
@@ -328,6 +649,10 @@ io.use(async (socket, next) => {
     next(new Error("UNAUTHORIZED"));
   }
 });
+
+// =========================
+// Socket 연결 핸들러
+// =========================
 
 io.on("connection", (socket) => {
   const me = socket.user;
@@ -350,11 +675,16 @@ io.on("connection", (socket) => {
     }
   }
 
+  // =========================
+  // 방 생성/입장/나가기 (mode 필드 추가)
+  // =========================
+
   socket.on("room:create", (payload, cb) => {
     const roomId = nanoid(8);
     const room = {
       id: roomId,
       hostUserId: me.id,
+      mode: payload?.mode === "quiz" ? "quiz" : "worldcup",
       contentId: payload?.contentId || null,
       players: new Map(),
       committed: new Set(),
@@ -363,7 +693,10 @@ io.on("connection", (socket) => {
       timerSec: Math.min(180, Math.max(10, Number(payload?.timerSec) || 45)),
       timeoutPolicy: payload?.timeoutPolicy === "AUTO_PASS" ? "AUTO_PASS" : "RANDOM",
       roundTimer: null,
-      roundEndsAt: null
+      roundEndsAt: null,
+      // 퀴즈 전용 타이머 슬롯
+      quizTimer: null,
+      quizShowTimer: null,
     };
     rooms.set(roomId, room);
 
@@ -384,6 +717,11 @@ io.on("connection", (socket) => {
     socket.join(roomId);
     userRoomMap.set(me.id, roomId);
 
+    // 퀴즈 진행 중이면 점수 초기화
+    if (room.quiz && room.quiz.scores[me.id] === undefined) {
+      room.quiz.scores[me.id] = 0;
+    }
+
     io.to(roomId).emit("room:state", publicRoom(room));
     cb?.({ ok: true });
   });
@@ -396,10 +734,14 @@ io.on("connection", (socket) => {
       if (disc) { clearTimeout(disc.timeoutId); room.disconnected.delete(me.id); }
       room.players.delete(me.id);
       room.committed.delete(me.id);
+      if (room.quiz) {
+        room.quiz.answers.delete(me.id);
+        room.quiz.readyPlayers.delete(me.id);
+      }
       userRoomMap.delete(me.id);
       io.to(roomId).emit("room:state", publicRoom(room));
       if (room.players.size === 0) {
-        if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
+        clearRoomTimers(room);
         rooms.delete(roomId);
       }
     }
@@ -407,92 +749,83 @@ io.on("connection", (socket) => {
     cb?.({ ok: true });
   });
 
-  socket.on("room:ping", (payload) => {
-    // 여기서는 데모라 아무것도 안 함(나중에 재접속 유예 넣을 자리)
-  });
+  socket.on("room:ping", () => {});
+
+  // =========================
+  // 월드컵 이벤트 (기존 그대로)
+  // =========================
 
   socket.on("game:start", async (payload, cb) => {
     try {
-    const room = rooms.get(payload?.roomId);
-    if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
-    if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+      const room = rooms.get(payload?.roomId);
+      if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
+      if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
 
-    // 이전 타이머 정리
-    if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
+      if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
 
-    // DB에서 콘텐츠 + 후보 로드
-    const contentId = room.contentId;
-    if (!contentId) return cb?.({ ok: false, error: "NO_CONTENT_ID" });
+      const contentId = room.contentId;
+      if (!contentId) return cb?.({ ok: false, error: "NO_CONTENT_ID" });
 
-    const loaded = await loadCandidates(contentId, me.id, me.isAdmin);
-    if (loaded.error) return cb?.({ ok: false, error: loaded.error });
+      const loaded = await loadCandidates(contentId, me.id, me.isAdmin);
+      if (loaded.error) return cb?.({ ok: false, error: loaded.error });
 
-    room.content = loaded.content;
-    initBracket(room, loaded.candidates);
+      room.content = loaded.content;
+      initBracket(room, loaded.candidates);
 
-    // 첫 라운드
-    room.roundIndex = 1;
-    room.phase = "playing";
-    room.committed.clear();
-    for (const p of room.players.values()) delete p.choice;
-    for (const userId of room.players.keys()) room.scores[userId] = 0;
+      room.roundIndex = 1;
+      room.phase = "playing";
+      room.committed.clear();
+      for (const p of room.players.values()) delete p.choice;
+      for (const userId of room.players.keys()) room.scores[userId] = 0;
 
-    nextMatch(room);
+      nextMatch(room);
 
-    const timerInfo = { enabled: room.timerEnabled, sec: room.timerSec };
-    io.to(room.id).emit("game:started", {
-      roomId: room.id,
-      roundIndex: room.roundIndex,
-      totalMatches: room.totalMatches,
-      match: room.currentMatch,
-      timer: timerInfo
-    });
-    io.to(room.id).emit("room:state", publicRoom(room));
+      const timerInfo = { enabled: room.timerEnabled, sec: room.timerSec };
+      io.to(room.id).emit("game:started", {
+        roomId: room.id,
+        roundIndex: room.roundIndex,
+        totalMatches: room.totalMatches,
+        match: room.currentMatch,
+        timer: timerInfo
+      });
+      io.to(room.id).emit("room:state", publicRoom(room));
 
-    startRoundTimer(room);
-    cb?.({ ok: true });
+      startRoundTimer(room);
+      cb?.({ ok: true });
     } catch (err) {
-      console.error("game:start error:", err);
+      console.error("game:start 에러:", err);
       cb?.({ ok: false, error: "INTERNAL_ERROR" });
     }
   });
 
-  // 월드컵 동시선택(Commit)
   socket.on("worldcup:commit", (payload, cb) => {
     const room = rooms.get(payload?.roomId);
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
     if (room.phase !== "playing") return cb?.({ ok: false, error: "NOT_PLAYING" });
 
-    // 내 선택은 서버에 저장하되, 공개는 전원 완료 후에만
     const choice = payload?.choice;
     if (choice !== "A" && choice !== "B") return cb?.({ ok: false, error: "BAD_CHOICE" });
 
-    // 선택 저장
     const p = room.players.get(me.id);
     if (!p) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
     p.choice = choice;
 
-    // 상태 표시용 committed
     room.committed.add(me.id);
 
-    // 상태 업데이트(누가 선택 완료인지)
     io.to(room.id).emit("room:state", publicRoom(room));
     cb?.({ ok: true });
 
-    // 전원 완료면 결과 공개 (doReveal 내부에서 타이머 정리)
     if (room.committed.size === room.players.size) {
       doReveal(room);
     }
   });
 
-  // 다음 라운드 (호스트만)
   socket.on("worldcup:nextRound", (payload, cb) => {
     const room = rooms.get(payload?.roomId);
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
     if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
     if (room.phase !== "revealed") return cb?.({ ok: false, error: "NOT_REVEALED" });
 
-    // 마지막 라운드였으면 game:finished
     if (room.champion) {
       room.phase = "finished";
       const scores = buildScores(room);
@@ -506,7 +839,6 @@ io.on("connection", (socket) => {
       return;
     }
 
-    // 다음 라운드 진입
     room.committed.clear();
     for (const p of room.players.values()) delete p.choice;
     room.roundIndex++;
@@ -527,14 +859,171 @@ io.on("connection", (socket) => {
     cb?.({ ok: true, finished: false });
   });
 
-  // --- 재접속 유예: disconnect 시 즉시 제거 대신 grace 부여 ---
+  // =========================
+  // 퀴즈 이벤트 (NEW)
+  // =========================
+
+  // ── quiz:start (호스트) ──
+  socket.on("quiz:start", async (payload, cb) => {
+    try {
+      const room = rooms.get(payload?.roomId);
+      if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
+      if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+      if (room.mode !== "quiz") return cb?.({ ok: false, error: "NOT_QUIZ_ROOM" });
+
+      clearRoomTimers(room);
+
+      const quizId = payload?.quizId || room.contentId;
+      if (!quizId) return cb?.({ ok: false, error: "NO_QUIZ_ID" });
+
+      // 타이머 설정 오버라이드
+      if (payload?.timerEnabled !== undefined) room.timerEnabled = !!payload.timerEnabled;
+      if (payload?.timerSec) room.timerSec = Math.min(180, Math.max(10, Number(payload.timerSec)));
+
+      const loaded = await loadQuizQuestions(quizId, me.id, me.isAdmin);
+      if (loaded.error) return cb?.({ ok: false, error: loaded.error });
+
+      room.content = loaded.content;
+      room.contentId = quizId;
+      initQuizState(room, loaded.questions);
+
+      console.log(`퀴즈 시작: 방=${room.id}, 문제=${loaded.questions.length}개`);
+
+      advanceQuizQuestion(room);
+      cb?.({ ok: true, totalQuestions: loaded.questions.length });
+    } catch (err) {
+      console.error("quiz:start 에러:", err);
+      cb?.({ ok: false, error: "INTERNAL_ERROR" });
+    }
+  });
+
+  // ── quiz:ready (각 유저 — 유튜브 재생 준비 완료) ──
+  socket.on("quiz:ready", (payload, cb) => {
+    const room = rooms.get(payload?.roomId);
+    if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
+    if (!room.quiz || room.quiz.phase !== "show") return cb?.({ ok: false, error: "NOT_SHOW_PHASE" });
+
+    room.quiz.readyPlayers.add(me.id);
+    io.to(room.id).emit("room:state", publicRoom(room));
+
+    // 전체 상태 알림
+    io.to(room.id).emit("quiz:status", {
+      type: "ready",
+      readyCount: room.quiz.readyPlayers.size,
+      totalPlayers: room.players.size,
+      allReady: room.quiz.readyPlayers.size >= room.players.size,
+    });
+
+    cb?.({ ok: true });
+
+    // 전원 준비 → answering 전환
+    if (room.quiz.readyPlayers.size >= room.players.size) {
+      startQuizAnswering(room);
+    }
+  });
+
+  // ── quiz:submit (답변 제출) ──
+  socket.on("quiz:submit", (payload, cb) => {
+    const room = rooms.get(payload?.roomId);
+    if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
+    if (!room.quiz || room.quiz.phase !== "answering") return cb?.({ ok: false, error: "NOT_ANSWERING" });
+
+    const p = room.players.get(me.id);
+    if (!p) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+
+    // 이미 제출했으면 거부
+    if (room.quiz.answers.has(me.id)) return cb?.({ ok: false, error: "ALREADY_SUBMITTED" });
+
+    room.quiz.answers.set(me.id, {
+      submitted: true,
+      answer: payload?.answer ?? null,
+      isCorrect: false, // reveal 시 판정
+    });
+
+    io.to(room.id).emit("room:state", publicRoom(room));
+
+    // 제출 상태 알림
+    io.to(room.id).emit("quiz:status", {
+      type: "submit",
+      submittedCount: room.quiz.answers.size,
+      totalPlayers: room.players.size,
+    });
+
+    cb?.({ ok: true });
+
+    // 전원 제출 → 자동 reveal
+    if (room.quiz.answers.size >= room.players.size) {
+      doQuizReveal(room);
+    }
+  });
+
+  // ── quiz:next (호스트: reveal→scoreboard→next/finished) ──
+  socket.on("quiz:next", (payload, cb) => {
+    const room = rooms.get(payload?.roomId);
+    if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
+    if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+    if (!room.quiz) return cb?.({ ok: false, error: "NOT_QUIZ" });
+
+    const q = room.quiz;
+
+    // reveal → scoreboard
+    if (q.phase === "reveal") {
+      q.phase = "scoreboard";
+      const scores = buildQuizScores(room);
+      q.lastScoreboard = scores;
+      io.to(room.id).emit("quiz:scoreboard", {
+        scores,
+        questionIndex: q.questionIndex,
+        totalQuestions: q.questions.length,
+        isLastQuestion: q.questionIndex >= q.questions.length - 1,
+      });
+      io.to(room.id).emit("room:state", publicRoom(room));
+      cb?.({ ok: true });
+      return;
+    }
+
+    // scoreboard → 다음 문제 또는 종료
+    if (q.phase === "scoreboard") {
+      if (q.questionIndex >= q.questions.length - 1) {
+        q.phase = "finished";
+        const scores = buildQuizScores(room);
+        io.to(room.id).emit("quiz:finished", {
+          scores,
+          totalQuestions: q.questions.length,
+        });
+        io.to(room.id).emit("room:state", publicRoom(room));
+        cb?.({ ok: true, finished: true });
+        return;
+      }
+
+      q.questionIndex++;
+      advanceQuizQuestion(room);
+      cb?.({ ok: true, finished: false });
+      return;
+    }
+
+    cb?.({ ok: false, error: "INVALID_PHASE" });
+  });
+
+  // ── quiz:playClicked (각자 재생 버튼 클릭 기록 — 선택) ──
+  socket.on("quiz:playClicked", (payload) => {
+    // 분석/로그용 — 별도 로직 없음
+    const room = rooms.get(payload?.roomId);
+    if (room) {
+      console.log(`유튜브 재생 클릭: 방=${room.id}, 유저=${me.id}`);
+    }
+  });
+
+  // =========================
+  // 재접속 유예 (disconnect)
+  // =========================
+
   socket.on("disconnect", async () => {
     const roomId = userRoomMap.get(me.id);
     if (!roomId) return;
     const room = rooms.get(roomId);
     if (!room || !room.players.has(me.id)) return;
 
-    // 같은 유저의 다른 소켓이 방에 남아 있으면 grace 불필요
     try {
       const sockets = await io.in(roomId).fetchSockets();
       if (sockets.some(s => s.user?.id === me.id)) return;
@@ -545,15 +1034,34 @@ io.on("connection", (socket) => {
       room.disconnected.delete(me.id);
       room.players.delete(me.id);
       room.committed.delete(me.id);
+      if (room.quiz) {
+        room.quiz.answers.delete(me.id);
+        room.quiz.readyPlayers.delete(me.id);
+      }
       userRoomMap.delete(me.id);
       io.to(roomId).emit("room:state", publicRoom(room));
-      // 남은 플레이어 전원 committed 상태면 자동 reveal
-      if (room.phase === "playing" && room.players.size > 0
+
+      // 월드컵: 남은 전원 committed → 자동 reveal
+      if (room.mode !== "quiz" && room.phase === "playing" && room.players.size > 0
           && room.committed.size === room.players.size) {
         doReveal(room);
       }
+
+      // 퀴즈: 남은 전원 제출 → 자동 reveal
+      if (room.mode === "quiz" && room.quiz?.phase === "answering" && room.players.size > 0) {
+        const allSubmitted = Array.from(room.players.keys()).every(uid => room.quiz.answers.has(uid));
+        if (allSubmitted) doQuizReveal(room);
+      }
+
+      // 퀴즈: show 단계 유튜브 — 전원 ready면 진행
+      if (room.mode === "quiz" && room.quiz?.phase === "show" && room.players.size > 0) {
+        if (room.quiz.readyPlayers.size >= room.players.size) {
+          startQuizAnswering(room);
+        }
+      }
+
       if (room.players.size === 0) {
-        if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
+        clearRoomTimers(room);
         rooms.delete(roomId);
       }
     }, GRACE_MS);
