@@ -4,7 +4,7 @@ import express from "express";
 import cors from "cors";
 import { Server } from "socket.io";
 import { createClient } from "@supabase/supabase-js";
-import { nanoid } from "nanoid";
+import { v4 as uuidv4 } from "uuid";
 
 const app = express();
 app.use(express.json());
@@ -70,6 +70,96 @@ function clearRoomTimers(room) {
   if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
   if (room.quizTimer) { clearTimeout(room.quizTimer); room.quizTimer = null; }
   if (room.quizShowTimer) { clearTimeout(room.quizShowTimer); room.quizShowTimer = null; }
+}
+
+// =========================
+// 방 수명관리 상수
+// =========================
+const ROOM_HOST_POLICY = "END_ROOM"; // "END_ROOM" | "TRANSFER"
+const EMPTY_ROOM_TTL_MS = 30_000;    // 방이 비면 30초 후 삭제
+
+// =========================
+// 방 삭제 / 정리 함수
+// =========================
+
+/** 방 완전 삭제 — 모든 타이머 정리, userRoomMap 정리, rooms Map 제거 */
+function deleteRoom(roomId, reason = "UNKNOWN") {
+  const room = rooms.get(roomId);
+  if (!room) return;
+
+  // 게임 타이머 정리
+  clearRoomTimers(room);
+
+  // emptyRoom TTL 타이머 정리
+  if (room.emptyRoomTimer) {
+    clearTimeout(room.emptyRoomTimer);
+    room.emptyRoomTimer = null;
+  }
+
+  // disconnect 유예 타이머 전부 정리
+  if (room.disconnected) {
+    for (const [, disc] of room.disconnected) {
+      clearTimeout(disc.timeoutId);
+    }
+    room.disconnected.clear();
+  }
+
+  // 방 내 소켓에게 room:closed 알림
+  io.to(roomId).emit("room:closed", { roomId, reason });
+
+  // userRoomMap 정리
+  for (const userId of room.players.keys()) {
+    if (userRoomMap.get(userId) === roomId) userRoomMap.delete(userId);
+  }
+
+  rooms.delete(roomId);
+  console.log(`[방 삭제] roomId=${roomId} 사유=${reason}`);
+}
+
+/** 조건부 방 정리 — players=0 AND disconnected=0 이면 TTL 타이머 시작 */
+function maybeCleanupRoom(roomId, reason = "EMPTY") {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  if (room.players.size > 0 || (room.disconnected && room.disconnected.size > 0)) {
+    // 아직 사람 있음 → emptyRoomTimer 취소 (재입장)
+    if (room.emptyRoomTimer) {
+      clearTimeout(room.emptyRoomTimer);
+      room.emptyRoomTimer = null;
+    }
+    return;
+  }
+
+  // 이미 타이머 걸려있으면 중복 방지
+  if (room.emptyRoomTimer) return;
+
+  room.emptyRoomTimer = setTimeout(() => {
+    room.emptyRoomTimer = null;
+    // 재확인
+    if (room.players.size === 0 && (!room.disconnected || room.disconnected.size === 0)) {
+      deleteRoom(roomId, reason);
+    }
+  }, EMPTY_ROOM_TTL_MS);
+}
+
+/** 호스트 퇴장 처리 — END_ROOM이면 방 종료, TRANSFER이면 승격 */
+function handleHostLeave(room) {
+  if (ROOM_HOST_POLICY === "END_ROOM") {
+    deleteRoom(room.id, "HOST_LEFT");
+    return true; // 방 삭제됨
+  }
+
+  // TRANSFER: 남은 플레이어 중 첫 번째를 호스트로 승격
+  if (room.players.size > 0) {
+    const nextHost = room.players.keys().next().value;
+    room.hostUserId = nextHost;
+    console.log(`[호스트 승격] roomId=${room.id} 새호스트=${nextHost}`);
+    io.to(room.id).emit("room:state", publicRoom(room));
+    return false;
+  }
+
+  // 남은 사람 없으면 삭제
+  deleteRoom(room.id, "HOST_LEFT");
+  return true;
 }
 
 // =========================
@@ -206,7 +296,8 @@ async function loadCandidates(contentId, userId, isAdmin) {
       name: c.name,
       mediaType: c.media_type,
       mediaUrl: c.media_url,
-      startSec: c.start_sec
+      startSec: c.start_sec,
+      durationSec: c.duration_sec
     }))
   };
 }
@@ -667,6 +758,11 @@ io.on("connection", (socket) => {
         clearTimeout(disc.timeoutId);
         prevRoom.disconnected.delete(me.id);
       }
+      // 빈 방 삭제 타이머 취소 (재접속)
+      if (prevRoom.emptyRoomTimer) {
+        clearTimeout(prevRoom.emptyRoomTimer);
+        prevRoom.emptyRoomTimer = null;
+      }
       socket.join(prevRoomId);
       socket.emit("room:sync", buildSyncPayload(prevRoom, me.id));
       io.to(prevRoomId).emit("room:state", publicRoom(prevRoom));
@@ -680,7 +776,7 @@ io.on("connection", (socket) => {
   // =========================
 
   socket.on("room:create", (payload, cb) => {
-    const roomId = nanoid(8);
+    const roomId = uuidv4();
     const room = {
       id: roomId,
       hostUserId: me.id,
@@ -694,9 +790,9 @@ io.on("connection", (socket) => {
       timeoutPolicy: payload?.timeoutPolicy === "AUTO_PASS" ? "AUTO_PASS" : "RANDOM",
       roundTimer: null,
       roundEndsAt: null,
-      // 퀴즈 전용 타이머 슬롯
       quizTimer: null,
       quizShowTimer: null,
+      emptyRoomTimer: null,
     };
     rooms.set(roomId, room);
 
@@ -704,6 +800,7 @@ io.on("connection", (socket) => {
     socket.join(roomId);
     userRoomMap.set(me.id, roomId);
 
+    console.log(`[방 생성] roomId=${roomId} 호스트=${me.id} 모드=${room.mode}`);
     io.to(roomId).emit("room:state", publicRoom(room));
     cb?.({ ok: true, roomId });
   });
@@ -712,6 +809,12 @@ io.on("connection", (socket) => {
     const roomId = payload?.roomId;
     const room = rooms.get(roomId);
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
+
+    // 빈 방 삭제 타이머 취소 (재입장)
+    if (room.emptyRoomTimer) {
+      clearTimeout(room.emptyRoomTimer);
+      room.emptyRoomTimer = null;
+    }
 
     room.players.set(me.id, { name: payload?.name || "player" });
     socket.join(roomId);
@@ -732,6 +835,9 @@ io.on("connection", (socket) => {
     if (room) {
       const disc = room.disconnected?.get(me.id);
       if (disc) { clearTimeout(disc.timeoutId); room.disconnected.delete(me.id); }
+
+      const wasHost = room.hostUserId === me.id;
+
       room.players.delete(me.id);
       room.committed.delete(me.id);
       if (room.quiz) {
@@ -739,10 +845,16 @@ io.on("connection", (socket) => {
         room.quiz.readyPlayers.delete(me.id);
       }
       userRoomMap.delete(me.id);
-      io.to(roomId).emit("room:state", publicRoom(room));
-      if (room.players.size === 0) {
-        clearRoomTimers(room);
-        rooms.delete(roomId);
+
+      // 호스트 퇴장 정책
+      if (wasHost) {
+        const deleted = handleHostLeave(room);
+        if (!deleted) {
+          io.to(roomId).emit("room:state", publicRoom(room));
+        }
+      } else {
+        io.to(roomId).emit("room:state", publicRoom(room));
+        maybeCleanupRoom(roomId, "EMPTY");
       }
     }
     socket.leave(roomId);
@@ -1032,6 +1144,9 @@ io.on("connection", (socket) => {
     if (!room.disconnected) room.disconnected = new Map();
     const timeoutId = setTimeout(() => {
       room.disconnected.delete(me.id);
+
+      const wasHost = room.hostUserId === me.id;
+
       room.players.delete(me.id);
       room.committed.delete(me.id);
       if (room.quiz) {
@@ -1039,6 +1154,14 @@ io.on("connection", (socket) => {
         room.quiz.readyPlayers.delete(me.id);
       }
       userRoomMap.delete(me.id);
+
+      // 호스트 유예 만료 → 호스트 정책 적용
+      if (wasHost) {
+        const deleted = handleHostLeave(room);
+        if (deleted) return; // 방이 삭제됨 → 이후 로직 불필요
+        // TRANSFER 정책이면 아래 로직 계속
+      }
+
       io.to(roomId).emit("room:state", publicRoom(room));
 
       // 월드컵: 남은 전원 committed → 자동 reveal
@@ -1060,10 +1183,8 @@ io.on("connection", (socket) => {
         }
       }
 
-      if (room.players.size === 0) {
-        clearRoomTimers(room);
-        rooms.delete(roomId);
-      }
+      // 공통: 방 비었는지 확인 → 삭제 판정
+      maybeCleanupRoom(roomId, "EMPTY");
     }, GRACE_MS);
 
     room.disconnected.set(me.id, { at: Date.now(), timeoutId });
