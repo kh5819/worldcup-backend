@@ -103,6 +103,198 @@ async function verify(accessToken) {
 }
 
 // =========================
+// Express 미들웨어: 인증 / 관리자
+// =========================
+async function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const user = await verify(token);
+  if (!user) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+  req.user = user;
+  next();
+}
+
+async function requireAdmin(req, res, next) {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const user = await verify(token);
+  if (!user) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+  if (!user.isAdmin) return res.status(403).json({ ok: false, error: "FORBIDDEN" });
+  req.user = user;
+  next();
+}
+
+// =========================
+// 신고 API
+// =========================
+app.post("/reports", requireAuth, async (req, res) => {
+  try {
+    const { contentId, reason, detail } = req.body;
+    if (!contentId || !reason) {
+      return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+    }
+
+    const { error } = await supabaseAdmin.from("reports").insert({
+      content_id: contentId,
+      reporter_user_id: req.user.id,
+      reason,
+      detail: detail || null,
+    });
+
+    if (error) {
+      if (error.code === "23505") {
+        return res.status(409).json({ ok: false, error: "ALREADY_REPORTED" });
+      }
+      console.error("POST /reports error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /reports internal:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
+// 관리자 API
+// =========================
+app.get("/admin/reports", requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("reports")
+      .select("*, contents(id, title, is_hidden, report_count)")
+      .order("created_at", { ascending: false });
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    return res.json({ ok: true, items: data || [] });
+  } catch (err) {
+    console.error("GET /admin/reports:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.get("/admin/contents", requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("contents")
+      .select("id, title, mode, visibility, is_hidden, hidden_reason, report_count, owner_id, created_at")
+      .order("created_at", { ascending: false });
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    return res.json({ ok: true, items: data || [] });
+  } catch (err) {
+    console.error("GET /admin/contents:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.patch("/admin/contents/:id/hide", requireAdmin, async (req, res) => {
+  try {
+    const { is_hidden, hidden_reason } = req.body;
+    const { error } = await supabaseAdmin
+      .from("contents")
+      .update({ is_hidden: !!is_hidden, hidden_reason: hidden_reason || null })
+      .eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: is_hidden ? "hide" : "unhide",
+      target_type: "content",
+      target_id: req.params.id,
+      detail: hidden_reason || null,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /admin/contents/:id/hide:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.delete("/admin/contents/:id", requireAdmin, async (req, res) => {
+  try {
+    const { error } = await supabaseAdmin
+      .from("contents")
+      .delete()
+      .eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: "delete",
+      target_type: "content",
+      target_id: req.params.id,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/contents/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.post("/admin/users/:userId/ban", requireAdmin, async (req, res) => {
+  try {
+    const { reason, expires_at } = req.body;
+    const { error } = await supabaseAdmin.from("bans").insert({
+      user_id: req.params.userId,
+      reason: reason || null,
+      expires_at: expires_at || null,
+    });
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: "ban",
+      target_type: "user",
+      target_id: req.params.userId,
+      detail: reason || null,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /admin/users/:userId/ban:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.delete("/admin/users/:userId/ban", requireAdmin, async (req, res) => {
+  try {
+    const { error } = await supabaseAdmin
+      .from("bans")
+      .delete()
+      .eq("user_id", req.params.userId);
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: "unban",
+      target_type: "user",
+      target_id: req.params.userId,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/users/:userId/ban:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.get("/admin/bans", requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("bans")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    return res.json({ ok: true, items: data || [] });
+  } catch (err) {
+    console.error("GET /admin/bans:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 방 메모리
 // =========================
 const rooms = new Map();
@@ -317,6 +509,7 @@ async function loadCandidates(contentId, userId, isAdmin) {
     .single();
 
   if (cErr || !content) return { error: "CONTENT_NOT_FOUND" };
+  if (content.is_hidden && !isAdmin) return { error: "CONTENT_HIDDEN" };
   if (content.mode !== "worldcup") return { error: "NOT_WORLDCUP" };
 
   if (content.visibility === "private") {
@@ -522,6 +715,7 @@ async function loadQuizQuestions(contentId, userId, isAdmin) {
     .single();
 
   if (cErr || !content) return { error: "CONTENT_NOT_FOUND" };
+  if (content.is_hidden && !isAdmin) return { error: "CONTENT_HIDDEN" };
   if (content.mode !== "quiz") return { error: "NOT_QUIZ" };
 
   if (content.visibility === "private") {
@@ -821,7 +1015,22 @@ io.on("connection", (socket) => {
   // 방 생성/입장/나가기 (mode 필드 추가)
   // =========================
 
-  socket.on("room:create", (payload, cb) => {
+  socket.on("room:create", async (payload, cb) => {
+    // ban 체크
+    try {
+      const { data: banRows } = await supabaseAdmin
+        .from("bans")
+        .select("id")
+        .eq("user_id", me.id)
+        .or("expires_at.is.null,expires_at.gt." + new Date().toISOString())
+        .limit(1);
+      if (banRows && banRows.length > 0) {
+        return cb?.({ ok: false, error: "USER_BANNED" });
+      }
+    } catch (e) {
+      console.error("ban check error:", e);
+    }
+
     const roomId = uuidv4();
     const room = {
       id: roomId,
