@@ -13,22 +13,6 @@ app.use(cors({
   origin: process.env.FRONTEND_ORIGIN,
   credentials: true
 }));
-
-app.get("/health", (req, res) => {
-  res.json({ ok: true, ts: Date.now() });
-});
-
-const server = http.createServer(app);
-
-// Socket.IO
-const io = new Server(server, {
-  cors: {
-    origin: process.env.FRONTEND_ORIGIN,
-    methods: ["GET", "POST"],
-    credentials: true
-  }
-});
-
 // Supabase (토큰 검증용)
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -42,6 +26,68 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY,
   { auth: { persistSession: false, autoRefreshToken: false } }
 );
+app.get("/health", (req, res) => {
+  res.json({ ok: true, ts: Date.now() });
+});
+// =========================
+// 홈 리스트 API
+// GET /contents?type=worldcup|quiz|all&sort=popular|newest&limit=24
+// =========================
+app.get("/contents", async (req, res) => {
+  try {
+    // 1) 쿼리 파라미터 받기
+    const type = String(req.query.type || "all");      // worldcup | quiz | all
+    const sort = String(req.query.sort || "popular");  // popular | newest
+    const limitRaw = Number(req.query.limit || 24);
+    const limit = Math.min(60, Math.max(1, limitRaw)); // 1~60 제한
+
+    // 2) 기본 쿼리: public_contents_list(View)에서 읽기
+    //    (홈에서 공개용으로 만든 view라 이게 가장 안전/간단)
+    let q = supabaseAdmin
+      .from("public_contents_list")
+      .select("id, type, title, thumbnail_url, creator_name, play_count, created_at")
+      .limit(limit);
+
+    // 3) type 필터 적용
+    if (type === "worldcup" || type === "quiz") {
+      q = q.eq("type", type);
+    }
+
+    // 4) 정렬 적용
+    if (sort === "newest") {
+      q = q.order("created_at", { ascending: false });
+    } else {
+      // 기본 popular
+      q = q.order("play_count", { ascending: false }).order("created_at", { ascending: false });
+    }
+
+    // 5) 실행
+    const { data, error } = await q;
+    if (error) {
+      console.error("GET /contents error:", error);
+      return res.status(500).json({ ok: false, error: "DB_QUERY_FAILED" });
+    }
+
+    // 6) 응답
+    return res.json({ ok: true, items: data || [] });
+  } catch (err) {
+    console.error("GET /contents internal:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+const server = http.createServer(app);
+
+// Socket.IO
+const io = new Server(server, {
+  cors: {
+    origin: process.env.FRONTEND_ORIGIN,
+    methods: ["GET", "POST"],
+    credentials: true
+  }
+});
+
+
 
 async function verify(accessToken) {
   if (!accessToken) return null;
