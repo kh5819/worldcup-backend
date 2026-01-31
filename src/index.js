@@ -9,8 +9,30 @@ import { v4 as uuidv4 } from "uuid";
 const app = express();
 app.use(express.json());
 
+// ── CORS 허용 Origin 목록 ──
+const ALLOWED_ORIGINS = [
+  "https://worldcup-frontend.pages.dev",
+  "https://playduo.kr",
+  "https://www.playduo.kr",
+];
+// .env의 FRONTEND_ORIGIN도 추가 (로컬 개발용 등)
+if (process.env.FRONTEND_ORIGIN) {
+  process.env.FRONTEND_ORIGIN.split(",").forEach((o) => {
+    const trimmed = o.trim();
+    if (trimmed && !ALLOWED_ORIGINS.includes(trimmed)) ALLOWED_ORIGINS.push(trimmed);
+  });
+}
+
+function checkOrigin(origin, callback) {
+  // origin이 없는 요청(Postman, 서버간 호출 등)은 허용
+  if (!origin) return callback(null, true);
+  if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+  console.error(`[CORS] 차단된 origin: ${origin}  (허용 목록: ${ALLOWED_ORIGINS.join(", ")})`);
+  callback(new Error(`CORS: origin '${origin}' is not allowed`));
+}
+
 app.use(cors({
-  origin: process.env.FRONTEND_ORIGIN,
+  origin: checkOrigin,
   credentials: true
 }));
 // Supabase (토큰 검증용)
