@@ -42,6 +42,14 @@ app.use(cors({
   origin: checkOrigin,
   credentials: true
 }));
+import { createClient } from "@supabase/supabase-js";
+
+const supaStats = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  { auth: { persistSession: false } }
+);
+
 // Supabase (토큰 검증용)
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -101,6 +109,58 @@ app.get("/contents", async (req, res) => {
     return res.json({ ok: true, items: data || [] });
   } catch (err) {
     console.error("GET /contents internal:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
+// 솔로 월드컵 결과 기록 API
+// =========================
+app.post("/worldcup/finish", requireAuth, async (req, res) => {
+  try {
+    const { contentId, championCandidateId, matches } = req.body;
+    if (!contentId || !championCandidateId) {
+      return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+    }
+
+    let insertedMatches = 0;
+
+    // matches INSERT (배열)
+    if (Array.isArray(matches) && matches.length > 0) {
+      const rows = matches.map(m => ({
+        content_id: contentId,
+        room_id: null,
+        mode: "worldcup",
+        match_round: m.match_round || null,
+        candidate_a_id: m.candidate_a_id || null,
+        candidate_b_id: m.candidate_b_id || null,
+        winner_candidate_id: m.winner_candidate_id,
+        loser_candidate_id: m.loser_candidate_id || null,
+        is_tie: !!m.is_tie,
+        meta: m.meta || {},
+      }));
+      const { error: mErr } = await supabaseAdmin.from("worldcup_matches").insert(rows);
+      if (mErr) console.warn("[POST /worldcup/finish] matches insert error:", mErr.message);
+      else insertedMatches = rows.length;
+    }
+
+    // run INSERT
+    const { error: rErr } = await supabaseAdmin.from("worldcup_runs").insert({
+      content_id: contentId,
+      room_id: null,
+      total_players: 1,
+      champion_candidate_id: championCandidateId,
+      meta: { mode: "solo", user_id: req.user.id, inserted_matches: insertedMatches },
+    });
+    if (rErr) {
+      console.warn("[POST /worldcup/finish] runs insert error:", rErr.message);
+      return res.status(500).json({ ok: false, error: "RUN_INSERT_FAILED" });
+    }
+
+    console.log(`[POST /worldcup/finish] solo result saved: contentId=${contentId} champion=${championCandidateId} matches=${insertedMatches} user=${req.user.id}`);
+    return res.json({ ok: true, insertedMatches });
+  } catch (err) {
+    console.error("[POST /worldcup/finish] error:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
 });
