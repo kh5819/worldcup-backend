@@ -505,6 +505,45 @@ async function incrementPlayCount(contentId) {
 }
 
 // =========================
+// 월드컵 매치/판 기록 헬퍼
+// =========================
+async function recordWorldcupMatch(room, candA, candB, winner, loser, isTie, meta) {
+  try {
+    const { error } = await supabaseAdmin.from("worldcup_matches").insert({
+      content_id: room.contentId,
+      room_id: room.id || null,
+      match_round: room._roundLabel || null,
+      candidate_a_id: candA?.id || null,
+      candidate_b_id: candB?.id || null,
+      winner_candidate_id: winner.id,
+      loser_candidate_id: loser?.id || null,
+      is_tie: !!isTie,
+      meta: meta || {},
+    });
+    if (error) console.warn("[worldcup_matches] insert error:", error.message);
+    else console.log(`[worldcup_matches] recorded: ${winner.name} beat ${loser?.name} (${room._roundLabel})`);
+  } catch (err) {
+    console.warn("[worldcup_matches] insert failed:", err.message);
+  }
+}
+
+async function recordWorldcupRun(room, championCand) {
+  try {
+    const { error } = await supabaseAdmin.from("worldcup_runs").insert({
+      content_id: room.contentId,
+      room_id: room.id || null,
+      total_players: room.players.size,
+      champion_candidate_id: championCand.id,
+      meta: {},
+    });
+    if (error) console.warn("[worldcup_runs] insert error:", error.message);
+    else console.log(`[worldcup_runs] recorded: champion=${championCand.name} contentId=${room.contentId}`);
+  } catch (err) {
+    console.warn("[worldcup_runs] insert failed:", err.message);
+  }
+}
+
+// =========================
 // 방 메모리
 // =========================
 const rooms = new Map();
@@ -762,6 +801,7 @@ async function loadCandidates(contentId, userId, isAdmin) {
   return {
     content: { id: content.id, title: content.title, visibility: content.visibility, timerEnabled: content.timer_enabled !== false },
     candidates: clamped.map(c => ({
+      id: c.id,
       name: c.name,
       mediaType: c.media_type,
       mediaUrl: c.media_url,
@@ -802,6 +842,11 @@ function nextMatch(room) {
   const candA = room.bracket[idx * 2];
   const candB = room.bracket[idx * 2 + 1];
   room._matchCands = { A: candA, B: candB };
+  // 라운드 라벨 (랭킹 기록용)
+  const bracketSize = room.bracket.length;
+  if (bracketSize <= 2) room._roundLabel = "결승";
+  else if (bracketSize <= 4) room._roundLabel = "준결승";
+  else room._roundLabel = `${bracketSize}강`;
   room.currentMatch = {
     A: candA.name, B: candB.name,
     mediaA: { type: candA.mediaType, url: candA.mediaUrl, startSec: candA.startSec },
@@ -899,7 +944,15 @@ function doReveal(room) {
     winnerCand = Math.random() < 0.5 ? matchCands.A : matchCands.B;
   }
 
+  const loserCand = winnerCand === matchCands.A ? matchCands.B : matchCands.A;
   const result = advanceBracket(room, winnerCand);
+
+  // 매치 결과 DB 기록 (fire-and-forget)
+  recordWorldcupMatch(room, matchCands.A, matchCands.B, winnerCand, loserCand, !roundWinner, {
+    aCount, bCount, totalPlayers: room.players.size,
+    percentA: activePicks.length > 0 ? Math.round((aCount / total) * 100) : 0,
+    percentB: activePicks.length > 0 ? Math.round((bCount / total) * 100) : 0,
+  }).catch(() => {});
 
   room.picksHistory.push({
     roundIndex: room.roundIndex,
@@ -1483,6 +1536,9 @@ io.on("connection", (socket) => {
         scores,
         picksHistory: room.picksHistory
       });
+
+      // 판 기록 DB 저장 (fire-and-forget)
+      recordWorldcupRun(room, room.champion).catch(() => {});
 
       cb?.({ ok: true, finished: true });
       return;
