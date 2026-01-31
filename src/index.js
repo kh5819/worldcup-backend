@@ -295,6 +295,187 @@ app.get("/admin/bans", requireAdmin, async (req, res) => {
 });
 
 // =========================
+// 내 콘텐츠 API (제작자 수정/삭제)
+// =========================
+
+// 내가 만든 콘텐츠 목록
+app.get("/my/contents", requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("contents")
+      .select("id, title, mode, visibility, play_count, timer_enabled, category, tags, thumbnail_url, description, created_at")
+      .eq("owner_id", req.user.id)
+      .order("created_at", { ascending: false });
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    return res.json({ ok: true, items: data || [] });
+  } catch (err) {
+    console.error("GET /my/contents:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 콘텐츠 상세 조회 (후보/문제 포함)
+app.get("/my/contents/:id", requireAuth, async (req, res) => {
+  try {
+    const { data: content, error: cErr } = await supabaseAdmin
+      .from("contents")
+      .select("*")
+      .eq("id", req.params.id)
+      .eq("owner_id", req.user.id)
+      .single();
+    if (cErr || !content) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+
+    let children = [];
+    if (content.mode === "worldcup") {
+      const { data } = await supabaseAdmin
+        .from("worldcup_candidates")
+        .select("*")
+        .eq("content_id", content.id)
+        .order("sort_order", { ascending: true });
+      children = data || [];
+    } else if (content.mode === "quiz") {
+      const { data } = await supabaseAdmin
+        .from("quiz_questions")
+        .select("*")
+        .eq("content_id", content.id)
+        .order("sort_order", { ascending: true });
+      children = data || [];
+    }
+
+    return res.json({ ok: true, content, children });
+  } catch (err) {
+    console.error("GET /my/contents/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 콘텐츠 수정
+app.put("/my/contents/:id", requireAuth, async (req, res) => {
+  try {
+    const { title, description, visibility, category, tags, thumbnail_url, timer_enabled, candidates, questions } = req.body;
+
+    // owner 확인
+    const { data: existing, error: eErr } = await supabaseAdmin
+      .from("contents")
+      .select("id, owner_id, mode")
+      .eq("id", req.params.id)
+      .single();
+    if (eErr || !existing) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+    if (existing.owner_id !== req.user.id) return res.status(403).json({ ok: false, error: "FORBIDDEN" });
+
+    // contents 업데이트
+    const updates = {};
+    if (title !== undefined) updates.title = title;
+    if (description !== undefined) updates.description = description || null;
+    if (visibility !== undefined) updates.visibility = visibility;
+    if (category !== undefined) updates.category = category || null;
+    if (tags !== undefined) updates.tags = tags && tags.length > 0 ? tags : null;
+    if (thumbnail_url !== undefined) updates.thumbnail_url = thumbnail_url || null;
+    if (timer_enabled !== undefined) updates.timer_enabled = !!timer_enabled;
+
+    if (Object.keys(updates).length > 0) {
+      const { error: uErr } = await supabaseAdmin
+        .from("contents")
+        .update(updates)
+        .eq("id", req.params.id);
+      if (uErr) return res.status(500).json({ ok: false, error: "UPDATE_FAILED" });
+    }
+
+    // 후보/문제 교체 (전체 삭제 후 재삽입)
+    if (existing.mode === "worldcup" && candidates && Array.isArray(candidates)) {
+      await supabaseAdmin.from("worldcup_candidates").delete().eq("content_id", req.params.id);
+      const rows = candidates.map((c, i) => ({
+        content_id: req.params.id,
+        name: c.name,
+        media_type: c.media_type || "image",
+        media_url: c.media_url || "",
+        start_sec: c.start_sec || null,
+        duration_sec: c.duration_sec || null,
+        sort_order: i + 1,
+      }));
+      if (rows.length > 0) {
+        const { error: iErr } = await supabaseAdmin.from("worldcup_candidates").insert(rows);
+        if (iErr) console.error("후보 재삽입 실패:", iErr);
+      }
+    }
+
+    if (existing.mode === "quiz" && questions && Array.isArray(questions)) {
+      await supabaseAdmin.from("quiz_questions").delete().eq("content_id", req.params.id);
+      const rows = questions.map((q, i) => ({
+        content_id: req.params.id,
+        sort_order: i + 1,
+        type: q.type || "mcq",
+        prompt: q.prompt,
+        choices: q.choices || [],
+        answer: q.answer || [],
+        media_type: q.media_type || null,
+        media_url: q.media_url || null,
+        start_sec: q.start_sec || 0,
+        duration_sec: q.duration_sec || 10,
+      }));
+      if (rows.length > 0) {
+        const { error: iErr } = await supabaseAdmin.from("quiz_questions").insert(rows);
+        if (iErr) console.error("문제 재삽입 실패:", iErr);
+      }
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PUT /my/contents/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 콘텐츠 삭제 (CASCADE로 후보/문제도 삭제됨)
+app.delete("/my/contents/:id", requireAuth, async (req, res) => {
+  try {
+    const { data: existing, error: eErr } = await supabaseAdmin
+      .from("contents")
+      .select("id, owner_id")
+      .eq("id", req.params.id)
+      .single();
+    if (eErr || !existing) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+    if (existing.owner_id !== req.user.id) return res.status(403).json({ ok: false, error: "FORBIDDEN" });
+
+    const { error } = await supabaseAdmin
+      .from("contents")
+      .delete()
+      .eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: "DELETE_FAILED" });
+
+    console.log(`[콘텐츠 삭제] userId=${req.user.id} contentId=${req.params.id}`);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /my/contents/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
+// play_count 증가 헬퍼 (서버 전용, 중복 방지)
+// =========================
+async function incrementPlayCount(contentId) {
+  try {
+    // service_role로 직접 업데이트 (RLS bypass)
+    const { data: row } = await supabaseAdmin
+      .from("contents")
+      .select("play_count")
+      .eq("id", contentId)
+      .single();
+    if (row) {
+      await supabaseAdmin
+        .from("contents")
+        .update({ play_count: (row.play_count || 0) + 1 })
+        .eq("id", contentId);
+      console.log(`[play_count +1] contentId=${contentId} → ${(row.play_count || 0) + 1}`);
+    }
+  } catch (err) {
+    console.error(`[play_count 증가 실패] contentId=${contentId}`, err);
+    // 게임 종료 흐름은 깨지지 않게 에러만 로그
+  }
+}
+
+// =========================
 // 방 메모리
 // =========================
 const rooms = new Map();
@@ -530,7 +711,7 @@ async function loadCandidates(contentId, userId, isAdmin) {
   const clamped = rows.slice(0, 32);
 
   return {
-    content: { id: content.id, title: content.title, visibility: content.visibility },
+    content: { id: content.id, title: content.title, visibility: content.visibility, timerEnabled: content.timer_enabled !== false },
     candidates: clamped.map(c => ({
       name: c.name,
       mediaType: c.media_type,
@@ -734,7 +915,7 @@ async function loadQuizQuestions(contentId, userId, isAdmin) {
   if (rows.length < 1) return { error: "NO_QUESTIONS" };
 
   return {
-    content: { id: content.id, title: content.title, visibility: content.visibility },
+    content: { id: content.id, title: content.title, visibility: content.visibility, timerEnabled: content.timer_enabled !== false },
     questions: rows.map(q => ({
       id: q.id,
       type: q.type,
@@ -1048,6 +1229,7 @@ io.on("connection", (socket) => {
       quizTimer: null,
       quizShowTimer: null,
       emptyRoomTimer: null,
+      alreadyCounted: false,
     };
     rooms.set(roomId, room);
 
@@ -1202,6 +1384,13 @@ io.on("connection", (socket) => {
         scores,
         picksHistory: room.picksHistory
       });
+
+      // play_count +1 (중복 방지)
+      if (!room.alreadyCounted && room.contentId) {
+        room.alreadyCounted = true;
+        incrementPlayCount(room.contentId);
+      }
+
       cb?.({ ok: true, finished: true });
       return;
     }
@@ -1243,12 +1432,17 @@ io.on("connection", (socket) => {
       const quizId = payload?.quizId || room.contentId;
       if (!quizId) return cb?.({ ok: false, error: "NO_QUIZ_ID" });
 
-      // 타이머 설정 오버라이드
-      if (payload?.timerEnabled !== undefined) room.timerEnabled = !!payload.timerEnabled;
-      if (payload?.timerSec) room.timerSec = Math.min(180, Math.max(10, Number(payload.timerSec)));
-
       const loaded = await loadQuizQuestions(quizId, me.id, me.isAdmin);
       if (loaded.error) return cb?.({ ok: false, error: loaded.error });
+
+      // 타이머 설정: 콘텐츠 DB 설정 우선, payload 오버라이드 허용
+      const contentTimerEnabled = loaded.content.timerEnabled !== false;
+      if (payload?.timerEnabled !== undefined) {
+        room.timerEnabled = !!payload.timerEnabled;
+      } else {
+        room.timerEnabled = contentTimerEnabled;
+      }
+      if (payload?.timerSec) room.timerSec = Math.min(180, Math.max(10, Number(payload.timerSec)));
 
       room.content = loaded.content;
       room.contentId = quizId;
@@ -1359,6 +1553,13 @@ io.on("connection", (socket) => {
           totalQuestions: q.questions.length,
         });
         io.to(room.id).emit("room:state", publicRoom(room));
+
+        // play_count +1 (중복 방지)
+        if (!room.alreadyCounted && room.contentId) {
+          room.alreadyCounted = true;
+          incrementPlayCount(room.contentId);
+        }
+
         cb?.({ ok: true, finished: true });
         return;
       }
