@@ -482,6 +482,69 @@ app.delete("/my/contents/:id", requireAuth, async (req, res) => {
 });
 
 // =========================
+// 솔로 월드컵 결과 기록 API
+// =========================
+app.post("/worldcup/finish", requireAuth, async (req, res) => {
+  try {
+    const {
+      contentId, content_id,
+      mode,
+      totalPlayers, total_players,
+      championCandidateId, champion_candidate_id,
+      matches,
+    } = req.body;
+
+    const cId = contentId || content_id;
+    const champId = championCandidateId || champion_candidate_id;
+    const players = totalPlayers || total_players || 1;
+
+    if (!cId || !champId) {
+      return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
+    }
+
+    // 1) worldcup_runs insert
+    const { error: runErr } = await supabaseAdmin.from("worldcup_runs").insert({
+      content_id: cId,
+      room_id: null,
+      total_players: players,
+      champion_candidate_id: champId,
+      meta: { mode: mode || "solo", user_id: req.user.id, inserted_matches: (matches || []).length },
+    });
+    if (runErr) {
+      console.warn("[POST /worldcup/finish] worldcup_runs insert error:", runErr.message);
+      return res.status(500).json({ ok: false, error: "RUN_INSERT_FAILED" });
+    }
+
+    // 2) worldcup_matches bulk insert
+    if (Array.isArray(matches) && matches.length > 0) {
+      const rows = matches.map((m) => ({
+        content_id: cId,
+        room_id: null,
+        match_round: m.match_round || null,
+        candidate_a_id: m.candidate_a_id || null,
+        candidate_b_id: m.candidate_b_id || null,
+        winner_candidate_id: m.winner_candidate_id || null,
+        loser_candidate_id: m.loser_candidate_id || null,
+        is_tie: !!m.is_tie,
+        meta: m.meta || {},
+      }));
+
+      const { error: matchErr } = await supabaseAdmin.from("worldcup_matches").insert(rows);
+      if (matchErr) {
+        console.warn("[POST /worldcup/finish] worldcup_matches insert error:", matchErr.message);
+        // run은 이미 기록됨, matches 실패는 경고만
+      }
+    }
+
+    console.log(`[POST /worldcup/finish] OK — userId=${req.user.id} contentId=${cId} champion=${champId} matches=${(matches || []).length}`);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[POST /worldcup/finish] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // play_count 증가 헬퍼 (서버 전용, 중복 방지)
 // =========================
 async function incrementPlayCount(contentId) {
