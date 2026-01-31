@@ -510,6 +510,20 @@ async function incrementPlayCount(contentId) {
 const rooms = new Map();
 const GRACE_MS = 15000;
 const userRoomMap = new Map();
+const inviteCodeMap = new Map(); // inviteCode → roomId
+
+function generateInviteCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 0/O, 1/I 제외 (혼동 방지)
+  for (let attempt = 0; attempt < 20; attempt++) {
+    let code = "";
+    for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+    if (!inviteCodeMap.has(code)) return code;
+  }
+  // 충돌 20회 실패 시 8자리 폴백
+  let code = "";
+  for (let i = 0; i < 8; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
 
 // =========================
 // 타이머 정리 유틸
@@ -555,13 +569,18 @@ function deleteRoom(roomId, reason = "UNKNOWN") {
   // 방 내 소켓에게 room:closed 알림
   io.to(roomId).emit("room:closed", { roomId, reason });
 
+  // inviteCode 정리
+  if (room.inviteCode) {
+    inviteCodeMap.delete(room.inviteCode);
+  }
+
   // userRoomMap 정리
   for (const userId of room.players.keys()) {
     if (userRoomMap.get(userId) === roomId) userRoomMap.delete(userId);
   }
 
   rooms.delete(roomId);
-  console.log(`[방 삭제] roomId=${roomId} 사유=${reason}`);
+  console.log(`[방 삭제] roomId=${roomId} inviteCode=${room.inviteCode || "-"} 사유=${reason}`);
 }
 
 /** 조건부 방 정리 — players=0 AND disconnected=0 이면 TTL 타이머 시작 */
@@ -694,6 +713,7 @@ function publicRoom(room) {
 
   return {
     id: room.id,
+    inviteCode: room.inviteCode || null,
     hostUserId: room.hostUserId,
     mode: room.mode || "worldcup",
     phase: room.mode === "quiz"
@@ -1242,8 +1262,10 @@ io.on("connection", (socket) => {
     }
 
     const roomId = uuidv4();
+    const inviteCode = generateInviteCode();
     const room = {
       id: roomId,
+      inviteCode,
       hostUserId: me.id,
       mode: payload?.mode === "quiz" ? "quiz" : "worldcup",
       contentId: payload?.contentId || null,
@@ -1261,18 +1283,24 @@ io.on("connection", (socket) => {
       alreadyCounted: false,
     };
     rooms.set(roomId, room);
+    inviteCodeMap.set(inviteCode, roomId);
 
     room.players.set(me.id, { name: payload?.hostName || "host" });
     socket.join(roomId);
     userRoomMap.set(me.id, roomId);
 
-    console.log(`[방 생성] roomId=${roomId} 호스트=${me.id} 모드=${room.mode}`);
+    console.log(`[방 생성] roomId=${roomId} inviteCode=${inviteCode} 호스트=${me.id} 모드=${room.mode} contentId=${room.contentId}`);
     io.to(roomId).emit("room:state", publicRoom(room));
-    cb?.({ ok: true, roomId });
+    cb?.({ ok: true, roomId, inviteCode });
   });
 
   socket.on("room:join", (payload, cb) => {
-    const roomId = payload?.roomId;
+    let roomId = payload?.roomId;
+    // 6자리 초대코드 → UUID 변환
+    if (roomId && !rooms.has(roomId)) {
+      const resolved = inviteCodeMap.get(roomId.toUpperCase());
+      if (resolved) roomId = resolved;
+    }
     const room = rooms.get(roomId);
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
 
@@ -1292,7 +1320,7 @@ io.on("connection", (socket) => {
     }
 
     io.to(roomId).emit("room:state", publicRoom(room));
-    cb?.({ ok: true });
+    cb?.({ ok: true, roomId });
   });
 
   socket.on("room:leave", (payload, cb) => {
@@ -1339,13 +1367,46 @@ io.on("connection", (socket) => {
       if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
       if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
 
-      if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
-
       const contentId = room.contentId;
       if (!contentId) return cb?.({ ok: false, error: "NO_CONTENT_ID" });
 
+      console.log(`[game:start] received — roomId=${room.id} host=${me.id} mode=${room.mode} contentId=${contentId}`);
+
+      // ── 퀴즈 모드 → 퀴즈 시작 로직 ──
+      if (room.mode === "quiz") {
+        clearRoomTimers(room);
+
+        const loaded = await loadQuizQuestions(contentId, me.id, me.isAdmin);
+        if (loaded.error) {
+          console.log(`[game:start] quiz load FAILED: ${loaded.error}`);
+          return cb?.({ ok: false, error: loaded.error });
+        }
+
+        room.content = loaded.content;
+        room.contentId = contentId;
+        const contentTimerEnabled = loaded.content.timerEnabled !== false;
+        room.timerEnabled = contentTimerEnabled;
+        initQuizState(room, loaded.questions);
+
+        // play_count +1 (게임 시작 시 1회만)
+        if (!room.alreadyCounted) {
+          room.alreadyCounted = true;
+          incrementPlayCount(contentId);
+        }
+
+        console.log(`[game:start] quiz started — questions=${loaded.questions.length} → quiz:question broadcast`);
+        advanceQuizQuestion(room);
+        return cb?.({ ok: true, totalQuestions: loaded.questions.length });
+      }
+
+      // ── 월드컵 모드 ──
+      if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
+
       const loaded = await loadCandidates(contentId, me.id, me.isAdmin);
-      if (loaded.error) return cb?.({ ok: false, error: loaded.error });
+      if (loaded.error) {
+        console.log(`[game:start] worldcup load FAILED: ${loaded.error}`);
+        return cb?.({ ok: false, error: loaded.error });
+      }
 
       room.content = loaded.content;
       initBracket(room, loaded.candidates);
@@ -1358,8 +1419,15 @@ io.on("connection", (socket) => {
 
       nextMatch(room);
 
+      // play_count +1 (게임 시작 시 1회만)
+      if (!room.alreadyCounted) {
+        room.alreadyCounted = true;
+        incrementPlayCount(contentId);
+      }
+
       const timerInfo = { enabled: room.timerEnabled, sec: room.timerSec };
-      io.to(room.id).emit("game:started", {
+      // ✅ worldcup:round로 통일 (프론트가 이 이벤트를 핸들링함)
+      io.to(room.id).emit("worldcup:round", {
         roomId: room.id,
         roundIndex: room.roundIndex,
         totalMatches: room.totalMatches,
@@ -1368,10 +1436,11 @@ io.on("connection", (socket) => {
       });
       io.to(room.id).emit("room:state", publicRoom(room));
 
+      console.log(`[game:start] worldcup started — candidates=${loaded.candidates.length} → worldcup:round broadcast`);
       startRoundTimer(room);
       cb?.({ ok: true });
     } catch (err) {
-      console.error("game:start 에러:", err);
+      console.error("[game:start] error:", err);
       cb?.({ ok: false, error: "INTERNAL_ERROR" });
     }
   });
@@ -1398,7 +1467,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("worldcup:nextRound", (payload, cb) => {
+  socket.on("worldcup:next", (payload, cb) => {
     const room = rooms.get(payload?.roomId);
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
     if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
@@ -1407,18 +1476,13 @@ io.on("connection", (socket) => {
     if (room.champion) {
       room.phase = "finished";
       const scores = buildScores(room);
-      io.to(room.id).emit("game:finished", {
+      // ✅ worldcup:finished (프론트가 이 이벤트를 핸들링함)
+      io.to(room.id).emit("worldcup:finished", {
         roomId: room.id,
         champion: room.champion?.name || room.champion,
         scores,
         picksHistory: room.picksHistory
       });
-
-      // play_count +1 (중복 방지)
-      if (!room.alreadyCounted && room.contentId) {
-        room.alreadyCounted = true;
-        incrementPlayCount(room.contentId);
-      }
 
       cb?.({ ok: true, finished: true });
       return;
