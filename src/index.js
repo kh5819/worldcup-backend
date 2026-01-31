@@ -100,10 +100,10 @@ app.get("/contents", async (req, res) => {
 
 const server = http.createServer(app);
 
-// Socket.IO
+// Socket.IO — Express와 동일한 origin 정책 적용
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_ORIGIN,
+    origin: checkOrigin,
     methods: ["GET", "POST"],
     credentials: true
   }
