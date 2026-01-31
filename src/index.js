@@ -10,24 +10,31 @@ const app = express();
 app.use(express.json());
 
 // ── CORS 허용 Origin 목록 ──
-const ALLOWED_ORIGINS = [
+// 환경변수 FRONTEND_ORIGINS (쉼표 구분)로 관리, 하드코딩 폴백 포함
+const ALLOWED_ORIGINS = new Set([
   "https://worldcup-frontend.pages.dev",
   "https://playduo.kr",
   "https://www.playduo.kr",
-];
-// .env의 FRONTEND_ORIGIN도 추가 (로컬 개발용 등)
-if (process.env.FRONTEND_ORIGIN) {
-  process.env.FRONTEND_ORIGIN.split(",").forEach((o) => {
-    const trimmed = o.trim();
-    if (trimmed && !ALLOWED_ORIGINS.includes(trimmed)) ALLOWED_ORIGINS.push(trimmed);
-  });
-}
+]);
+// 환경변수에서 추가 (FRONTEND_ORIGINS 우선, legacy FRONTEND_ORIGIN도 지원)
+const envOrigins = process.env.FRONTEND_ORIGINS || process.env.FRONTEND_ORIGIN || "";
+envOrigins.split(",").forEach((o) => {
+  const trimmed = o.trim();
+  if (trimmed) ALLOWED_ORIGINS.add(trimmed);
+});
 
+console.log("[CORS] 허용 origin 목록:", [...ALLOWED_ORIGINS]);
+
+/**
+ * origin 검사 함수 — Express cors + Socket.IO cors 공용
+ * 핵심: callback(null, origin) 으로 "요청 origin 그대로" 1개만 반환.
+ *       callback(null, true) 는 credentials 환경에서 다중 헤더 문제를 일으킴.
+ */
 function checkOrigin(origin, callback) {
-  // origin이 없는 요청(Postman, 서버간 호출 등)은 허용
+  // origin 없는 요청(Postman, 서버간, React Native 등) 허용
   if (!origin) return callback(null, true);
-  if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-  console.error(`[CORS] 차단된 origin: ${origin}  (허용 목록: ${ALLOWED_ORIGINS.join(", ")})`);
+  if (ALLOWED_ORIGINS.has(origin)) return callback(null, origin);
+  console.error(`[CORS] 차단된 origin: "${origin}"  허용 목록: [${[...ALLOWED_ORIGINS].join(", ")}]`);
   callback(new Error(`CORS: origin '${origin}' is not allowed`));
 }
 
