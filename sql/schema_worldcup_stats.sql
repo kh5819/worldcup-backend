@@ -83,7 +83,9 @@ SELECT
   c.content_id,
   c.id          AS candidate_id,
   c.name,
+  c.media_type,
   c.media_url,
+  c.start_sec,
   COALESCE(ms.games, 0)   AS games,
   COALESCE(ms.wins, 0)    AS wins,
   CASE
