@@ -1219,6 +1219,11 @@ function safeQuestion(q, index, total) {
     payload.startSec = q.startSec;
     payload.durationSec = q.durationSec;
   }
+  // image/gif/mp4 미디어가 있으면 클라이언트에 전달 (audio_youtube 제외)
+  if (q.type !== "audio_youtube" && q.mediaUrl && q.mediaType) {
+    payload.media_type = q.mediaType;
+    payload.media_url = q.mediaUrl;
+  }
   return payload;
 }
 
