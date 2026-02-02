@@ -1526,6 +1526,11 @@ io.on("connection", (socket) => {
       }
 
       room.content = loaded.content;
+
+      // 콘텐츠 DB의 timer_enabled 설정을 반영 (기본 OFF)
+      const contentTimerEnabled = loaded.content.timerEnabled === true;
+      room.timerEnabled = contentTimerEnabled;
+
       initBracket(room, loaded.candidates);
 
       room.roundIndex = 1;
