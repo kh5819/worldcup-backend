@@ -694,16 +694,24 @@ const userRoomMap = new Map();
 const inviteCodeMap = new Map(); // inviteCode → roomId
 
 function generateInviteCode() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 0/O, 1/I 제외 (혼동 방지)
-  for (let attempt = 0; attempt < 20; attempt++) {
-    let code = "";
-    for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0");
     if (!inviteCodeMap.has(code)) return code;
   }
-  // 충돌 20회 실패 시 8자리 폴백
-  let code = "";
-  for (let i = 0; i < 8; i++) code += chars[Math.floor(Math.random() * chars.length)];
-  return code;
+  // 충돌 50회 실패 시 7자리 폴백
+  return String(Math.floor(Math.random() * 10_000_000)).padStart(7, "0");
+}
+
+function isInviteCode(str) {
+  return /^\d{6,7}$/.test(str);
+}
+
+/** 닉네임 확정: payload 우선순위 → handshake fallback → "player" */
+function pickNick(socket, payload) {
+  const raw = payload?.nickname || payload?.name || payload?.hostName
+    || socket?.handshake?.auth?.nickname || "player";
+  const trimmed = String(raw).trim().slice(0, 20);
+  return trimmed || "player";
 }
 
 // =========================
@@ -1485,20 +1493,22 @@ io.on("connection", (socket) => {
     rooms.set(roomId, room);
     inviteCodeMap.set(inviteCode, roomId);
 
-    room.players.set(me.id, { name: payload?.hostName || "host" });
+    const hostNick = pickNick(socket, payload);
+    room.players.set(me.id, { name: hostNick });
     socket.join(roomId);
     userRoomMap.set(me.id, roomId);
 
-    console.log(`[방 생성] roomId=${roomId} inviteCode=${inviteCode} 호스트=${me.id} 모드=${room.mode} contentId=${room.contentId}`);
+    console.log(`[방 생성] roomId=${roomId} inviteCode=${inviteCode} 호스트=${me.id}(${hostNick}) 모드=${room.mode} contentId=${room.contentId}`);
     io.to(roomId).emit("room:state", publicRoom(room));
     cb?.({ ok: true, roomId, inviteCode });
   });
 
   socket.on("room:join", (payload, cb) => {
     let roomId = payload?.roomId;
-    // 6자리 초대코드 → UUID 변환
+    // 초대코드(6~7자리 숫자) 또는 UUID가 아닌 입력 → inviteCodeMap에서 변환
     if (roomId && !rooms.has(roomId)) {
-      const resolved = inviteCodeMap.get(roomId.toUpperCase());
+      // 숫자코드면 그대로, 영문이면 대문자로 시도 (레거시 호환)
+      const resolved = inviteCodeMap.get(roomId) || inviteCodeMap.get(roomId.toUpperCase());
       if (resolved) roomId = resolved;
     }
     const room = rooms.get(roomId);
@@ -1510,7 +1520,16 @@ io.on("connection", (socket) => {
       room.emptyRoomTimer = null;
     }
 
-    room.players.set(me.id, { name: payload?.name || "player" });
+    // 닉네임: 재접속이면 기존 이름 유지, 신규 입장이면 pickNick
+    const existing = room.players.get(me.id);
+    if (existing) {
+      // 재접속 — 기존 이름 유지 (클라이언트가 새 이름을 명시했으면 갱신)
+      const newNick = payload?.nickname || payload?.name;
+      if (newNick && newNick.trim()) existing.name = newNick.trim().slice(0, 20);
+    } else {
+      // 신규 입장
+      room.players.set(me.id, { name: pickNick(socket, payload) });
+    }
     socket.join(roomId);
     userRoomMap.set(me.id, roomId);
 
@@ -1520,7 +1539,7 @@ io.on("connection", (socket) => {
     }
 
     io.to(roomId).emit("room:state", publicRoom(room));
-    cb?.({ ok: true, roomId });
+    cb?.({ ok: true, roomId, inviteCode: room.inviteCode || null });
   });
 
   socket.on("room:leave", (payload, cb) => {
