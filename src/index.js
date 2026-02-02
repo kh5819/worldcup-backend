@@ -7,7 +7,9 @@ import { createClient } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "5mb" }));
+app.use(express.urlencoded({ extended: true, limit: "5mb" }));
+
 
 // ── CORS 허용 Origin 목록 ──
 // 환경변수 FRONTEND_ORIGINS (쉼표 구분)로 관리, 하드코딩 폴백 포함
@@ -482,6 +484,83 @@ app.delete("/my/contents/:id", requireAuth, async (req, res) => {
 });
 
 // =========================
+// play_count 증가 헬퍼 (서버 전용, 중복 방지)
+// =========================
+async function incrementPlayCount(contentId) {
+  try {
+    // service_role로 직접 업데이트 (RLS bypass)
+    const { data: row } = await supabaseAdmin
+      .from("contents")
+      .select("play_count")
+      .eq("id", contentId)
+      .single();
+    if (row) {
+      await supabaseAdmin
+        .from("contents")
+        .update({ play_count: (row.play_count || 0) + 1 })
+        .eq("id", contentId);
+      console.log(`[play_count +1] contentId=${contentId} → ${(row.play_count || 0) + 1}`);
+    }
+  } catch (err) {
+    console.error(`[play_count 증가 실패] contentId=${contentId}`, err);
+    // 게임 종료 흐름은 깨지지 않게 에러만 로그
+  }
+}
+
+// =========================
+// play_count 정확 누적 — 완주 시점 기록 + 쿨다운 스팸 방지
+// =========================
+const PLAY_COOLDOWN_SEC = Number(process.env.PLAY_COOLDOWN_SEC) || 60;
+
+/**
+ * recordPlayOnce — 게임 완주 시 play_count +1 (쿨다운 내 중복 차단)
+ * @param {object} opts
+ * @param {string} opts.contentId - 콘텐츠 UUID
+ * @param {string} opts.userId    - 유저 UUID
+ * @param {"solo"|"multi"} opts.mode
+ * @param {"worldcup"|"quiz"} opts.gameType
+ */
+async function recordPlayOnce({ contentId, userId, mode, gameType }) {
+  try {
+    if (!contentId || !userId) return;
+
+    // 쿨다운 체크: 같은 유저+콘텐츠의 최근 기록
+    const cooldownThreshold = new Date(Date.now() - PLAY_COOLDOWN_SEC * 1000).toISOString();
+    const { data: recent } = await supabaseAdmin
+      .from("content_plays")
+      .select("id")
+      .eq("content_id", contentId)
+      .eq("user_id", userId)
+      .gte("created_at", cooldownThreshold)
+      .limit(1);
+
+    if (recent && recent.length > 0) {
+      console.log(`[recordPlayOnce] 쿨다운 스킵 — contentId=${contentId} userId=${userId} (${PLAY_COOLDOWN_SEC}초 이내)`);
+      return;
+    }
+
+    // content_plays 로그 삽입
+    const { error: logErr } = await supabaseAdmin.from("content_plays").insert({
+      content_id: contentId,
+      user_id: userId,
+      mode,
+      game_type: gameType,
+    });
+    if (logErr) {
+      console.warn(`[recordPlayOnce] content_plays insert error:`, logErr.message);
+      return;
+    }
+
+    // play_count +1
+    await incrementPlayCount(contentId);
+    console.log(`[recordPlayOnce] OK — contentId=${contentId} userId=${userId} mode=${mode} type=${gameType}`);
+  } catch (err) {
+    console.error(`[recordPlayOnce] error:`, err);
+    // fire-and-forget: 게임 흐름 깨뜨리지 않음
+  }
+}
+
+// =========================
 // 솔로 월드컵 결과 기록 API
 // =========================
 app.post("/worldcup/finish", requireAuth, async (req, res) => {
@@ -532,9 +611,11 @@ app.post("/worldcup/finish", requireAuth, async (req, res) => {
       const { error: matchErr } = await supabaseAdmin.from("worldcup_matches").insert(rows);
       if (matchErr) {
         console.warn("[POST /worldcup/finish] worldcup_matches insert error:", matchErr.message);
-        // run은 이미 기록됨, matches 실패는 경고만
       }
     }
+
+    // play_count +1 (솔로 월드컵 완주 시점, fire-and-forget)
+    recordPlayOnce({ contentId: cId, userId: req.user.id, mode: "solo", gameType: "worldcup" }).catch(() => {});
 
     console.log(`[POST /worldcup/finish] OK — userId=${req.user.id} contentId=${cId} champion=${champId} matches=${(matches || []).length}`);
     return res.json({ ok: true });
@@ -545,28 +626,25 @@ app.post("/worldcup/finish", requireAuth, async (req, res) => {
 });
 
 // =========================
-// play_count 증가 헬퍼 (서버 전용, 중복 방지)
+// 솔로 퀴즈 완주 기록 API
 // =========================
-async function incrementPlayCount(contentId) {
+app.post("/plays/complete", requireAuth, async (req, res) => {
   try {
-    // service_role로 직접 업데이트 (RLS bypass)
-    const { data: row } = await supabaseAdmin
-      .from("contents")
-      .select("play_count")
-      .eq("id", contentId)
-      .single();
-    if (row) {
-      await supabaseAdmin
-        .from("contents")
-        .update({ play_count: (row.play_count || 0) + 1 })
-        .eq("id", contentId);
-      console.log(`[play_count +1] contentId=${contentId} → ${(row.play_count || 0) + 1}`);
+    const { contentId, gameType } = req.body;
+    if (!contentId) {
+      return res.status(400).json({ ok: false, error: "MISSING_CONTENT_ID" });
     }
+    const type = gameType === "worldcup" ? "worldcup" : "quiz";
+
+    // fire-and-forget 방식이지만 응답은 즉시 반환
+    recordPlayOnce({ contentId, userId: req.user.id, mode: "solo", gameType: type }).catch(() => {});
+
+    return res.json({ ok: true });
   } catch (err) {
-    console.error(`[play_count 증가 실패] contentId=${contentId}`, err);
-    // 게임 종료 흐름은 깨지지 않게 에러만 로그
+    console.error("[POST /plays/complete] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
-}
+});
 
 // =========================
 // 월드컵 매치/판 기록 헬퍼
@@ -1505,12 +1583,6 @@ io.on("connection", (socket) => {
         room.timerEnabled = contentTimerEnabled;
         initQuizState(room, loaded.questions);
 
-        // play_count +1 (게임 시작 시 1회만)
-        if (!room.alreadyCounted) {
-          room.alreadyCounted = true;
-          incrementPlayCount(contentId);
-        }
-
         console.log(`[game:start] quiz started — questions=${loaded.questions.length} → quiz:question broadcast`);
         advanceQuizQuestion(room);
         return cb?.({ ok: true, totalQuestions: loaded.questions.length });
@@ -1526,11 +1598,6 @@ io.on("connection", (socket) => {
       }
 
       room.content = loaded.content;
-
-      // 콘텐츠 DB의 timer_enabled 설정을 반영 (기본 OFF)
-      const contentTimerEnabled = loaded.content.timerEnabled === true;
-      room.timerEnabled = contentTimerEnabled;
-
       initBracket(room, loaded.candidates);
 
       room.roundIndex = 1;
@@ -1540,12 +1607,6 @@ io.on("connection", (socket) => {
       for (const userId of room.players.keys()) room.scores[userId] = 0;
 
       nextMatch(room);
-
-      // play_count +1 (게임 시작 시 1회만)
-      if (!room.alreadyCounted) {
-        room.alreadyCounted = true;
-        incrementPlayCount(contentId);
-      }
 
       const timerInfo = { enabled: room.timerEnabled, sec: room.timerSec };
       // ✅ worldcup:round로 통일 (프론트가 이 이벤트를 핸들링함)
@@ -1608,6 +1669,12 @@ io.on("connection", (socket) => {
 
       // 판 기록 DB 저장 (fire-and-forget)
       recordWorldcupRun(room, room.champion).catch(() => {});
+
+      // play_count +1 (멀티 월드컵 완주, 호스트 기준 1회, fire-and-forget)
+      if (!room.alreadyCounted && room.contentId && room.hostUserId) {
+        room.alreadyCounted = true;
+        recordPlayOnce({ contentId: room.contentId, userId: room.hostUserId, mode: "multi", gameType: "worldcup" }).catch(() => {});
+      }
 
       cb?.({ ok: true, finished: true });
       return;
@@ -1772,10 +1839,10 @@ io.on("connection", (socket) => {
         });
         io.to(room.id).emit("room:state", publicRoom(room));
 
-        // play_count +1 (중복 방지)
-        if (!room.alreadyCounted && room.contentId) {
+        // play_count +1 (멀티 퀴즈 완주, 호스트 기준 1회, fire-and-forget)
+        if (!room.alreadyCounted && room.contentId && room.hostUserId) {
           room.alreadyCounted = true;
-          incrementPlayCount(room.contentId);
+          recordPlayOnce({ contentId: room.contentId, userId: room.hostUserId, mode: "multi", gameType: "quiz" }).catch(() => {});
         }
 
         cb?.({ ok: true, finished: true });
