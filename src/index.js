@@ -386,10 +386,19 @@ app.post("/history", requireAuth, async (req, res) => {
 
 // GET /history — 최근 플레이 목록
 app.get("/history", requireAuth, async (req, res) => {
+  // 캐시 무효화 (304 방지)
+  res.set({
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0"
+  });
+
   try {
     const type = req.query.type || "all"; // all | worldcup | quiz
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
     const offset = Math.max(0, Number(req.query.offset) || 0);
+
+    console.log(`[GET /history] user_id=${req.user.id}, type=${type}, limit=${limit}, offset=${offset}`);
 
     let query = supabaseAdmin
       .from("play_history")
@@ -423,8 +432,10 @@ app.get("/history", requireAuth, async (req, res) => {
       return res.status(500).json({ ok: false, error: "DB_ERROR" });
     }
 
+    console.log(`[GET /history] rows fetched: ${data?.length || 0}`);
+
     // 응답 가공 (contents 조인 데이터 평탄화)
-    const items = (data || []).map(h => ({
+    const history = (data || []).map(h => ({
       id: h.id,
       content_id: h.content_id,
       content_type: h.content_type,
@@ -432,12 +443,12 @@ app.get("/history", requireAuth, async (req, res) => {
       played_at: h.played_at,
       result_json: h.result_json,
       // 콘텐츠 메타
-      title: h.contents?.title || "삭제된 콘텐츠",
+      content_title: h.contents?.title || "삭제된 콘텐츠",
       thumbnail_url: h.contents?.thumbnail_url || null,
       content_play_count: h.contents?.play_count || 0
     }));
 
-    return res.json({ ok: true, items });
+    return res.json({ ok: true, history });
 
   } catch (err) {
     console.error("GET /history internal:", err);
@@ -447,8 +458,16 @@ app.get("/history", requireAuth, async (req, res) => {
 
 // GET /history/best — 최고 기록
 app.get("/history/best", requireAuth, async (req, res) => {
+  // 캐시 무효화 (304 방지)
+  res.set({
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0"
+  });
+
   try {
     const type = req.query.type || "all"; // all | worldcup | quiz
+    console.log(`[GET /history/best] user_id=${req.user.id}, type=${type}`);
 
     const result = { quiz: null, worldcup: null };
 
