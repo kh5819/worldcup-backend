@@ -780,6 +780,24 @@ async function requireAdmin(req, res, next) {
 }
 
 // =========================
+// 현재 유저 정보 API (관리자 플래그 포함)
+// =========================
+app.get("/me", requireAuth, (req, res) => {
+  const adminEmail = String(process.env.ADMIN_EMAIL || "").toLowerCase().trim();
+  const userEmail = String(req.user?.email || "").toLowerCase().trim();
+  const isAdmin = !!adminEmail && userEmail === adminEmail;
+
+  console.log(`[ME] email=${req.user?.email} is_admin=${isAdmin}`);
+
+  return res.json({
+    ok: true,
+    user_id: req.user?.id,
+    email: req.user?.email,
+    is_admin: isAdmin,
+  });
+});
+
+// =========================
 // 신고 API
 // =========================
 app.post("/reports", requireAuth, async (req, res) => {
