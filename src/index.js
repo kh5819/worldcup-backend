@@ -108,6 +108,478 @@ app.get("/contents", async (req, res) => {
   }
 });
 
+// =========================
+// OG 메타 미리보기 (카톡/디코/트위터 공유용)
+// GET /og/content/:id → SSR HTML 반환
+// =========================
+const DEFAULT_OG_IMAGE = "https://playduo.kr/og-default.png";
+const SITE_NAME = "DUO";
+const SITE_URL = "https://playduo.kr";
+
+app.get("/og/content/:id", async (req, res) => {
+  try {
+    const contentId = req.params.id;
+    if (!contentId) {
+      return res.status(400).send("Bad Request: Missing content ID");
+    }
+
+    // DB에서 콘텐츠 정보 조회
+    const { data: content, error } = await supabaseAdmin
+      .from("contents")
+      .select("id, mode, title, description, thumbnail_url, play_count, created_at, owner_id")
+      .eq("id", contentId)
+      .single();
+
+    if (error || !content) {
+      // 콘텐츠 없으면 기본 OG로 폴백
+      return res.send(generateOgHtml({
+        title: "DUO — 이상형 월드컵 & 퀴즈",
+        description: "누구나 만들고 함께 즐기는 이상형 월드컵 & 퀴즈 플랫폼",
+        image: DEFAULT_OG_IMAGE,
+        url: SITE_URL,
+        redirectUrl: SITE_URL
+      }));
+    }
+
+    // 후보/문제 수 조회
+    let itemCount = 0;
+    if (content.mode === "worldcup") {
+      const { count } = await supabaseAdmin
+        .from("worldcup_candidates")
+        .select("*", { count: "exact", head: true })
+        .eq("content_id", contentId);
+      itemCount = count || 0;
+    } else if (content.mode === "quiz") {
+      const { count } = await supabaseAdmin
+        .from("quiz_questions")
+        .select("*", { count: "exact", head: true })
+        .eq("content_id", contentId);
+      itemCount = count || 0;
+    }
+
+    // creator_name 조회 (profiles 테이블)
+    let creatorName = "";
+    if (content.owner_id) {
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("nickname")
+        .eq("user_id", content.owner_id)
+        .single();
+      creatorName = profile?.nickname || "";
+    }
+
+    // 타입별 설명 생성
+    const typeLabel = content.mode === "worldcup" ? "이상형 월드컵" : "퀴즈";
+    const bracketText = itemCount > 0 ? `${itemCount}${content.mode === "worldcup" ? "강" : "문제"}` : "";
+
+    let description = content.description || "";
+    if (!description || description.length < 10) {
+      if (content.mode === "worldcup") {
+        description = `${content.title} — DUO에서 ${bracketText} 이상형월드컵 플레이!`;
+      } else {
+        description = `${content.title} — 퀴즈 도전! ${bracketText} 정답률을 올려보자 🎯`;
+      }
+    }
+    if (creatorName) {
+      description += ` | 제작자: ${creatorName}`;
+    }
+    // 길이 제한 (120자)
+    if (description.length > 120) {
+      description = description.slice(0, 117) + "...";
+    }
+
+    // 썸네일 URL 처리 (없으면 기본 이미지)
+    let ogImage = content.thumbnail_url || DEFAULT_OG_IMAGE;
+    // Supabase Storage 상대경로면 절대경로로 변환
+    if (ogImage && !ogImage.startsWith("http")) {
+      ogImage = `${process.env.SUPABASE_URL}/storage/v1/object/public/thumbnails/${ogImage}`;
+    }
+
+    // 실제 플레이 페이지 URL
+    const playUrl = `${SITE_URL}/play.html?solo=1&type=${content.mode}&id=${contentId}`;
+    const ogUrl = `${SITE_URL}/og/content/${contentId}`;
+
+    const html = generateOgHtml({
+      title: `${content.title} — ${typeLabel} | DUO`,
+      description,
+      image: ogImage,
+      url: ogUrl,
+      redirectUrl: playUrl,
+      type: content.mode
+    });
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600"); // 1시간 캐시
+    return res.send(html);
+
+  } catch (err) {
+    console.error("GET /og/content/:id error:", err);
+    return res.send(generateOgHtml({
+      title: "DUO — 이상형 월드컵 & 퀴즈",
+      description: "누구나 만들고 함께 즐기는 이상형 월드컵 & 퀴즈 플랫폼",
+      image: DEFAULT_OG_IMAGE,
+      url: SITE_URL,
+      redirectUrl: SITE_URL
+    }));
+  }
+});
+
+// OG HTML 생성 함수
+function generateOgHtml({ title, description, image, url, redirectUrl, type = "website" }) {
+  // HTML 이스케이프
+  const esc = (str) => String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${esc(title)}</title>
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="${SITE_NAME}">
+  <meta property="og:title" content="${esc(title)}">
+  <meta property="og:description" content="${esc(description)}">
+  <meta property="og:image" content="${esc(image)}">
+  <meta property="og:url" content="${esc(url)}">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${esc(title)}">
+  <meta name="twitter:description" content="${esc(description)}">
+  <meta name="twitter:image" content="${esc(image)}">
+
+  <!-- 기본 meta -->
+  <meta name="description" content="${esc(description)}">
+
+  <!-- 사람용: 0.3초 후 실제 페이지로 리다이렉트 -->
+  <meta http-equiv="refresh" content="0;url=${esc(redirectUrl)}">
+  <link rel="canonical" href="${esc(redirectUrl)}">
+
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #16142a;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      text-align: center;
+    }
+    .loading {
+      font-size: 18px;
+      opacity: 0.8;
+    }
+    a { color: #7c6aff; }
+  </style>
+</head>
+<body>
+  <div class="loading">
+    <p>DUO로 이동 중...</p>
+    <p><a href="${esc(redirectUrl)}">바로 이동하기</a></p>
+  </div>
+  <script>
+    // JS 지원 브라우저는 즉시 이동
+    window.location.replace("${redirectUrl.replace(/"/g, '\\"')}");
+  </script>
+</body>
+</html>`;
+}
+
+// =========================
+// OG 이미지 프록시 (선택적: Storage 권한 문제 해결용)
+// GET /og/image/:id → 이미지 프록시/리다이렉트
+// =========================
+app.get("/og/image/:id", async (req, res) => {
+  try {
+    const contentId = req.params.id;
+
+    const { data: content } = await supabaseAdmin
+      .from("contents")
+      .select("thumbnail_url")
+      .eq("id", contentId)
+      .single();
+
+    let imageUrl = content?.thumbnail_url || DEFAULT_OG_IMAGE;
+
+    // Storage 경로면 publicUrl 생성
+    if (imageUrl && !imageUrl.startsWith("http")) {
+      imageUrl = `${process.env.SUPABASE_URL}/storage/v1/object/public/thumbnails/${imageUrl}`;
+    }
+
+    // 리다이렉트 (캐시 허용)
+    res.setHeader("Cache-Control", "public, max-age=86400"); // 24시간 캐시
+    return res.redirect(302, imageUrl);
+
+  } catch (err) {
+    console.error("GET /og/image/:id error:", err);
+    return res.redirect(302, DEFAULT_OG_IMAGE);
+  }
+});
+
+// =========================
+// 플레이 히스토리 API
+// =========================
+
+// POST /history — 플레이 기록 저장
+app.post("/history", requireAuth, async (req, res) => {
+  try {
+    const { content_id, content_type, mode, result_json, idempotency_key } = req.body;
+
+    // 필수 필드 검증
+    if (!content_id || !content_type || !mode) {
+      return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+    }
+    if (!["worldcup", "quiz"].includes(content_type)) {
+      return res.status(400).json({ ok: false, error: "INVALID_CONTENT_TYPE" });
+    }
+    if (!["solo", "multi"].includes(mode)) {
+      return res.status(400).json({ ok: false, error: "INVALID_MODE" });
+    }
+
+    // 중복 방지 (idempotency_key가 있으면 체크)
+    if (idempotency_key) {
+      const { data: existing } = await supabaseAdmin
+        .from("play_history")
+        .select("id")
+        .eq("idempotency_key", idempotency_key)
+        .single();
+
+      if (existing) {
+        return res.json({ ok: true, duplicate: true, id: existing.id });
+      }
+    }
+
+    // 기록 저장
+    const { data, error } = await supabaseAdmin
+      .from("play_history")
+      .insert({
+        user_id: req.user.id,
+        content_id,
+        content_type,
+        mode,
+        result_json: result_json || {},
+        idempotency_key: idempotency_key || null
+      })
+      .select("id")
+      .single();
+
+    if (error) {
+      console.error("POST /history error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    return res.json({ ok: true, id: data.id });
+
+  } catch (err) {
+    console.error("POST /history internal:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// GET /history — 최근 플레이 목록
+app.get("/history", requireAuth, async (req, res) => {
+  try {
+    const type = req.query.type || "all"; // all | worldcup | quiz
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+
+    let query = supabaseAdmin
+      .from("play_history")
+      .select(`
+        id,
+        content_id,
+        content_type,
+        mode,
+        played_at,
+        result_json,
+        contents (
+          id,
+          title,
+          mode,
+          thumbnail_url,
+          play_count
+        )
+      `)
+      .eq("user_id", req.user.id)
+      .order("played_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (type !== "all") {
+      query = query.eq("content_type", type);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error("GET /history error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    // 응답 가공 (contents 조인 데이터 평탄화)
+    const items = (data || []).map(h => ({
+      id: h.id,
+      content_id: h.content_id,
+      content_type: h.content_type,
+      mode: h.mode,
+      played_at: h.played_at,
+      result_json: h.result_json,
+      // 콘텐츠 메타
+      title: h.contents?.title || "삭제된 콘텐츠",
+      thumbnail_url: h.contents?.thumbnail_url || null,
+      content_play_count: h.contents?.play_count || 0
+    }));
+
+    return res.json({ ok: true, items });
+
+  } catch (err) {
+    console.error("GET /history internal:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// GET /history/best — 최고 기록
+app.get("/history/best", requireAuth, async (req, res) => {
+  try {
+    const type = req.query.type || "all"; // all | worldcup | quiz
+
+    const result = { quiz: null, worldcup: null };
+
+    // 퀴즈 최고 기록
+    if (type === "all" || type === "quiz") {
+      const { data: quizData } = await supabaseAdmin
+        .from("play_history")
+        .select("result_json, played_at, content_id, contents(title)")
+        .eq("user_id", req.user.id)
+        .eq("content_type", "quiz")
+        .order("played_at", { ascending: false });
+
+      if (quizData && quizData.length > 0) {
+        let bestAccuracy = 0;
+        let bestScore = 0;
+        let totalPlays = quizData.length;
+
+        quizData.forEach(h => {
+          const acc = parseFloat(h.result_json?.accuracy) || 0;
+          const score = parseInt(h.result_json?.score) || 0;
+          if (acc > bestAccuracy) bestAccuracy = acc;
+          if (score > bestScore) bestScore = score;
+        });
+
+        result.quiz = {
+          best_accuracy: Math.round(bestAccuracy * 100),
+          best_score: bestScore,
+          total_plays: totalPlays,
+          recent_title: quizData[0]?.contents?.title || null
+        };
+      }
+    }
+
+    // 월드컵 최고 기록
+    if (type === "all" || type === "worldcup") {
+      const { data: wcData } = await supabaseAdmin
+        .from("play_history")
+        .select("result_json, played_at, content_id, contents(title)")
+        .eq("user_id", req.user.id)
+        .eq("content_type", "worldcup")
+        .order("played_at", { ascending: false });
+
+      if (wcData && wcData.length > 0) {
+        const winCount = wcData.filter(h => h.result_json?.champion_candidate_id).length;
+        const recentWin = wcData.find(h => h.result_json?.champion_name);
+
+        result.worldcup = {
+          total_plays: wcData.length,
+          win_count: winCount,
+          recent_champion: recentWin?.result_json?.champion_name || null,
+          recent_title: wcData[0]?.contents?.title || null
+        };
+      }
+    }
+
+    return res.json({ ok: true, ...result });
+
+  } catch (err) {
+    console.error("GET /history/best internal:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// GET /content/:id — 단일 콘텐츠 상세 (OG용 + 일반용)
+app.get("/content/:id", async (req, res) => {
+  try {
+    const contentId = req.params.id;
+
+    const { data: content, error } = await supabaseAdmin
+      .from("contents")
+      .select("id, mode, title, description, thumbnail_url, play_count, created_at, owner_id, visibility")
+      .eq("id", contentId)
+      .single();
+
+    if (error || !content) {
+      return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+    }
+
+    // visibility 체크 (private은 owner만)
+    if (content.visibility === "private") {
+      const authHeader = req.headers.authorization || "";
+      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+      const user = await verify(token);
+      if (!user || user.id !== content.owner_id) {
+        return res.status(403).json({ ok: false, error: "FORBIDDEN" });
+      }
+    }
+
+    // 후보/문제 수
+    let itemCount = 0;
+    if (content.mode === "worldcup") {
+      const { count } = await supabaseAdmin
+        .from("worldcup_candidates")
+        .select("*", { count: "exact", head: true })
+        .eq("content_id", contentId);
+      itemCount = count || 0;
+    } else {
+      const { count } = await supabaseAdmin
+        .from("quiz_questions")
+        .select("*", { count: "exact", head: true })
+        .eq("content_id", contentId);
+      itemCount = count || 0;
+    }
+
+    // creator name
+    let creatorName = "";
+    if (content.owner_id) {
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("nickname")
+        .eq("user_id", content.owner_id)
+        .single();
+      creatorName = profile?.nickname || "";
+    }
+
+    return res.json({
+      ok: true,
+      content: {
+        ...content,
+        type: content.mode,
+        item_count: itemCount,
+        creator_name: creatorName
+      }
+    });
+
+  } catch (err) {
+    console.error("GET /content/:id internal:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
 const server = http.createServer(app);
 
 // Socket.IO — Express와 동일한 origin 정책 적용
