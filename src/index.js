@@ -5,6 +5,7 @@ import cors from "cors";
 import { Server } from "socket.io";
 import { createClient } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -58,6 +59,25 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY,
   { auth: { persistSession: false, autoRefreshToken: false } }
 );
+
+// =========================
+// JWKS 기반 JWT 검증 (Supabase access_token)
+// =========================
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const JWKS_URL = `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`;
+const JWT_ISSUER = `${SUPABASE_URL}/auth/v1`;
+const JWT_AUDIENCE = "authenticated";
+
+let jwks = null;
+try {
+  jwks = createRemoteJWKSet(new URL(JWKS_URL));
+  console.log("[AUTH] JWKS 초기화 완료:", JWKS_URL);
+} catch (e) {
+  console.error("[AUTH] JWKS 초기화 실패:", e.message);
+}
+
+console.log("[AUTH] JWT issuer:", JWT_ISSUER);
+console.log("[AUTH] JWT audience:", JWT_AUDIENCE);
 app.get("/health", (req, res) => {
   res.json({ ok: true, ts: Date.now() });
 });
@@ -612,17 +632,51 @@ const io = new Server(server, {
 
 
 
+// =========================
+// JWKS 기반 JWT 검증 함수
+// =========================
+async function verifyJWT(accessToken) {
+  if (!accessToken) {
+    console.log("[AUTH] 토큰 없음");
+    return null;
+  }
+  if (!jwks) {
+    console.error("[AUTH] JWKS가 초기화되지 않음");
+    return null;
+  }
+
+  // 디버그: 토큰 앞 16자만 출력 (보안)
+  const tokenPreview = accessToken.substring(0, 16) + "...";
+  console.log("[AUTH] 토큰 검증 시작:", tokenPreview);
+
+  try {
+    const { payload } = await jwtVerify(accessToken, jwks, {
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE
+    });
+
+    const userId = payload.sub;
+    const email = payload.email || "";
+
+    console.log("[AUTH] 검증 성공 - user_id:", userId, "email:", email);
+
+    // 관리자 체크
+    const isAdmin = (email && process.env.ADMIN_EMAIL
+      && email.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase())
+      || (process.env.ADMIN_USER_ID && userId === process.env.ADMIN_USER_ID);
+
+    return { id: userId, email, isAdmin };
+
+  } catch (e) {
+    // 에러 상세 로그 (토큰 전체는 출력 안 함)
+    console.error("[AUTH] JWT 검증 실패:", e.code || "UNKNOWN", e.message);
+    return null;
+  }
+}
+
+// 기존 verify 함수 (하위 호환용 - 다른 곳에서 사용 중일 수 있음)
 async function verify(accessToken) {
-  if (!accessToken) return null;
-  const { data, error } = await supabase.auth.getUser(accessToken);
-  if (error || !data?.user) return null;
-
-  const email = data.user.email || "";
-  const isAdmin = (email && process.env.ADMIN_EMAIL
-    && email.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase())
-    || (process.env.ADMIN_USER_ID && data.user.id === process.env.ADMIN_USER_ID);
-
-  return { id: data.user.id, email, isAdmin };
+  return verifyJWT(accessToken);
 }
 
 // =========================
@@ -630,19 +684,47 @@ async function verify(accessToken) {
 // =========================
 async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  const user = await verify(token);
-  if (!user) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+
+  // Bearer 토큰 파싱 (trim으로 공백 제거)
+  let token = null;
+  if (authHeader.startsWith("Bearer ")) {
+    token = authHeader.slice(7).trim();
+  }
+
+  if (!token) {
+    console.log("[AUTH] Authorization 헤더 없거나 Bearer 토큰 없음");
+    return res.status(401).json({ ok: false, error: "UNAUTHORIZED", reason: "NO_TOKEN" });
+  }
+
+  const user = await verifyJWT(token);
+  if (!user) {
+    return res.status(401).json({ ok: false, error: "UNAUTHORIZED", reason: "INVALID_TOKEN" });
+  }
+
   req.user = user;
   next();
 }
 
 async function requireAdmin(req, res, next) {
   const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  const user = await verify(token);
-  if (!user) return res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
-  if (!user.isAdmin) return res.status(403).json({ ok: false, error: "FORBIDDEN" });
+
+  let token = null;
+  if (authHeader.startsWith("Bearer ")) {
+    token = authHeader.slice(7).trim();
+  }
+
+  if (!token) {
+    return res.status(401).json({ ok: false, error: "UNAUTHORIZED", reason: "NO_TOKEN" });
+  }
+
+  const user = await verifyJWT(token);
+  if (!user) {
+    return res.status(401).json({ ok: false, error: "UNAUTHORIZED", reason: "INVALID_TOKEN" });
+  }
+  if (!user.isAdmin) {
+    return res.status(403).json({ ok: false, error: "FORBIDDEN" });
+  }
+
   req.user = user;
   next();
 }
