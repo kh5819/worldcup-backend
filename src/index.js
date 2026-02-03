@@ -828,14 +828,104 @@ app.get("/admin/reports", requireAdmin, async (req, res) => {
   }
 });
 
+// 관리자 본인 확인 API
+app.get("/admin/me", requireAdmin, async (req, res) => {
+  return res.json({ ok: true, isAdmin: true, email: req.user.email, userId: req.user.id });
+});
+
+// 관리자 콘텐츠 목록 (필터/검색/페이지네이션/profiles 조인)
 app.get("/admin/contents", requireAdmin, async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin
+    const {
+      type,        // worldcup | quiz | all
+      q,           // 검색어 (제목/태그)
+      sort,        // newest | popular | reports
+      hidden,      // true | false | all
+      reported,    // true (report_count > 0만)
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    const offset = (pageNum - 1) * limitNum;
+
+    // 기본 쿼리 빌드
+    let query = supabaseAdmin
       .from("contents")
-      .select("id, title, mode, visibility, is_hidden, hidden_reason, report_count, owner_id, created_at")
-      .order("created_at", { ascending: false });
-    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
-    return res.json({ ok: true, items: data || [] });
+      .select("id, title, mode, visibility, is_hidden, hidden_reason, report_count, owner_id, play_count, thumbnail_url, description, category, tags, created_at", { count: "exact" });
+
+    // 타입 필터
+    if (type && type !== "all") {
+      query = query.eq("mode", type);
+    }
+
+    // 숨김 필터
+    if (hidden === "true") {
+      query = query.eq("is_hidden", true);
+    } else if (hidden === "false") {
+      query = query.eq("is_hidden", false);
+    }
+
+    // 신고된 콘텐츠만
+    if (reported === "true") {
+      query = query.gt("report_count", 0);
+    }
+
+    // 검색어 (제목 또는 태그)
+    if (q && q.trim()) {
+      const searchTerm = q.trim();
+      query = query.or(`title.ilike.%${searchTerm}%,tags.cs.{${searchTerm}}`);
+    }
+
+    // 정렬
+    if (sort === "popular") {
+      query = query.order("play_count", { ascending: false });
+    } else if (sort === "reports") {
+      query = query.order("report_count", { ascending: false });
+    } else {
+      query = query.order("created_at", { ascending: false });
+    }
+
+    // 페이지네이션
+    query = query.range(offset, offset + limitNum - 1);
+
+    const { data, error, count } = await query;
+    if (error) {
+      console.error("GET /admin/contents query error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    // owner_id로 profiles에서 creator_name 조회
+    const ownerIds = [...new Set((data || []).map(c => c.owner_id).filter(Boolean))];
+    let profilesMap = {};
+    if (ownerIds.length > 0) {
+      const { data: profiles } = await supabaseAdmin
+        .from("profiles")
+        .select("user_id, nickname")
+        .in("user_id", ownerIds);
+      if (profiles) {
+        profiles.forEach(p => { profilesMap[p.user_id] = p.nickname; });
+      }
+    }
+
+    // 응답 데이터에 creator_name 추가
+    const items = (data || []).map(c => ({
+      ...c,
+      type: c.mode,
+      creator_name: profilesMap[c.owner_id] || "(알 수 없음)",
+    }));
+
+    return res.json({
+      ok: true,
+      items,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: count || 0,
+        totalPages: Math.ceil((count || 0) / limitNum),
+      },
+    });
   } catch (err) {
     console.error("GET /admin/contents:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
@@ -862,6 +952,119 @@ app.patch("/admin/contents/:id/hide", requireAdmin, async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     console.error("PATCH /admin/contents/:id/hide:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 관리자 콘텐츠 일반 수정 (title, description, category, tags, visibility, is_hidden, hidden_reason)
+app.patch("/admin/contents/:id", requireAdmin, async (req, res) => {
+  try {
+    const { title, description, category, tags, visibility, is_hidden, hidden_reason } = req.body;
+
+    // 해당 콘텐츠 존재 확인
+    const { data: existing, error: fetchErr } = await supabaseAdmin
+      .from("contents")
+      .select("id, title")
+      .eq("id", req.params.id)
+      .single();
+
+    if (fetchErr || !existing) {
+      return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+    }
+
+    // 업데이트할 필드만 모음
+    const updates = {};
+    if (title !== undefined) updates.title = title;
+    if (description !== undefined) updates.description = description || null;
+    if (category !== undefined) updates.category = category || null;
+    if (tags !== undefined) updates.tags = tags || [];
+    if (visibility !== undefined && ["public", "private"].includes(visibility)) {
+      updates.visibility = visibility;
+    }
+    if (is_hidden !== undefined) updates.is_hidden = !!is_hidden;
+    if (hidden_reason !== undefined) updates.hidden_reason = hidden_reason || null;
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ ok: false, error: "NO_UPDATES" });
+    }
+
+    const { error: updateErr } = await supabaseAdmin
+      .from("contents")
+      .update(updates)
+      .eq("id", req.params.id);
+
+    if (updateErr) {
+      console.error("PATCH /admin/contents/:id update error:", updateErr);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    // 관리자 액션 로그
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: "edit",
+      target_type: "content",
+      target_id: req.params.id,
+      detail: JSON.stringify(updates),
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /admin/contents/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 신고 카운트 초기화
+app.post("/admin/contents/:id/reset-reports", requireAdmin, async (req, res) => {
+  try {
+    const { error } = await supabaseAdmin
+      .from("contents")
+      .update({ report_count: 0 })
+      .eq("id", req.params.id);
+
+    if (error) {
+      console.error("POST /admin/contents/:id/reset-reports error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    // reports 테이블에서도 해당 콘텐츠 신고 기록 삭제 (선택적)
+    await supabaseAdmin
+      .from("reports")
+      .delete()
+      .eq("content_id", req.params.id);
+
+    // 관리자 액션 로그
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: "reset_reports",
+      target_type: "content",
+      target_id: req.params.id,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /admin/contents/:id/reset-reports:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 특정 콘텐츠의 신고 상세 목록
+app.get("/admin/contents/:id/reports", requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("reports")
+      .select("id, reason, detail, reporter_user_id, created_at")
+      .eq("content_id", req.params.id)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("GET /admin/contents/:id/reports error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    return res.json({ ok: true, items: data || [] });
+  } catch (err) {
+    console.error("GET /admin/contents/:id/reports:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
 });
