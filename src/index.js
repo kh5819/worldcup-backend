@@ -357,17 +357,24 @@ app.get("/og/image/:id", async (req, res) => {
 
 // POST /history — 플레이 기록 저장
 app.post("/history", requireAuth, async (req, res) => {
+  console.log("[POST /history] 요청 수신");
+  console.log("[POST /history] user_id:", req.user?.id);
+  console.log("[POST /history] body:", JSON.stringify(req.body));
+
   try {
     const { content_id, content_type, mode, result_json, idempotency_key } = req.body;
 
     // 필수 필드 검증
     if (!content_id || !content_type || !mode) {
+      console.warn("[POST /history] 필수 필드 누락");
       return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
     }
     if (!["worldcup", "quiz"].includes(content_type)) {
+      console.warn("[POST /history] 잘못된 content_type:", content_type);
       return res.status(400).json({ ok: false, error: "INVALID_CONTENT_TYPE" });
     }
     if (!["solo", "multi"].includes(mode)) {
+      console.warn("[POST /history] 잘못된 mode:", mode);
       return res.status(400).json({ ok: false, error: "INVALID_MODE" });
     }
 
@@ -380,11 +387,20 @@ app.post("/history", requireAuth, async (req, res) => {
         .single();
 
       if (existing) {
+        console.log("[POST /history] 중복 요청 (idempotency):", existing.id);
         return res.json({ ok: true, duplicate: true, id: existing.id });
       }
     }
 
     // 기록 저장
+    console.log("[POST /history] INSERT 시도:", {
+      user_id: req.user.id,
+      content_id,
+      content_type,
+      mode,
+      idempotency_key
+    });
+
     const { data, error } = await supabaseAdmin
       .from("play_history")
       .insert({
@@ -399,10 +415,11 @@ app.post("/history", requireAuth, async (req, res) => {
       .single();
 
     if (error) {
-      console.error("POST /history error:", error);
-      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+      console.error("[POST /history] ❌ INSERT 실패:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR", detail: error.message });
     }
 
+    console.log("[POST /history] ✅ INSERT 성공, id:", data.id);
     return res.json({ ok: true, id: data.id });
 
   } catch (err) {
