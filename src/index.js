@@ -915,7 +915,11 @@ function publicRoom(room) {
     players: playersList,
     // ✅ 월드컵 강수/선발방식 옵션
     wcRound: room.wcRound || 0,
-    wcPick: room.wcPick || "random"
+    wcPick: room.wcPick || "random",
+    // ✅ 동률 시 재투표 옵션
+    revoteEnabled: room.revoteEnabled !== false,
+    revoteCount: room.revoteCount || 0,
+    maxRevotes: 2
   };
 }
 
@@ -1108,6 +1112,10 @@ function startRoundTimer(room) {
         room.committed.add(userId);
       }
     }
+    // revoting 상태에서 타이머 만료 시 playing으로 전환 후 doReveal 호출
+    if (room.phase === "revoting") {
+      room.phase = "playing";
+    }
     io.to(room.id).emit("room:state", publicRoom(room));
     doReveal(room);
   }, room.timerSec * 1000);
@@ -1121,7 +1129,8 @@ function buildScores(room) {
 }
 
 function doReveal(room) {
-  if (room.phase !== "playing") return;
+  // playing 또는 revoting 상태에서만 reveal 진행
+  if (room.phase !== "playing" && room.phase !== "revoting") return;
   room.phase = "revealed";
 
   if (room.roundTimer) {
@@ -1145,6 +1154,48 @@ function doReveal(room) {
   if (aCount > bCount) roundWinner = "A";
   else if (bCount > aCount) roundWinner = "B";
 
+  // ✅ 동률 시 재투표 처리
+  const isTie = !roundWinner;
+  if (isTie && room.revoteEnabled && room.revoteCount < 2) {
+    room.revoteCount = (room.revoteCount || 0) + 1;
+    room.phase = "revoting";
+
+    // 플레이어 선택 초기화
+    for (const [, pp] of room.players.entries()) {
+      pp.choice = null;
+    }
+    room.committed.clear();
+
+    // 타이머 재시작 (revotePayload 생성 전에 실행해야 roundEndsAt 값이 설정됨)
+    if (room.timerEnabled) {
+      startRoundTimer(room);
+    }
+
+    const revotePayload = {
+      picks,
+      percent: {
+        A: activePicks.length > 0 ? Math.round((aCount / total) * 100) : 0,
+        B: activePicks.length > 0 ? Math.round((bCount / total) * 100) : 0
+      },
+      revoteCount: room.revoteCount,
+      maxRevotes: 2,
+      match: room.currentMatch,
+      matchCands: {
+        A: { id: room._matchCands.A.id, name: room._matchCands.A.name },
+        B: { id: room._matchCands.B.id, name: room._matchCands.B.name }
+      },
+      timer: room.timerEnabled ? { enabled: true, sec: room.timerSec } : null
+    };
+
+    console.log(`[재투표] room=${room.id} revoteCount=${room.revoteCount}`);
+    io.to(room.id).emit("worldcup:revote", revotePayload);
+    io.to(room.id).emit("room:state", publicRoom(room));
+    return;
+  }
+
+  // 재투표 없이 진행 → revoteCount 초기화
+  room.revoteCount = 0;
+
   if (roundWinner) {
     for (const p of activePicks) {
       if (p.choice === roundWinner) {
@@ -1158,6 +1209,7 @@ function doReveal(room) {
   if (roundWinner) {
     winnerCand = roundWinner === "A" ? matchCands.A : matchCands.B;
   } else {
+    // 재투표 불가 (횟수 초과 또는 비활성화) → 랜덤 진출
     winnerCand = Math.random() < 0.5 ? matchCands.A : matchCands.B;
   }
 
@@ -1193,6 +1245,8 @@ function doReveal(room) {
     roundWinner,
     winningCandidate: winnerCand.name,
     isTie: !roundWinner,
+    // 재투표 초과로 인한 랜덤 진출 여부
+    revoteExhausted: !roundWinner && room.revoteEnabled,
     scores,
     roundIndex: room.roundIndex,
     totalMatches: room.totalMatches,
@@ -1559,6 +1613,9 @@ io.on("connection", (socket) => {
       // ✅ 월드컵 강수/선발방식 옵션
       wcRound: parseInt(payload?.round, 10) || 0,   // 0이면 전체
       wcPick: payload?.pick === "ranked" ? "ranked" : "random",
+      // ✅ 동률 시 재투표 옵션
+      revoteEnabled: payload?.revoteEnabled !== false,  // 기본값 true
+      revoteCount: 0,  // 현재 매치에서 재투표 횟수
     };
     rooms.set(roomId, room);
     inviteCodeMap.set(inviteCode, roomId);
@@ -1734,7 +1791,8 @@ io.on("connection", (socket) => {
   socket.on("worldcup:commit", (payload, cb) => {
     const room = rooms.get(payload?.roomId);
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
-    if (room.phase !== "playing") return cb?.({ ok: false, error: "NOT_PLAYING" });
+    // playing 또는 revoting 상태에서만 투표 가능
+    if (room.phase !== "playing" && room.phase !== "revoting") return cb?.({ ok: false, error: "NOT_PLAYING" });
 
     const choice = payload?.choice;
     if (choice !== "A" && choice !== "B") return cb?.({ ok: false, error: "BAD_CHOICE" });
