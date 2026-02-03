@@ -912,7 +912,10 @@ function publicRoom(room) {
     totalMatches: room.totalMatches || 0,
     currentMatch: room.currentMatch || null,
     content: room.content || null,
-    players: playersList
+    players: playersList,
+    // ✅ 월드컵 강수/선발방식 옵션
+    wcRound: room.wcRound || 0,
+    wcPick: room.wcPick || "random"
   };
 }
 
@@ -946,11 +949,10 @@ async function loadCandidates(contentId, userId, isAdmin) {
   if (rErr || !rows) return { error: "CANDIDATES_LOAD_FAILED" };
   if (rows.length < 2) return { error: "NOT_ENOUGH_CANDIDATES" };
 
-  const clamped = rows.slice(0, 32);
-
+  // ✅ 전체 후보 반환 (강수 선택은 selectCandidatesForRoom에서 처리)
   return {
     content: { id: content.id, title: content.title, visibility: content.visibility, timerEnabled: content.timer_enabled !== false },
-    candidates: clamped.map(c => ({
+    candidates: rows.map(c => ({
       id: c.id,
       name: c.name,
       mediaType: c.media_type,
@@ -959,6 +961,71 @@ async function loadCandidates(contentId, userId, isAdmin) {
       durationSec: c.duration_sec
     }))
   };
+}
+
+// ✅ 월드컵 후보 선발 함수 (랜덤 / 랭킹)
+async function selectCandidatesForRoom(candidates, contentId, round, pick) {
+  const total = candidates.length;
+  const targetCount = round > 0 ? Math.min(round, total) : total;
+
+  console.log(`[selectCandidates] total=${total}, round=${round}, pick=${pick}, target=${targetCount}`);
+
+  // Fisher-Yates 셔플
+  function shuffle(arr) {
+    const result = [...arr];
+    for (let i = result.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [result[i], result[j]] = [result[j], result[i]];
+    }
+    return result;
+  }
+
+  if (pick === "ranked") {
+    // 랭킹 기준 선발 (worldcup_candidate_stats_v 뷰 사용)
+    const { data: stats, error } = await supabaseAdmin
+      .from("worldcup_candidate_stats_v")
+      .select("candidate_id, champion_count, win_rate, games")
+      .eq("content_id", contentId);
+
+    if (error) {
+      console.error("[selectCandidates] 랭킹 조회 실패:", error);
+      // 실패 시 랜덤으로 폴백
+      return shuffle(candidates).slice(0, targetCount);
+    }
+
+    // candidate_id를 키로 하는 Map 생성
+    const statsMap = new Map();
+    (stats || []).forEach(row => {
+      statsMap.set(row.candidate_id, {
+        championCount: row.champion_count || 0,
+        winRate: parseFloat(row.win_rate) || 0,
+        games: row.games || 0
+      });
+    });
+
+    // 정렬: champion_count DESC → win_rate DESC → games DESC → id ASC
+    const sorted = [...candidates].sort((a, b) => {
+      const sa = statsMap.get(a.id) || { championCount: 0, winRate: 0, games: 0 };
+      const sb = statsMap.get(b.id) || { championCount: 0, winRate: 0, games: 0 };
+
+      if (sb.championCount !== sa.championCount) return sb.championCount - sa.championCount;
+      if (sb.winRate !== sa.winRate) return sb.winRate - sa.winRate;
+      if (sb.games !== sa.games) return sb.games - sa.games;
+      return (a.id || "").localeCompare(b.id || "");
+    });
+
+    const selected = sorted.slice(0, targetCount);
+    console.log(`[selectCandidates] 랭킹 선발:`, selected.map(c => c.name).slice(0, 5), "...");
+
+    // 선발된 후보들을 셔플 (매치업 랜덤화)
+    return shuffle(selected);
+  } else {
+    // 랜덤 선발
+    const shuffled = shuffle(candidates);
+    const selected = shuffled.slice(0, targetCount);
+    console.log(`[selectCandidates] 랜덤 선발:`, selected.map(c => c.name).slice(0, 5), "...");
+    return selected;
+  }
 }
 
 function shuffleArray(arr) {
@@ -1489,6 +1556,9 @@ io.on("connection", (socket) => {
       quizShowTimer: null,
       emptyRoomTimer: null,
       alreadyCounted: false,
+      // ✅ 월드컵 강수/선발방식 옵션
+      wcRound: parseInt(payload?.round, 10) || 0,   // 0이면 전체
+      wcPick: payload?.pick === "ranked" ? "ranked" : "random",
     };
     rooms.set(roomId, room);
     inviteCodeMap.set(inviteCode, roomId);
@@ -1621,8 +1691,17 @@ io.on("connection", (socket) => {
         return cb?.({ ok: false, error: loaded.error });
       }
 
+      // ✅ 강수/선발방식에 따른 후보 선발
+      const selectedCandidates = await selectCandidatesForRoom(
+        loaded.candidates,
+        contentId,
+        room.wcRound || 0,
+        room.wcPick || "random"
+      );
+      console.log(`[game:start] 선발된 후보: ${selectedCandidates.length}명 (round=${room.wcRound}, pick=${room.wcPick})`);
+
       room.content = loaded.content;
-      initBracket(room, loaded.candidates);
+      initBracket(room, selectedCandidates);
 
       room.roundIndex = 1;
       room.phase = "playing";
