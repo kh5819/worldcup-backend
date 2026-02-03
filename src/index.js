@@ -63,21 +63,28 @@ const supabaseAdmin = createClient(
 // =========================
 // JWKS 기반 JWT 검증 (Supabase access_token)
 // =========================
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const JWKS_URL = `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`;
-const JWT_ISSUER = `${SUPABASE_URL}/auth/v1`;
-const JWT_AUDIENCE = "authenticated";
+
+// ⚠️ SUPABASE_URL 정규화 (끝 슬래시 제거, 실수로 /auth/v1 붙은 경우 제거)
+const SUPABASE_URL_RAW = process.env.SUPABASE_URL || "";
+const SUPABASE_URL_CLEAN = SUPABASE_URL_RAW
+  .replace(/\/+$/, "")           // 끝 슬래시 제거
+  .replace(/\/auth\/v1\/?$/, ""); // 혹시 /auth/v1 붙어있으면 제거
+
+const JWKS_URL = `${SUPABASE_URL_CLEAN}/auth/v1/.well-known/jwks.json`;
+const JWT_ISSUER = `${SUPABASE_URL_CLEAN}/auth/v1`;
+
+console.log("[AUTH] SUPABASE_URL_RAW:", SUPABASE_URL_RAW);
+console.log("[AUTH] SUPABASE_URL_CLEAN:", SUPABASE_URL_CLEAN);
+console.log("[AUTH] JWKS_URL:", JWKS_URL);
+console.log("[AUTH] JWT_ISSUER:", JWT_ISSUER);
 
 let jwks = null;
 try {
   jwks = createRemoteJWKSet(new URL(JWKS_URL));
-  console.log("[AUTH] JWKS 초기화 완료:", JWKS_URL);
+  console.log("[AUTH] ✅ JWKS 초기화 성공");
 } catch (e) {
-  console.error("[AUTH] JWKS 초기화 실패:", e.message);
+  console.error("[AUTH] ❌ JWKS 초기화 실패:", e.message);
 }
-
-console.log("[AUTH] JWT issuer:", JWT_ISSUER);
-console.log("[AUTH] JWT audience:", JWT_AUDIENCE);
 app.get("/health", (req, res) => {
   res.json({ ok: true, ts: Date.now() });
 });
@@ -635,6 +642,19 @@ const io = new Server(server, {
 // =========================
 // JWKS 기반 JWT 검증 함수
 // =========================
+
+// JWT payload를 디코딩 (검증 없이 - 디버그용)
+function decodeJwtPayload(token) {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
 async function verifyJWT(accessToken) {
   if (!accessToken) {
     console.log("[AUTH] 토큰 없음");
@@ -649,16 +669,26 @@ async function verifyJWT(accessToken) {
   const tokenPreview = accessToken.substring(0, 16) + "...";
   console.log("[AUTH] 토큰 검증 시작:", tokenPreview);
 
+  // 디버그: 토큰의 실제 issuer/audience 확인 (검증 전)
+  const decoded = decodeJwtPayload(accessToken);
+  if (decoded) {
+    console.log("[AUTH] 토큰 iss:", decoded.iss);
+    console.log("[AUTH] 토큰 aud:", decoded.aud);
+    console.log("[AUTH] 기대 iss:", JWT_ISSUER);
+    console.log("[AUTH] iss 일치:", decoded.iss === JWT_ISSUER);
+  }
+
   try {
+    // ⚠️ 1단계: issuer만 검증 (audience 임시 제거하여 원인 분리)
     const { payload } = await jwtVerify(accessToken, jwks, {
-      issuer: JWT_ISSUER,
-      audience: JWT_AUDIENCE
+      issuer: JWT_ISSUER
+      // audience는 일시 제거 - 원인 분리 후 복원 예정
     });
 
     const userId = payload.sub;
     const email = payload.email || "";
 
-    console.log("[AUTH] 검증 성공 - user_id:", userId, "email:", email);
+    console.log("[AUTH] ✅ 검증 성공 - user_id:", userId, "email:", email);
 
     // 관리자 체크
     const isAdmin = (email && process.env.ADMIN_EMAIL
@@ -669,7 +699,10 @@ async function verifyJWT(accessToken) {
 
   } catch (e) {
     // 에러 상세 로그 (토큰 전체는 출력 안 함)
-    console.error("[AUTH] JWT 검증 실패:", e.code || "UNKNOWN", e.message);
+    console.error("[AUTH] ❌ JWT 검증 실패");
+    console.error("[AUTH] error.code:", e.code);
+    console.error("[AUTH] error.message:", e.message);
+    console.error("[AUTH] error.claim:", e.claim); // issuer/audience mismatch 시 어떤 claim인지
     return null;
   }
 }
