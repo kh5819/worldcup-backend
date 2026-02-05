@@ -35,6 +35,7 @@ CREATE POLICY "read plays" ON public.tier_instance_plays
   FOR SELECT USING (true);
 
 -- 3) 원자적 RPC: insert 성공 시에만 play_count +1
+--    ⚠️ RETURNING INTO 패턴 사용 (IF FOUND 대신 — 더 명시적이고 안전)
 CREATE OR REPLACE FUNCTION public.count_tier_play(
   p_instance_id uuid,
   p_template_id uuid
@@ -44,12 +45,15 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
+DECLARE
+  inserted_id uuid;
 BEGIN
   INSERT INTO public.tier_instance_plays(instance_id, template_id, user_id)
   VALUES (p_instance_id, p_template_id, auth.uid())
-  ON CONFLICT (instance_id) DO NOTHING;
+  ON CONFLICT (instance_id) DO NOTHING
+  RETURNING id INTO inserted_id;
 
-  IF FOUND THEN
+  IF inserted_id IS NOT NULL THEN
     UPDATE public.tier_templates
     SET play_count = COALESCE(play_count, 0) + 1
     WHERE id = p_template_id;
@@ -58,6 +62,3 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.count_tier_play(uuid, uuid) TO authenticated;
-
--- (선택) 기존 함수 제거 — 프론트에서 더 이상 사용하지 않음
--- DROP FUNCTION IF EXISTS public.increment_tier_template_play_count(uuid);
