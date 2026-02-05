@@ -1171,6 +1171,146 @@ app.get("/admin/bans", requireAdmin, async (req, res) => {
 });
 
 // =========================
+// 티어메이커 관리자 API
+// =========================
+
+// 티어 템플릿 목록 (관리자)
+app.get("/admin/tier-templates", requireAdmin, async (req, res) => {
+  try {
+    const {
+      q,
+      visibility,   // public | private | all
+      sort,          // newest | popular
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    const offset = (pageNum - 1) * limitNum;
+
+    let query = supabaseAdmin
+      .from("tier_templates")
+      .select("id, title, description, tags, cards, is_public, creator_id, play_count, created_at", { count: "exact" });
+
+    if (visibility === "public") {
+      query = query.eq("is_public", true);
+    } else if (visibility === "private") {
+      query = query.eq("is_public", false);
+    }
+
+    if (q && q.trim()) {
+      query = query.ilike("title", `%${q.trim()}%`);
+    }
+
+    if (sort === "popular") {
+      query = query.order("play_count", { ascending: false });
+    } else {
+      query = query.order("created_at", { ascending: false });
+    }
+
+    query = query.range(offset, offset + limitNum - 1);
+
+    const { data, error, count } = await query;
+    if (error) {
+      console.error("GET /admin/tier-templates query error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    // creator_id → profiles 닉네임 조회
+    const creatorIds = [...new Set((data || []).map(t => t.creator_id).filter(Boolean))];
+    let profilesMap = {};
+    if (creatorIds.length > 0) {
+      const { data: profiles } = await supabaseAdmin
+        .from("profiles")
+        .select("user_id, nickname")
+        .in("user_id", creatorIds);
+      if (profiles) {
+        profiles.forEach(p => { profilesMap[p.user_id] = p.nickname; });
+      }
+    }
+
+    const items = (data || []).map(t => ({
+      ...t,
+      creator_name: profilesMap[t.creator_id] || t.creator_id?.slice(0, 8) || "(알 수 없음)",
+    }));
+
+    return res.json({
+      ok: true,
+      items,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: count || 0,
+        totalPages: Math.ceil((count || 0) / limitNum),
+      },
+    });
+  } catch (err) {
+    console.error("GET /admin/tier-templates:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 티어 템플릿 공개 상태 토글 (관리자)
+app.patch("/admin/tier-templates/:id", requireAdmin, async (req, res) => {
+  try {
+    const { is_public } = req.body;
+    if (typeof is_public !== "boolean") {
+      return res.status(400).json({ ok: false, error: "is_public must be boolean" });
+    }
+
+    const { error } = await supabaseAdmin
+      .from("tier_templates")
+      .update({ is_public })
+      .eq("id", req.params.id);
+
+    if (error) {
+      console.error("PATCH /admin/tier-templates/:id error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: is_public ? "tier_make_public" : "tier_make_private",
+      target_type: "tier_template",
+      target_id: req.params.id,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /admin/tier-templates/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 티어 템플릿 삭제 (관리자) — FK CASCADE로 instances/plays 자동 정리
+app.delete("/admin/tier-templates/:id", requireAdmin, async (req, res) => {
+  try {
+    const { error } = await supabaseAdmin
+      .from("tier_templates")
+      .delete()
+      .eq("id", req.params.id);
+
+    if (error) {
+      console.error("DELETE /admin/tier-templates/:id error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: "delete",
+      target_type: "tier_template",
+      target_id: req.params.id,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/tier-templates/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 내 콘텐츠 API (제작자 수정/삭제)
 // =========================
 
