@@ -2046,10 +2046,10 @@ async function loadCandidates(contentId, userId, isAdmin) {
     candidates: rows.map(c => ({
       id: c.id,
       name: c.name,
-      mediaType: c.media_type,
-      mediaUrl: c.media_url,
-      startSec: c.start_sec,
-      durationSec: c.duration_sec
+      mediaType: c.media_type || "image",
+      mediaUrl: c.media_url || "",
+      startSec: c.start_sec || 0,
+      durationSec: c.duration_sec || 0
     }))
   };
 }
@@ -2157,9 +2157,10 @@ function nextMatch(room) {
   else room._roundLabel = `${bracketSize}강`;
   room.currentMatch = {
     A: candA.name, B: candB.name,
-    mediaA: { type: candA.mediaType, url: candA.mediaUrl, startSec: candA.startSec },
-    mediaB: { type: candB.mediaType, url: candB.mediaUrl, startSec: candB.startSec }
+    mediaA: { type: candA.mediaType || "image", url: candA.mediaUrl || "", startSec: candA.startSec || 0 },
+    mediaB: { type: candB.mediaType || "image", url: candB.mediaUrl || "", startSec: candB.startSec || 0 }
   };
+  console.log(`[nextMatch] A="${candA.name}" mediaUrl=${(candA.mediaUrl || "").slice(0, 60)} | B="${candB.name}" mediaUrl=${(candB.mediaUrl || "").slice(0, 60)}`);
   return room.currentMatch;
 }
 
