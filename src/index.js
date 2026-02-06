@@ -1631,6 +1631,109 @@ app.post("/plays/complete", requireAuth, async (req, res) => {
 });
 
 // =========================
+// 퀴즈 통계 (Quiz Stats)
+// =========================
+
+// POST /quiz/finish — 퀴즈 완주 기록 (attempt + 문항별 결과)
+// 인증 선택적: 로그인 시 user_id 저장, 비로그인도 통계에 반영
+app.post("/quiz/finish", async (req, res) => {
+  try {
+    // 선택적 인증 (실패해도 진행)
+    let userId = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && jwks) {
+      try {
+        const token = authHeader.replace(/^Bearer\s+/i, "");
+        const { payload } = await jwtVerify(token, jwks, { issuer: JWT_ISSUER });
+        userId = payload.sub || null;
+      } catch (_) { /* 비로그인 — 무시 */ }
+    }
+
+    const { quizId, mode, correctCount, totalCount, durationMs, questionResults } = req.body;
+    if (!quizId || totalCount == null || correctCount == null) {
+      return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+    }
+    if (!Array.isArray(questionResults) || questionResults.length === 0) {
+      return res.status(400).json({ ok: false, error: "MISSING_QUESTION_RESULTS" });
+    }
+
+    // 1) quiz_attempts insert
+    const { data: attempt, error: aErr } = await supabaseAdmin
+      .from("quiz_attempts")
+      .insert({
+        quiz_id: quizId,
+        user_id: userId,
+        mode: mode === "multi" ? "multi" : "solo",
+        correct_count: Math.max(0, Number(correctCount) || 0),
+        total_count: Math.max(1, Number(totalCount) || 1),
+        duration_ms: durationMs ? Number(durationMs) : null,
+      })
+      .select("id")
+      .single();
+
+    if (aErr) {
+      console.error("[POST /quiz/finish] quiz_attempts insert error:", aErr);
+      return res.status(500).json({ ok: false, error: "DB_INSERT_FAIL" });
+    }
+
+    // 2) quiz_question_attempts bulk insert
+    const rows = questionResults.map(qr => ({
+      attempt_id: attempt.id,
+      quiz_id: quizId,
+      question_id: qr.questionId,
+      is_correct: !!qr.isCorrect,
+    }));
+
+    const { error: qErr } = await supabaseAdmin
+      .from("quiz_question_attempts")
+      .insert(rows);
+
+    if (qErr) {
+      console.warn("[POST /quiz/finish] quiz_question_attempts insert error:", qErr);
+      // attempt은 이미 저장됨 — 문항 상세만 실패, 응답은 성공 처리
+    }
+
+    console.log(`[POST /quiz/finish] recorded: quizId=${quizId} user=${userId || "anon"} ${correctCount}/${totalCount}`);
+    return res.json({ ok: true, attemptId: attempt.id });
+  } catch (err) {
+    console.error("[POST /quiz/finish] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// GET /quiz/stats/:quizId — 퀴즈 통계 조회 (공개 집계)
+app.get("/quiz/stats/:quizId", async (req, res) => {
+  try {
+    const { quizId } = req.params;
+    if (!quizId) {
+      return res.status(400).json({ ok: false, error: "MISSING_QUIZ_ID" });
+    }
+
+    // RPC로 한 번에 조회 (전체 통계 + 문항별 통계)
+    const { data, error } = await supabaseAdmin.rpc("get_quiz_stats", { p_quiz_id: quizId });
+
+    if (error) {
+      console.error("[GET /quiz/stats] RPC error:", error);
+      // RPC 실패 시 빈 데이터 반환 (테이블이 아직 없을 수도 있으므로)
+      return res.json({
+        ok: true,
+        overall: { attempt_count: 0, avg_accuracy_pct: 0, min_accuracy_pct: 0, max_accuracy_pct: 0, avg_duration_sec: 0 },
+        questions: []
+      });
+    }
+
+    return res.json({
+      ok: true,
+      overall: data?.overall || { attempt_count: 0, avg_accuracy_pct: 0 },
+      questions: data?.questions || []
+    });
+  } catch (err) {
+    console.error("[GET /quiz/stats] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 월드컵 매치/판 기록 헬퍼
 // =========================
 async function recordWorldcupMatch(room, candA, candB, winner, loser, isTie, meta) {
