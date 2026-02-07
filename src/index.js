@@ -1734,6 +1734,110 @@ app.get("/quiz/stats/:quizId", async (req, res) => {
 });
 
 // =========================
+// 콘텐츠 이벤트 로그 (content_events)
+// =========================
+
+const CE_DEDUP_SEC = 600; // 10분 dedup
+
+// POST /events — 이벤트 기록 (play/finish/share)
+// 인증 선택적: 로그인 시 user_id 저장, 비로그인도 기록
+app.post("/events", async (req, res) => {
+  try {
+    // 선택적 인증
+    let userId = null;
+    const authHeader = req.headers.authorization;
+    if (authHeader && jwks) {
+      try {
+        const token = authHeader.replace(/^Bearer\s+/i, "");
+        const { payload } = await jwtVerify(token, jwks, { issuer: JWT_ISSUER });
+        userId = payload.sub || null;
+      } catch (_) { /* 비로그인 */ }
+    }
+
+    const { contentId, contentType, eventType, sessionId, meta } = req.body;
+    if (!contentId || !contentType || !eventType) {
+      return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+    }
+    const validTypes = ["worldcup", "quiz", "tier"];
+    const validEvents = ["play", "finish", "share"];
+    if (!validTypes.includes(contentType) || !validEvents.includes(eventType)) {
+      return res.status(400).json({ ok: false, error: "INVALID_TYPE" });
+    }
+
+    // 10분 dedup (session_id 있을 때만)
+    if (sessionId) {
+      const threshold = new Date(Date.now() - CE_DEDUP_SEC * 1000).toISOString();
+      const { data: recent } = await supabaseAdmin
+        .from("content_events")
+        .select("id")
+        .eq("content_id", contentId)
+        .eq("event_type", eventType)
+        .eq("session_id", sessionId)
+        .gte("created_at", threshold)
+        .limit(1);
+
+      if (recent && recent.length > 0) {
+        return res.json({ ok: true, dedup: true });
+      }
+    }
+
+    const { error } = await supabaseAdmin.from("content_events").insert({
+      content_id: contentId,
+      content_type: contentType,
+      event_type: eventType,
+      session_id: sessionId || null,
+      user_id: userId,
+      meta: meta || {},
+    });
+
+    if (error) {
+      console.error("[POST /events] insert error:", error.message);
+      return res.status(500).json({ ok: false, error: "DB_INSERT_FAIL" });
+    }
+
+    console.log(`[POST /events] ${contentType}/${eventType} cid=${contentId} sid=${sessionId || "none"} uid=${userId || "anon"}`);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[POST /events] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// GET /content-metrics/:contentId — 콘텐츠 이벤트 집계
+app.get("/content-metrics/:contentId", async (req, res) => {
+  try {
+    const { contentId } = req.params;
+    if (!contentId) {
+      return res.status(400).json({ ok: false, error: "MISSING_CONTENT_ID" });
+    }
+
+    // content_metrics_v 뷰에서 조회
+    const { data, error } = await supabaseAdmin
+      .from("content_metrics_v")
+      .select("*")
+      .eq("content_id", contentId)
+      .maybeSingle();
+
+    if (error) {
+      console.error("[GET /content-metrics] view error:", error.message);
+      // 뷰 미생성 시 빈 데이터 반환
+      return res.json({
+        ok: true,
+        metrics: { finishes_total: 0, shares_total: 0, plays_last_7d: 0, plays_total: 0 }
+      });
+    }
+
+    return res.json({
+      ok: true,
+      metrics: data || { finishes_total: 0, shares_total: 0, plays_last_7d: 0, plays_total: 0 }
+    });
+  } catch (err) {
+    console.error("[GET /content-metrics] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 월드컵 매치/판 기록 헬퍼
 // =========================
 async function recordWorldcupMatch(room, candA, candB, winner, loser, isTie, meta) {
