@@ -2041,16 +2041,22 @@ async function loadCandidates(contentId, userId, isAdmin) {
   if (rows.length < 2) return { error: "NOT_ENOUGH_CANDIDATES" };
 
   // ✅ 전체 후보 반환 (강수 선택은 selectCandidatesForRoom에서 처리)
+  const mapped = rows.map(c => ({
+    id: c.id,
+    name: c.name,
+    mediaType: c.media_type || "image",
+    mediaUrl: c.media_url || "",
+    startSec: c.start_sec || 0,
+    durationSec: c.duration_sec || 0
+  }));
+  // ✅ 디버그: 첫 3개 후보의 미디어 정보 출력
+  console.log(`[loadCandidates] contentId=${contentId} total=${mapped.length}`);
+  mapped.slice(0, 3).forEach((c, i) => {
+    console.log(`  [${i}] name="${c.name}" mediaUrl="${(c.mediaUrl || "").slice(0, 80)}" mediaType="${c.mediaType}"`);
+  });
   return {
     content: { id: content.id, title: content.title, visibility: content.visibility, timerEnabled: content.timer_enabled !== false },
-    candidates: rows.map(c => ({
-      id: c.id,
-      name: c.name,
-      mediaType: c.media_type || "image",
-      mediaUrl: c.media_url || "",
-      startSec: c.start_sec || 0,
-      durationSec: c.duration_sec || 0
-    }))
+    candidates: mapped
   };
 }
 
@@ -2156,11 +2162,25 @@ function nextMatch(room) {
   else if (bracketSize <= 4) room._roundLabel = "준결승";
   else room._roundLabel = `${bracketSize}강`;
   room.currentMatch = {
-    A: candA.name, B: candB.name,
+    A: {
+      name: candA.name,
+      media_url: candA.mediaUrl || "",
+      media_type: candA.mediaType || "image",
+      start_sec: candA.startSec || 0
+    },
+    B: {
+      name: candB.name,
+      media_url: candB.mediaUrl || "",
+      media_type: candB.mediaType || "image",
+      start_sec: candB.startSec || 0
+    },
     mediaA: { type: candA.mediaType || "image", url: candA.mediaUrl || "", startSec: candA.startSec || 0 },
     mediaB: { type: candB.mediaType || "image", url: candB.mediaUrl || "", startSec: candB.startSec || 0 }
   };
-  console.log(`[nextMatch] A="${candA.name}" mediaUrl=${(candA.mediaUrl || "").slice(0, 60)} | B="${candB.name}" mediaUrl=${(candB.mediaUrl || "").slice(0, 60)}`);
+  console.log(`[nextMatch] ▶ A.media_url=${(room.currentMatch.A.media_url || "EMPTY").slice(0, 80)}`);
+  console.log(`[nextMatch] ▶ B.media_url=${(room.currentMatch.B.media_url || "EMPTY").slice(0, 80)}`);
+  console.log(`[nextMatch] ▶ mediaA.url=${(room.currentMatch.mediaA.url || "EMPTY").slice(0, 80)}`);
+  console.log(`[nextMatch] ▶ mediaB.url=${(room.currentMatch.mediaB.url || "EMPTY").slice(0, 80)}`);
   return room.currentMatch;
 }
 
@@ -2858,6 +2878,7 @@ io.on("connection", (socket) => {
 
       const timerInfo = { enabled: room.timerEnabled, sec: room.timerSec };
       // ✅ worldcup:round로 통일 (프론트가 이 이벤트를 핸들링함)
+      console.log(`[game:start] EMIT worldcup:round match=`, JSON.stringify(room.currentMatch).slice(0, 300));
       io.to(room.id).emit("worldcup:round", {
         roomId: room.id,
         roundIndex: room.roundIndex,
@@ -2909,9 +2930,16 @@ io.on("connection", (socket) => {
       room.phase = "finished";
       const scores = buildScores(room);
       // ✅ worldcup:finished (프론트가 이 이벤트를 핸들링함)
+      const _champMedia = room.champion ? {
+        type: room.champion.mediaType || "image",
+        url: room.champion.mediaUrl || "",
+        startSec: room.champion.startSec || 0
+      } : null;
+      console.log("[worldcup:finished] champion=", room.champion?.name, "championMedia=", JSON.stringify(_champMedia));
       io.to(room.id).emit("worldcup:finished", {
         roomId: room.id,
         champion: room.champion?.name || room.champion,
+        championMedia: _champMedia,
         scores,
         picksHistory: room.picksHistory
       });
@@ -2936,6 +2964,7 @@ io.on("connection", (socket) => {
     nextMatch(room);
 
     const timerInfo = { enabled: room.timerEnabled, sec: room.timerSec };
+    console.log(`[worldcup:next] EMIT worldcup:round match=`, JSON.stringify(room.currentMatch).slice(0, 300));
     io.to(room.id).emit("worldcup:round", {
       roomId: room.id,
       roundIndex: room.roundIndex,
