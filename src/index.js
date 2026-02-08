@@ -830,6 +830,42 @@ app.post("/reports", requireAuth, async (req, res) => {
 });
 
 // =========================
+// 티어 신고 API
+// =========================
+app.post("/tier-reports", requireAuth, async (req, res) => {
+  try {
+    const { targetType, targetId, reason, detail } = req.body;
+    if (!targetType || !targetId || !reason) {
+      return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+    }
+    if (!["tier_battle", "tier_template"].includes(targetType)) {
+      return res.status(400).json({ ok: false, error: "INVALID_TARGET_TYPE" });
+    }
+
+    const { error } = await supabaseAdmin.from("tier_reports").insert({
+      target_type: targetType,
+      target_id: targetId,
+      reporter_user_id: req.user.id,
+      reason,
+      detail: detail || null,
+    });
+
+    if (error) {
+      if (error.code === "23505") {
+        return res.status(409).json({ ok: false, error: "ALREADY_REPORTED" });
+      }
+      console.error("POST /tier-reports error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /tier-reports internal:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 관리자 API
 // =========================
 app.get("/admin/reports", requireAdmin, async (req, res) => {
@@ -1306,6 +1342,293 @@ app.delete("/admin/tier-templates/:id", requireAdmin, async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /admin/tier-templates/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
+// 티어 신고 관리자 API
+// =========================
+
+// 티어 신고 목록 (그룹화: target_id별)
+app.get("/admin/tier-reports", requireAdmin, async (req, res) => {
+  try {
+    const { targetType, status: filterStatus } = req.query;
+
+    let query = supabaseAdmin
+      .from("tier_reports")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (targetType) query = query.eq("target_type", targetType);
+    if (filterStatus && filterStatus !== "all") query = query.eq("status", filterStatus);
+
+    const { data, error } = await query;
+    if (error) {
+      console.error("GET /admin/tier-reports error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    // target_id별 그룹화 + 요약
+    const groups = {};
+    for (const r of (data || [])) {
+      const key = `${r.target_type}:${r.target_id}`;
+      if (!groups[key]) {
+        groups[key] = {
+          target_type: r.target_type,
+          target_id: r.target_id,
+          report_count: 0,
+          first_reported_at: r.created_at,
+          last_reported_at: r.created_at,
+          statuses: [],
+          reports: [],
+        };
+      }
+      groups[key].report_count++;
+      groups[key].reports.push(r);
+      groups[key].statuses.push(r.status);
+      if (new Date(r.created_at) < new Date(groups[key].first_reported_at)) {
+        groups[key].first_reported_at = r.created_at;
+      }
+      if (new Date(r.created_at) > new Date(groups[key].last_reported_at)) {
+        groups[key].last_reported_at = r.created_at;
+      }
+    }
+
+    // 대상 정보 가져오기
+    const battleIds = [];
+    const templateIds = [];
+    for (const g of Object.values(groups)) {
+      if (g.target_type === "tier_battle") battleIds.push(g.target_id);
+      else if (g.target_type === "tier_template") templateIds.push(g.target_id);
+    }
+
+    // 싸움터 (tier_instances) 미리보기
+    let instancesMap = {};
+    if (battleIds.length > 0) {
+      const { data: instances } = await supabaseAdmin
+        .from("tier_instances")
+        .select("id, template_id, user_id, tiers, placements, is_hidden, deleted_at, created_at, tier_templates(id, title, cards)")
+        .in("id", battleIds);
+      if (instances) {
+        for (const inst of instances) instancesMap[inst.id] = inst;
+      }
+    }
+
+    // 템플릿 미리보기
+    let templatesMap = {};
+    if (templateIds.length > 0) {
+      const { data: templates } = await supabaseAdmin
+        .from("tier_templates")
+        .select("id, title, cards, creator_id, is_public, report_count, created_at")
+        .in("id", templateIds);
+      if (templates) {
+        for (const t of templates) templatesMap[t.id] = t;
+      }
+    }
+
+    // 프로필 닉네임 조회
+    const userIds = new Set();
+    for (const inst of Object.values(instancesMap)) if (inst.user_id) userIds.add(inst.user_id);
+    for (const t of Object.values(templatesMap)) if (t.creator_id) userIds.add(t.creator_id);
+    for (const r of (data || [])) if (r.reporter_user_id) userIds.add(r.reporter_user_id);
+
+    let profilesMap = {};
+    if (userIds.size > 0) {
+      const { data: profiles } = await supabaseAdmin
+        .from("profiles")
+        .select("user_id, nickname")
+        .in("user_id", [...userIds]);
+      if (profiles) {
+        for (const p of profiles) profilesMap[p.user_id] = p.nickname;
+      }
+    }
+
+    // 최종 조합
+    const items = Object.values(groups).map(g => {
+      let preview = null;
+      if (g.target_type === "tier_battle") {
+        const inst = instancesMap[g.target_id];
+        if (inst) {
+          preview = {
+            template_title: inst.tier_templates?.title || "",
+            template_cards: inst.tier_templates?.cards || [],
+            tiers: inst.tiers,
+            placements: inst.placements,
+            creator_name: profilesMap[inst.user_id] || inst.user_id?.slice(0, 8) || "-",
+            is_hidden: inst.is_hidden,
+            deleted_at: inst.deleted_at,
+            created_at: inst.created_at,
+          };
+        }
+      } else if (g.target_type === "tier_template") {
+        const tpl = templatesMap[g.target_id];
+        if (tpl) {
+          preview = {
+            title: tpl.title,
+            cards: tpl.cards,
+            creator_name: profilesMap[tpl.creator_id] || tpl.creator_id?.slice(0, 8) || "-",
+            is_public: tpl.is_public,
+            report_count: tpl.report_count,
+            created_at: tpl.created_at,
+          };
+        }
+      }
+
+      // 개별 신고에 닉네임 추가
+      const reports = g.reports.map(r => ({
+        ...r,
+        reporter_name: profilesMap[r.reporter_user_id] || r.reporter_user_id?.slice(0, 8) || "-",
+      }));
+
+      // 그룹 상태: open이 하나라도 있으면 open
+      const groupStatus = g.statuses.includes("open") ? "open" : (g.statuses.includes("resolved") ? "resolved" : "ignored");
+
+      return { ...g, reports, preview, group_status: groupStatus };
+    });
+
+    // open 먼저, 그 다음 최근 신고순
+    items.sort((a, b) => {
+      if (a.group_status === "open" && b.group_status !== "open") return -1;
+      if (a.group_status !== "open" && b.group_status === "open") return 1;
+      return new Date(b.last_reported_at) - new Date(a.last_reported_at);
+    });
+
+    return res.json({ ok: true, items });
+  } catch (err) {
+    console.error("GET /admin/tier-reports:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 티어 신고 상태 변경 (resolve/ignore)
+app.patch("/admin/tier-reports/:id/status", requireAdmin, async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!["open", "resolved", "ignored"].includes(status)) {
+      return res.status(400).json({ ok: false, error: "INVALID_STATUS" });
+    }
+
+    const { error } = await supabaseAdmin
+      .from("tier_reports")
+      .update({ status })
+      .eq("id", req.params.id);
+
+    if (error) {
+      console.error("PATCH /admin/tier-reports/:id/status error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: `tier_report_${status}`,
+      target_type: "tier_report",
+      target_id: req.params.id,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /admin/tier-reports/:id/status:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 티어 신고 일괄 상태 변경 (target 기준)
+app.patch("/admin/tier-reports/batch-status", requireAdmin, async (req, res) => {
+  try {
+    const { targetType, targetId, status } = req.body;
+    if (!targetType || !targetId || !["open", "resolved", "ignored"].includes(status)) {
+      return res.status(400).json({ ok: false, error: "INVALID_PARAMS" });
+    }
+
+    const { error } = await supabaseAdmin
+      .from("tier_reports")
+      .update({ status })
+      .eq("target_type", targetType)
+      .eq("target_id", targetId);
+
+    if (error) {
+      console.error("PATCH /admin/tier-reports/batch-status error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: `tier_report_batch_${status}`,
+      target_type: targetType,
+      target_id: targetId,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /admin/tier-reports/batch-status:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 싸움터(인스턴스) 숨김/해제
+app.patch("/admin/tier-instances/:id/hide", requireAdmin, async (req, res) => {
+  try {
+    const { is_hidden, hidden_reason } = req.body;
+    if (typeof is_hidden !== "boolean") {
+      return res.status(400).json({ ok: false, error: "is_hidden must be boolean" });
+    }
+
+    const update = { is_hidden };
+    if (is_hidden) {
+      update.hidden_reason = hidden_reason || "관리자 숨김 처리";
+    } else {
+      update.hidden_reason = null;
+    }
+
+    const { error } = await supabaseAdmin
+      .from("tier_instances")
+      .update(update)
+      .eq("id", req.params.id);
+
+    if (error) {
+      console.error("PATCH /admin/tier-instances/:id/hide error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: is_hidden ? "tier_instance_hide" : "tier_instance_unhide",
+      target_type: "tier_instance",
+      target_id: req.params.id,
+      detail: hidden_reason || null,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /admin/tier-instances/:id/hide:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 싸움터(인스턴스) soft delete
+app.delete("/admin/tier-instances/:id", requireAdmin, async (req, res) => {
+  try {
+    const { error } = await supabaseAdmin
+      .from("tier_instances")
+      .update({ deleted_at: new Date().toISOString(), is_hidden: true, hidden_reason: "관리자 삭제" })
+      .eq("id", req.params.id);
+
+    if (error) {
+      console.error("DELETE /admin/tier-instances/:id error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: "tier_instance_delete",
+      target_type: "tier_instance",
+      target_id: req.params.id,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/tier-instances/:id:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
 });
