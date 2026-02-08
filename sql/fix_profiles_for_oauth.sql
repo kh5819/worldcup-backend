@@ -1,55 +1,40 @@
 -- ============================================================
 -- fix_profiles_for_oauth.sql
 -- 목적: Kakao OAuth 로그인 시 profiles upsert 400 에러 완전 제거
+--
+-- profiles 스키마 (확정):
+--   id          uuid  PK  (= auth.users.id)
+--   nickname    text
+--   role        text
+--   created_at  timestamptz
+--   updated_at  timestamptz
+--
+-- ⚠ user_id 컬럼은 존재하지 않음!
+--    프론트에서 onConflict:'id' + payload { id: user.id } 사용
+--
 -- 실행: Supabase Dashboard > SQL Editor 에서 순서대로 실행
 -- ============================================================
 
--- ── STEP 1: 현재 상태 확인 (읽기 전용, 안전) ──────────────
--- 중복 user_id가 있는지 확인
-SELECT user_id, COUNT(*) AS cnt
-FROM profiles
-GROUP BY user_id
-HAVING COUNT(*) > 1;
--- → 결과가 0행이면 중복 없음 (STEP 2 스킵 가능)
--- → 결과가 있으면 반드시 STEP 2 실행
+
+-- ── STEP 1: 현재 스키마 확인 (읽기 전용, 안전) ──────────────
+-- id가 PK인지, user_id 컬럼이 없는지 확인
+SELECT column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_schema = 'public' AND table_name = 'profiles'
+ORDER BY ordinal_position;
+
+-- PK/UNIQUE 제약 조건 확인
+SELECT constraint_name, constraint_type
+FROM information_schema.table_constraints
+WHERE table_schema = 'public' AND table_name = 'profiles';
 
 
--- ── STEP 2: 중복 제거 (중복이 있을 때만 실행) ─────────────
--- created_at 기준 가장 최신 1개만 유지, 나머지 삭제
-DELETE FROM profiles
-WHERE ctid NOT IN (
-  SELECT DISTINCT ON (user_id) ctid
-  FROM profiles
-  ORDER BY user_id, created_at DESC NULLS LAST
-);
--- 실행 후 STEP 1을 다시 실행해서 0행 확인
-
-
--- ── STEP 3: user_id에 UNIQUE 보장 ─────────────────────────
--- profiles.user_id가 PRIMARY KEY면 이미 UNIQUE 포함.
--- 혹시 PK가 아닌 상태라면 UNIQUE 추가.
--- (이미 PK/UNIQUE면 "already exists" 에러 → 무시해도 OK)
-DO $$
-BEGIN
-  -- PK 존재 여부 확인
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.table_constraints
-    WHERE table_name = 'profiles'
-      AND constraint_type IN ('PRIMARY KEY', 'UNIQUE')
-      AND constraint_name LIKE '%user_id%'
-  ) THEN
-    -- UNIQUE constraint 추가
-    ALTER TABLE profiles ADD CONSTRAINT profiles_user_id_unique UNIQUE (user_id);
-    RAISE NOTICE 'profiles_user_id_unique 추가 완료';
-  ELSE
-    RAISE NOTICE 'user_id에 이미 PK/UNIQUE 존재 — 스킵';
-  END IF;
-END $$;
-
-
--- ── STEP 4: RLS 정책 확인/보정 ────────────────────────────
--- 이미 존재하면 에러 → DO 블록으로 안전 처리
+-- ── STEP 2: RLS 활성화 ─────────────────────────────────────
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+
+-- ── STEP 3: RLS 정책 확인/보정 ──────────────────────────────
+-- ⚠ 기존에 user_id = auth.uid() 로 된 정책이 있으면 삭제 후 재생성
 
 -- SELECT: 전체 허용 (닉네임 조회용)
 DO $$
@@ -58,40 +43,50 @@ BEGIN
     SELECT 1 FROM pg_policies WHERE tablename='profiles' AND policyname='profiles_select_all'
   ) THEN
     CREATE POLICY "profiles_select_all" ON profiles FOR SELECT USING (true);
+    RAISE NOTICE 'profiles_select_all 생성 완료';
+  ELSE
+    RAISE NOTICE 'profiles_select_all 이미 존재 — 스킵';
   END IF;
 END $$;
 
--- INSERT: 본인만 (user_id = auth.uid())
+-- INSERT: 본인만 (id = auth.uid())
+-- 기존 user_id 기반 정책이 있을 수 있으므로 삭제 후 재생성
 DO $$
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename='profiles' AND policyname='profiles_insert_own'
-  ) THEN
-    CREATE POLICY "profiles_insert_own" ON profiles FOR INSERT WITH CHECK (user_id = auth.uid());
-  END IF;
+  -- 기존 정책 삭제 시도 (없으면 무시)
+  BEGIN
+    DROP POLICY IF EXISTS "profiles_insert_own" ON profiles;
+  EXCEPTION WHEN OTHERS THEN NULL;
+  END;
+  CREATE POLICY "profiles_insert_own" ON profiles FOR INSERT
+    WITH CHECK (id = auth.uid());
+  RAISE NOTICE 'profiles_insert_own 생성 완료 (id = auth.uid())';
 END $$;
 
--- UPDATE: 본인만
+-- UPDATE: 본인만 (id = auth.uid())
 DO $$
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename='profiles' AND policyname='profiles_update_own'
-  ) THEN
-    CREATE POLICY "profiles_update_own" ON profiles FOR UPDATE USING (user_id = auth.uid());
-  END IF;
+  BEGIN
+    DROP POLICY IF EXISTS "profiles_update_own" ON profiles;
+  EXCEPTION WHEN OTHERS THEN NULL;
+  END;
+  CREATE POLICY "profiles_update_own" ON profiles FOR UPDATE
+    USING (id = auth.uid());
+  RAISE NOTICE 'profiles_update_own 생성 완료 (id = auth.uid())';
 END $$;
 
 
--- ── STEP 5: 검증 ──────────────────────────────────────────
--- PK/UNIQUE 확인
-SELECT constraint_name, constraint_type
-FROM information_schema.table_constraints
-WHERE table_name = 'profiles';
+-- ── STEP 4: 검증 ───────────────────────────────────────────
+-- 컬럼 목록 (user_id가 없어야 함)
+SELECT column_name FROM information_schema.columns
+WHERE table_schema='public' AND table_name='profiles';
 
--- RLS 정책 확인
+-- RLS 정책 (id = auth.uid() 확인)
 SELECT policyname, cmd, qual, with_check
 FROM pg_policies
 WHERE tablename = 'profiles';
 
--- 중복 재확인 (0행이어야 함)
-SELECT user_id, COUNT(*) FROM profiles GROUP BY user_id HAVING COUNT(*) > 1;
+-- PK 확인 (id가 PK)
+SELECT constraint_name, constraint_type
+FROM information_schema.table_constraints
+WHERE table_schema='public' AND table_name = 'profiles';
