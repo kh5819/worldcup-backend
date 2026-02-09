@@ -2563,6 +2563,9 @@ function publicRoom(room) {
     // ✅ 월드컵 강수/선발방식 옵션
     wcRound: room.wcRound || 0,
     wcPick: room.wcPick || "random",
+    // ✅ 타이머 설정 (로비 배지 + 클라이언트 동기화용)
+    timerEnabled: !!room.timerEnabled,
+    timerSec: room.timerSec || 45,
     // ✅ 동률 시 재투표 옵션
     revoteEnabled: room.revoteEnabled !== false,
     revoteCount: room.revoteCount || 0,
@@ -3400,8 +3403,7 @@ io.on("connection", (socket) => {
 
         room.content = loaded.content;
         room.contentId = contentId;
-        const contentTimerEnabled = loaded.content.timerEnabled !== false;
-        room.timerEnabled = contentTimerEnabled;
+        // ✅ 타이머: 호스트가 room:create에서 설정한 값 유지 (월드컵과 동일 — DB 값으로 덮어쓰지 않음)
 
         // ✅ 문제 수 제한: questionCount > 0이면 랜덤 N문제 추출
         let quizQuestions = loaded.questions;
@@ -3573,12 +3575,9 @@ io.on("connection", (socket) => {
       const loaded = await loadQuizQuestions(quizId, me.id, me.isAdmin);
       if (loaded.error) return cb?.({ ok: false, error: loaded.error });
 
-      // 타이머 설정: 콘텐츠 DB 설정 우선, payload 오버라이드 허용
-      const contentTimerEnabled = loaded.content.timerEnabled !== false;
+      // ✅ 타이머: 호스트가 room:create에서 설정한 값 유지 (payload 오버라이드만 허용)
       if (payload?.timerEnabled !== undefined) {
         room.timerEnabled = !!payload.timerEnabled;
-      } else {
-        room.timerEnabled = contentTimerEnabled;
       }
       if (payload?.timerSec) room.timerSec = Math.min(180, Math.max(10, Number(payload.timerSec)));
 
