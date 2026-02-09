@@ -3281,6 +3281,8 @@ io.on("connection", (socket) => {
       // ✅ 월드컵 강수/선발방식 옵션
       wcRound: parseInt(payload?.round, 10) || 0,   // 0이면 전체
       wcPick: payload?.pick === "ranked" ? "ranked" : "random",
+      // ✅ 퀴즈 문제 수 옵션
+      questionCount: parseInt(payload?.questionCount, 10) || 0, // 0이면 전체
       // ✅ 동률 시 재투표 옵션
       revoteEnabled: payload?.revoteEnabled !== false,  // 기본값 true
       revoteCount: 0,  // 현재 매치에서 재투표 횟수
@@ -3400,11 +3402,24 @@ io.on("connection", (socket) => {
         room.contentId = contentId;
         const contentTimerEnabled = loaded.content.timerEnabled !== false;
         room.timerEnabled = contentTimerEnabled;
-        initQuizState(room, loaded.questions);
 
-        console.log(`[game:start] quiz started — questions=${loaded.questions.length} → quiz:question broadcast`);
+        // ✅ 문제 수 제한: questionCount > 0이면 랜덤 N문제 추출
+        let quizQuestions = loaded.questions;
+        if (room.questionCount > 0 && room.questionCount < quizQuestions.length) {
+          // Fisher-Yates shuffle 후 앞에서 N개 slice
+          const shuffled = quizQuestions.slice();
+          for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+          }
+          quizQuestions = shuffled.slice(0, room.questionCount);
+          console.log(`[game:start] quiz question limit: ${room.questionCount}/${loaded.questions.length} → ${quizQuestions.length} selected`);
+        }
+        initQuizState(room, quizQuestions);
+
+        console.log(`[game:start] quiz started — questions=${quizQuestions.length} → quiz:question broadcast`);
         advanceQuizQuestion(room);
-        return cb?.({ ok: true, totalQuestions: loaded.questions.length });
+        return cb?.({ ok: true, totalQuestions: quizQuestions.length });
       }
 
       // ── 월드컵 모드 ──
@@ -3569,12 +3584,24 @@ io.on("connection", (socket) => {
 
       room.content = loaded.content;
       room.contentId = quizId;
-      initQuizState(room, loaded.questions);
 
-      console.log(`퀴즈 시작: 방=${room.id}, 문제=${loaded.questions.length}개`);
+      // ✅ 문제 수 제한: questionCount > 0이면 랜덤 N문제 추출
+      let quizQs = loaded.questions;
+      if (room.questionCount > 0 && room.questionCount < quizQs.length) {
+        const shuffled = quizQs.slice();
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        quizQs = shuffled.slice(0, room.questionCount);
+        console.log(`[quiz:start] question limit: ${room.questionCount}/${loaded.questions.length} → ${quizQs.length} selected`);
+      }
+      initQuizState(room, quizQs);
+
+      console.log(`퀴즈 시작: 방=${room.id}, 문제=${quizQs.length}개`);
 
       advanceQuizQuestion(room);
-      cb?.({ ok: true, totalQuestions: loaded.questions.length });
+      cb?.({ ok: true, totalQuestions: quizQs.length });
     } catch (err) {
       console.error("quiz:start 에러:", err);
       cb?.({ ok: false, error: "INTERNAL_ERROR" });
