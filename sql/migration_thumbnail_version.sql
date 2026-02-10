@@ -103,6 +103,7 @@ CREATE VIEW public_contents_list AS
     c.description,
     c.thumbnail_url,
     c.thumbnail_version,
+    c.updated_at,
     c.category,
     c.tags,
     c.play_count,
