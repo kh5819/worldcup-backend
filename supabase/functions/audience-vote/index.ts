@@ -98,8 +98,9 @@ async function handleCurrent(
   ]);
 
   const enabled = pollRes.data?.enabled ?? false;
-  // 클라이언트가 보낸 round 우선, 없으면 DB state
-  const round_key = queryRound || stateRes.data?.round_key || null;
+  // ★ 서버 state가 항상 authoritative — 클라이언트 round는 집계 조회용 힌트
+  const server_round_key = stateRes.data?.round_key || null;
+  const round_key = server_round_key || queryRound || null;
 
   // Aggregate votes for current round
   let left_votes = 0,
@@ -229,15 +230,24 @@ async function handleHostRound(
   body: Record<string, unknown>,
   origin?: string | null
 ) {
-  const { room_code, round_key, timer_enabled, timer_sec } = body;
+  const { room_code, round_key, timer_enabled, timer_sec, vote_duration_sec } = body;
   if (!room_code || !round_key) {
     return err("room_code and round_key required", 400, origin);
   }
 
-  const effectiveSec = timer_enabled
-    ? Math.max(5, Math.min(300, Number(timer_sec) || 45))
+  const rawSec = Number(timer_sec || vote_duration_sec) || 45;
+  const effectiveSec = timer_enabled !== false
+    ? Math.max(5, Math.min(300, rawSec))
     : 12;
   const endsAt = new Date(Date.now() + effectiveSec * 1000).toISOString();
+
+  // ★ audience_polls도 enabled=true로 upsert (라운드 설정 = 투표 활성화)
+  await sb
+    .from("audience_polls")
+    .upsert(
+      { room_code, enabled: true, updated_at: new Date().toISOString() },
+      { onConflict: "room_code" }
+    );
 
   const { error } = await sb.from("audience_room_state").upsert(
     {
