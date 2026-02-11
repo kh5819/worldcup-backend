@@ -4,17 +4,17 @@
 //
 // 엔드포인트:
 //   GET  /audience-vote/current       — 현재 상태 + 집계 (auto-init)
-//   POST /audience-vote/vote          — 투표 저장
-//   POST /audience-vote/host/enabled  — ON/OFF (호스트 전용, auth 필요)
-//   POST /audience-vote/host/round    — 라운드 설정 (호스트 전용, auth 필요)
+//   POST /audience-vote/cast          — 투표 저장
+//   POST /audience-vote/host/enabled  — ON/OFF
+//   POST /audience-vote/host/round    — 라운드 설정
 //
 // ⚠️  배포 체크리스트:
 //   1. Supabase Dashboard → Edge Functions → audience-vote → Settings
 //      "Verify JWT" 토글을 반드시 OFF 로 설정할 것!
 //      ON이면 apikey+anon Bearer만으로는 401이 남.
 //      시청자(audience.js)는 로그인 세션이 없으므로 Verify JWT=OFF 필수.
-//   2. 인증이 필요한 host/* 엔드포인트는 이 함수 내부에서
-//      Bearer token → supabase.auth.getUser()로 직접 검증한다.
+//   2. host/* 엔드포인트는 auth 없이 동작 (Verify JWT OFF).
+//      service_role로 DB 직접 접근하므로 별도 인증 불필요.
 //   3. 배포 명령:
 //      supabase functions deploy audience-vote --no-verify-jwt \
 //        --project-ref irqhgsusfzvytpgirwdo
@@ -54,23 +54,6 @@ function err(msg: string, status = 400, origin?: string | null) {
   return json({ ok: false, error: msg }, status, origin);
 }
 
-// ---- Auth helper (Bearer token → user) ----
-async function getAuthUser(req: Request): Promise<{ id: string } | null> {
-  const auth = req.headers.get("Authorization");
-  if (!auth?.startsWith("Bearer ")) return null;
-  const token = auth.slice(7);
-  // Create a per-request client with the user's token to verify
-  const userClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    global: { headers: { Authorization: `Bearer ${token}` } },
-  });
-  const {
-    data: { user },
-    error,
-  } = await userClient.auth.getUser(token);
-  if (error || !user) return null;
-  return { id: user.id };
-}
-
 // ---- Auto-init: ensure rows exist for room_code ----
 async function ensureRoom(room_code: string) {
   // audience_polls
@@ -84,8 +67,9 @@ async function ensureRoom(room_code: string) {
 }
 
 // ============================================================
-// GET /current?room=XXXXXX
+// GET /current?room=XXXXXX&round=...
 // 통합 응답: enabled + round state + 집계 + server time
+// round 쿼리가 있으면 해당 라운드 집계, 없으면 DB state의 round_key 사용
 // ============================================================
 async function handleCurrent(
   params: URLSearchParams,
@@ -93,6 +77,8 @@ async function handleCurrent(
 ) {
   const room_code = params.get("room") || params.get("room_code");
   if (!room_code) return err("room required", 400, origin);
+
+  const queryRound = params.get("round") || null;
 
   // Auto-init if missing
   await ensureRoom(room_code);
@@ -112,7 +98,8 @@ async function handleCurrent(
   ]);
 
   const enabled = pollRes.data?.enabled ?? false;
-  const round_key = stateRes.data?.round_key ?? null;
+  // 클라이언트가 보낸 round 우선, 없으면 DB state
+  const round_key = queryRound || stateRes.data?.round_key || null;
 
   // Aggregate votes for current round
   let left_votes = 0,
@@ -152,10 +139,10 @@ async function handleCurrent(
 }
 
 // ============================================================
-// POST /vote
+// POST /cast
 // body: { room_code, round_key, choice (1|2), device_key }
 // ============================================================
-async function handleVote(
+async function handleCast(
   body: Record<string, unknown>,
   origin?: string | null
 ) {
@@ -209,16 +196,11 @@ async function handleVote(
 // ============================================================
 // POST /host/enabled
 // body: { room_code, enabled }
-// Auth required (Bearer token)
 // ============================================================
 async function handleHostEnabled(
-  req: Request,
   body: Record<string, unknown>,
   origin?: string | null
 ) {
-  const user = await getAuthUser(req);
-  if (!user) return err("auth required", 401, origin);
-
   const { room_code, enabled } = body;
   if (!room_code) return err("room_code required", 400, origin);
 
@@ -242,16 +224,11 @@ async function handleHostEnabled(
 // ============================================================
 // POST /host/round
 // body: { room_code, round_key, timer_enabled, timer_sec }
-// Auth required (Bearer token)
 // ============================================================
 async function handleHostRound(
-  req: Request,
   body: Record<string, unknown>,
   origin?: string | null
 ) {
-  const user = await getAuthUser(req);
-  if (!user) return err("auth required", 401, origin);
-
   const { room_code, round_key, timer_enabled, timer_sec } = body;
   if (!room_code || !round_key) {
     return err("room_code and round_key required", 400, origin);
@@ -302,13 +279,13 @@ Deno.serve(async (req) => {
   }
 
   const url = new URL(req.url);
-  // Path: /audience-vote/vote, /audience-vote/host/round, etc.
+  // Path: /audience-vote/cast, /audience-vote/host/round, etc.
   const segments = url.pathname.split("/").filter(Boolean);
   // segments example: ["audience-vote", "host", "round"]
   // action = everything after "audience-vote"
   const fnIndex = segments.indexOf("audience-vote");
   const actionParts = fnIndex >= 0 ? segments.slice(fnIndex + 1) : [];
-  const action = actionParts.join("/"); // "vote", "current", "host/enabled", "host/round"
+  const action = actionParts.join("/"); // "cast", "current", "host/enabled", "host/round"
 
   try {
     if (req.method === "GET") {
@@ -324,12 +301,12 @@ Deno.serve(async (req) => {
       const body = await req.json().catch(() => ({}));
 
       switch (action) {
-        case "vote":
-          return await handleVote(body, origin);
+        case "cast":
+          return await handleCast(body, origin);
         case "host/enabled":
-          return await handleHostEnabled(req, body, origin);
+          return await handleHostEnabled(body, origin);
         case "host/round":
-          return await handleHostRound(req, body, origin);
+          return await handleHostRound(body, origin);
         default:
           return err("unknown action: " + action, 404, origin);
       }
