@@ -7,6 +7,17 @@
 //   POST /audience-vote/vote          — 투표 저장
 //   POST /audience-vote/host/enabled  — ON/OFF (호스트 전용, auth 필요)
 //   POST /audience-vote/host/round    — 라운드 설정 (호스트 전용, auth 필요)
+//
+// ⚠️  배포 체크리스트:
+//   1. Supabase Dashboard → Edge Functions → audience-vote → Settings
+//      "Verify JWT" 토글을 반드시 OFF 로 설정할 것!
+//      ON이면 apikey+anon Bearer만으로는 401이 남.
+//      시청자(audience.js)는 로그인 세션이 없으므로 Verify JWT=OFF 필수.
+//   2. 인증이 필요한 host/* 엔드포인트는 이 함수 내부에서
+//      Bearer token → supabase.auth.getUser()로 직접 검증한다.
+//   3. 배포 명령:
+//      supabase functions deploy audience-vote --no-verify-jwt \
+//        --project-ref irqhgsusfzvytpgirwdo
 // ============================================================
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
