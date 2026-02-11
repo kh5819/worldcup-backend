@@ -458,7 +458,8 @@ app.get("/history", requireAuth, async (req, res) => {
           title,
           mode,
           thumbnail_url,
-          play_count
+          play_count,
+          updated_at
         )
       `)
       .eq("user_id", req.user.id)
@@ -489,6 +490,7 @@ app.get("/history", requireAuth, async (req, res) => {
       // 콘텐츠 메타
       content_title: h.contents?.title || "삭제된 콘텐츠",
       thumbnail_url: h.contents?.thumbnail_url || null,
+      updated_at: h.contents?.updated_at || null,
       content_play_count: h.contents?.play_count || 0
     }));
 
@@ -907,7 +909,7 @@ app.get("/admin/contents", requireAdmin, async (req, res) => {
     // 기본 쿼리 빌드
     let query = supabaseAdmin
       .from("contents")
-      .select("id, title, mode, visibility, is_hidden, hidden_reason, report_count, owner_id, play_count, thumbnail_url, description, category, tags, created_at", { count: "exact" });
+      .select("id, title, mode, visibility, is_hidden, hidden_reason, report_count, owner_id, play_count, thumbnail_url, description, category, tags, created_at, updated_at", { count: "exact" });
 
     // 타입 필터
     if (type && type !== "all") {
@@ -1229,7 +1231,7 @@ app.get("/admin/tier-templates", requireAdmin, async (req, res) => {
 
     let query = supabaseAdmin
       .from("tier_templates")
-      .select("id, title, description, tags, cards, is_public, creator_id, play_count, report_count, is_hidden, hidden_reason, deleted_at, created_at", { count: "exact" });
+      .select("id, title, description, tags, cards, is_public, creator_id, play_count, report_count, is_hidden, hidden_reason, deleted_at, created_at, updated_at", { count: "exact" });
 
     if (visibility === "public") {
       query = query.eq("is_public", true);
@@ -1775,7 +1777,7 @@ app.get("/my/contents", requireAuth, async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
       .from("contents")
-      .select("id, title, mode, visibility, play_count, timer_enabled, category, tags, thumbnail_url, description, created_at")
+      .select("id, title, mode, visibility, play_count, timer_enabled, category, tags, thumbnail_url, description, created_at, updated_at")
       .eq("owner_id", req.user.id)
       .order("created_at", { ascending: false });
     if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
