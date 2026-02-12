@@ -2,6 +2,8 @@ import "dotenv/config";
 import http from "http";
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import { Server } from "socket.io";
 import { createClient } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
@@ -11,6 +13,22 @@ const app = express();
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
+// ── Security headers (helmet) ──
+app.use(helmet({
+  contentSecurityPolicy: false,   // CSP는 프론트가 CDN 스크립트 다수 사용하므로 비활성
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" }, // OG 이미지 프록시 허용
+}));
+
+// ── REST Rate limiting (IP 기준) ──
+const restLimiter = rateLimit({
+  windowMs: 60 * 1000,  // 1분
+  max: 60,              // IP당 60 req/min
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "RATE_LIMITED" },
+});
+app.use(restLimiter);
 
 // ── CORS 허용 Origin 목록 ──
 // 환경변수 FRONTEND_ORIGINS (쉼표 구분)로 관리, 하드코딩 폴백 포함
@@ -2352,6 +2370,7 @@ async function recordWorldcupRun(room, championCand) {
 // =========================
 const rooms = new Map();
 const GRACE_MS = 15000;
+const MAX_PLAYERS = 4;
 const userRoomMap = new Map();
 const inviteCodeMap = new Map(); // inviteCode → roomId
 
@@ -3227,6 +3246,58 @@ io.use(async (socket, next) => {
 });
 
 // =========================
+// Socket.IO 이벤트 rate-limit (IP 기준, 슬라이딩 윈도)
+// =========================
+const SOCKET_RATE_WINDOW = 10_000; // 10초
+const SOCKET_RATE_MAX = 30;        // 10초당 30 이벤트
+const _socketHits = new Map();     // ip → { ts[], blocked }
+
+function socketRateLimited(socket) {
+  const ip = socket.handshake.address;
+  let bucket = _socketHits.get(ip);
+  if (!bucket) { bucket = { ts: [], blocked: false }; _socketHits.set(ip, bucket); }
+  const now = Date.now();
+  bucket.ts = bucket.ts.filter(t => now - t < SOCKET_RATE_WINDOW);
+  bucket.ts.push(now);
+  if (bucket.ts.length > SOCKET_RATE_MAX) {
+    if (!bucket.blocked) {
+      bucket.blocked = true;
+      console.warn(`[RATE] socket rate-limited ip=${ip} userId=${socket.user?.id}`);
+    }
+    return true;
+  }
+  bucket.blocked = false;
+  return false;
+}
+// 주기적 정리 (5분마다 오래된 버킷 삭제)
+setInterval(() => {
+  const cutoff = Date.now() - SOCKET_RATE_WINDOW * 2;
+  for (const [ip, b] of _socketHits) {
+    if (!b.ts.length || b.ts[b.ts.length - 1] < cutoff) _socketHits.delete(ip);
+  }
+}, 300_000);
+
+// =========================
+// safeOn: socket.on 래퍼 — 예외 방어 + rate-limit
+// =========================
+function safeOn(socket, event, handler) {
+  socket.on(event, async (...args) => {
+    // rate-limit 체크 (ping/disconnect 제외)
+    if (event !== "disconnect" && event !== "room:ping" && socketRateLimited(socket)) {
+      const cb = typeof args[args.length - 1] === "function" ? args[args.length - 1] : null;
+      return cb?.({ ok: false, error: "RATE_LIMITED" });
+    }
+    try {
+      await handler(...args);
+    } catch (err) {
+      console.error(`[SOCKET] unhandled error in "${event}":`, err);
+      const cb = typeof args[args.length - 1] === "function" ? args[args.length - 1] : null;
+      cb?.({ ok: false, error: "INTERNAL_ERROR" });
+    }
+  });
+}
+
+// =========================
 // Socket 연결 핸들러
 // =========================
 
@@ -3260,7 +3331,7 @@ io.on("connection", (socket) => {
   // 방 생성/입장/나가기 (mode 필드 추가)
   // =========================
 
-  socket.on("room:create", async (payload, cb) => {
+  safeOn(socket, "room:create", async (payload, cb) => {
     // ban 체크
     try {
       const { data: banRows } = await supabaseAdmin
@@ -3318,7 +3389,7 @@ io.on("connection", (socket) => {
     cb?.({ ok: true, roomId, inviteCode });
   });
 
-  socket.on("room:join", (payload, cb) => {
+  safeOn(socket, "room:join", (payload, cb) => {
     let roomId = payload?.roomId;
     // 초대코드(6~7자리 숫자) 또는 UUID가 아닌 입력 → inviteCodeMap에서 변환
     if (roomId && !rooms.has(roomId)) {
@@ -3342,6 +3413,10 @@ io.on("connection", (socket) => {
       const newNick = payload?.nickname || payload?.name;
       if (newNick && newNick.trim()) existing.name = newNick.trim().slice(0, 20);
     } else {
+      // ── MAX_PLAYERS 초과 시 입장 거절 ──
+      if (room.players.size >= MAX_PLAYERS) {
+        return cb?.({ ok: false, error: "ROOM_FULL" });
+      }
       // 신규 입장
       room.players.set(me.id, { name: pickNick(socket, payload) });
     }
@@ -3357,7 +3432,7 @@ io.on("connection", (socket) => {
     cb?.({ ok: true, roomId, inviteCode: room.inviteCode || null });
   });
 
-  socket.on("room:leave", (payload, cb) => {
+  safeOn(socket, "room:leave", (payload, cb) => {
     const roomId = payload?.roomId;
     const room = rooms.get(roomId);
     if (room) {
@@ -3389,13 +3464,13 @@ io.on("connection", (socket) => {
     cb?.({ ok: true });
   });
 
-  socket.on("room:ping", () => {});
+  safeOn(socket, "room:ping", () => {});
 
   // =========================
   // 월드컵 이벤트 (기존 그대로)
   // =========================
 
-  socket.on("game:start", async (payload, cb) => {
+  safeOn(socket, "game:start", async (payload, cb) => {
     try {
       const room = rooms.get(payload?.roomId);
       if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
@@ -3489,7 +3564,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("worldcup:commit", (payload, cb) => {
+  safeOn(socket, "worldcup:commit", (payload, cb) => {
     const room = rooms.get(payload?.roomId);
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
     // playing 또는 revoting 상태에서만 투표 가능
@@ -3512,7 +3587,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("worldcup:next", (payload, cb) => {
+  safeOn(socket, "worldcup:next", (payload, cb) => {
     const room = rooms.get(payload?.roomId);
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
     if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
@@ -3575,7 +3650,7 @@ io.on("connection", (socket) => {
   // =========================
 
   // ── quiz:start (호스트) ──
-  socket.on("quiz:start", async (payload, cb) => {
+  safeOn(socket, "quiz:start", async (payload, cb) => {
     try {
       const room = rooms.get(payload?.roomId);
       if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
@@ -3623,7 +3698,7 @@ io.on("connection", (socket) => {
   });
 
   // ── quiz:ready (각 유저 — 유튜브 재생 준비 완료) ──
-  socket.on("quiz:ready", (payload, cb) => {
+  safeOn(socket, "quiz:ready", (payload, cb) => {
     const room = rooms.get(payload?.roomId);
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
     if (!room.quiz || room.quiz.phase !== "show") return cb?.({ ok: false, error: "NOT_SHOW_PHASE" });
@@ -3648,7 +3723,7 @@ io.on("connection", (socket) => {
   });
 
   // ── quiz:submit (답변 제출) ──
-  socket.on("quiz:submit", (payload, cb) => {
+  safeOn(socket, "quiz:submit", (payload, cb) => {
     const room = rooms.get(payload?.roomId);
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
     if (!room.quiz || room.quiz.phase !== "answering") return cb?.({ ok: false, error: "NOT_ANSWERING" });
@@ -3683,7 +3758,7 @@ io.on("connection", (socket) => {
   });
 
   // ── quiz:next (호스트: reveal→scoreboard→next/finished) ──
-  socket.on("quiz:next", (payload, cb) => {
+  safeOn(socket, "quiz:next", (payload, cb) => {
     const room = rooms.get(payload?.roomId);
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
     if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
@@ -3738,7 +3813,7 @@ io.on("connection", (socket) => {
   });
 
   // ── quiz:playClicked (각자 재생 버튼 클릭 기록 — 선택) ──
-  socket.on("quiz:playClicked", (payload) => {
+  safeOn(socket, "quiz:playClicked", (payload) => {
     // 분석/로그용 — 별도 로직 없음
     const room = rooms.get(payload?.roomId);
     if (room) {
@@ -3750,7 +3825,7 @@ io.on("connection", (socket) => {
   // 재접속 유예 (disconnect)
   // =========================
 
-  socket.on("disconnect", async () => {
+  safeOn(socket, "disconnect", async () => {
     const roomId = userRoomMap.get(me.id);
     if (!roomId) return;
     const room = rooms.get(roomId);
