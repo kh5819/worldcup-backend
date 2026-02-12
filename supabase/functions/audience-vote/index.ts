@@ -108,7 +108,7 @@ async function handleCurrent(
     return err("query failed", 500, origin);
   }
 
-  const payload = {
+  const payload: Record<string, unknown> = {
     ok: true as const,
     enabled: row?.enabled ?? false,
     round_key: row?.round_key ?? null,
@@ -118,6 +118,26 @@ async function handleCurrent(
     right_votes: row?.right_votes ?? 0,
     total_votes: row?.total_votes ?? 0,
   };
+
+  // ---- ★ stale room 감지: enabled=true인데 room_state.updated_at이 60초 이상 지나면
+  //        호스트가 비정상 종료(새로고침/탭닫기)한 것으로 간주 → 응답만 enabled:false로 내림
+  //        (DB는 건드리지 않음 — 호스트가 복귀할 수 있으므로) ----
+  const STALE_THRESHOLD_MS = 60_000;
+  if (payload.enabled) {
+    const { data: roomState } = await sb
+      .from("audience_room_state")
+      .select("updated_at")
+      .eq("room_code", room_code)
+      .maybeSingle();
+
+    if (roomState?.updated_at) {
+      const age = Date.now() - new Date(roomState.updated_at).getTime();
+      if (age > STALE_THRESHOLD_MS) {
+        console.log("/current stale room: %s age=%dms → enabled:false override", room_code, age);
+        payload.enabled = false;
+      }
+    }
+  }
 
   // ---- 캐시 저장 ----
   _currentCache.set(room_code, { ts: now, payload });
