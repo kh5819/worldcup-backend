@@ -1,10 +1,10 @@
 // ============================================================
 // Supabase Edge Function: audience-vote
-// 시청자 투표 모드 — 월드컵 멀티 전용
+// 시청자 투표 모드 — 월드컵 + 퀴즈 공용
 //
 // 엔드포인트:
 //   GET  /audience-vote/current       — 현재 상태 + 집계 (auto-init)
-//   POST /audience-vote/cast          — 투표 저장
+//   POST /audience-vote/cast          — 투표/답안 저장
 //   POST /audience-vote/host/start    — 방송 시작 (room 생성 + enabled=true)
 //   POST /audience-vote/host/end      — 방송 종료 (enabled=false)
 //   POST /audience-vote/host/enabled  — ON/OFF (레거시)
@@ -114,10 +114,30 @@ async function handleCurrent(
     round_key: row?.round_key ?? null,
     vote_duration_sec: row?.vote_duration_sec ?? 12,
     round_ends_at: row?.round_ends_at ?? null,
+    // 월드컵 집계 (기존 호환)
     left_votes: row?.left_votes ?? 0,
     right_votes: row?.right_votes ?? 0,
     total_votes: row?.total_votes ?? 0,
+    // 퀴즈 메타 (없으면 기본값)
+    mode: row?.mode ?? "wc",
+    question_type: row?.question_type ?? null,
+    prompt: row?.prompt ?? null,
+    options: row?.options ?? null,
+    reveal_answer: row?.reveal_answer ?? false,
+    // 퀴즈 집계
+    choice1_votes: row?.choice1_votes ?? 0,
+    choice2_votes: row?.choice2_votes ?? 0,
+    choice3_votes: row?.choice3_votes ?? 0,
+    choice4_votes: row?.choice4_votes ?? 0,
+    text_count: row?.text_count ?? 0,
   };
+
+  // ★ 정답은 reveal_answer=true이고 마감 후에만 내려줌
+  const isExpired = row?.round_ends_at && new Date(row.round_ends_at) < new Date();
+  if (row?.reveal_answer && isExpired) {
+    payload.correct_choice = row?.correct_choice ?? null;
+    payload.correct_text = row?.correct_text ?? null;
+  }
 
   // ---- ★ stale room 감지: enabled=true인데 room_state.updated_at이 60초 이상 지나면
   //        호스트가 비정상 종료(새로고침/탭닫기)한 것으로 간주 → 응답만 enabled:false로 내림
@@ -147,17 +167,20 @@ async function handleCurrent(
 
 // ============================================================
 // POST /cast
-// body: { room_code, round_key, choice (1|2), device_key }
+// 월드컵: { room_code, round_key, choice (1|2), device_key }
+// 퀴즈 MCQ: { room_code, round_key, choice (1~4), device_key }
+// 퀴즈 TEXT: { room_code, round_key, text_answer, device_key }
 // ============================================================
 async function handleCast(
   body: Record<string, unknown>,
   origin?: string | null
 ) {
-  const { room_code, round_key, choice, device_key } = body;
-  if (!room_code || !round_key || !choice || !device_key) {
+  const room_code = body.room_code as string | undefined;
+  const round_key = body.round_key as string | undefined;
+  const device_key = body.device_key as string | undefined;
+  if (!room_code || !round_key || !device_key) {
     return err("missing fields", 400, origin);
   }
-  if (choice !== 1 && choice !== 2) return err("choice must be 1 or 2", 400, origin);
 
   // Check: enabled?
   const { data: poll } = await sb
@@ -171,7 +194,7 @@ async function handleCast(
   // Check: round key matches + not expired
   const { data: state } = await sb
     .from("audience_room_state")
-    .select("round_key, round_ends_at")
+    .select("round_key, round_ends_at, mode, question_type")
     .eq("room_code", room_code)
     .maybeSingle();
 
@@ -184,18 +207,66 @@ async function handleCast(
     }
   }
 
-  const { error } = await sb.from("audience_votes").insert({
-    room_code,
-    round_key,
-    choice: Number(choice),
-    device_key,
-  });
+  // ★ round_key prefix 기반 분기
+  const isQuiz = typeof round_key === "string" && round_key.startsWith("quiz-");
+  const qtype = state?.question_type as string | null;
 
-  if (error) {
-    if (error.code === "23505") return err("already voted", 409, origin);
-    console.error("vote insert error:", error);
-    return err("insert failed", 500, origin);
+  const choice = body.choice as number | undefined;
+  const text_answer = body.text_answer as string | undefined;
+
+  if (isQuiz && qtype === "text") {
+    // ★ 퀴즈 텍스트: text_answer 필수, choice=0 고정
+    if (!text_answer || typeof text_answer !== "string" || !text_answer.trim()) {
+      return err("text_answer required for text question", 400, origin);
+    }
+    const { error } = await sb.from("audience_votes").insert({
+      room_code,
+      round_key,
+      choice: 0,
+      device_key,
+      text_answer: text_answer.trim().slice(0, 200),
+    });
+    if (error) {
+      if (error.code === "23505") return err("already voted", 409, origin);
+      console.error("vote insert error:", error);
+      return err("insert failed", 500, origin);
+    }
+  } else if (isQuiz && qtype === "mcq4") {
+    // ★ 퀴즈 객관식: choice 1~4
+    if (choice === undefined || choice === null) return err("choice required", 400, origin);
+    const c = Number(choice);
+    if (c < 1 || c > 4) return err("choice must be 1-4 for mcq4", 400, origin);
+    const { error } = await sb.from("audience_votes").insert({
+      room_code,
+      round_key,
+      choice: c,
+      device_key,
+    });
+    if (error) {
+      if (error.code === "23505") return err("already voted", 409, origin);
+      console.error("vote insert error:", error);
+      return err("insert failed", 500, origin);
+    }
+  } else {
+    // ★ 월드컵 (기존): choice 1|2
+    if (choice === undefined || choice === null) return err("choice required", 400, origin);
+    const c = Number(choice);
+    if (c !== 1 && c !== 2) return err("choice must be 1 or 2", 400, origin);
+    const { error } = await sb.from("audience_votes").insert({
+      room_code,
+      round_key,
+      choice: c,
+      device_key,
+    });
+    if (error) {
+      if (error.code === "23505") return err("already voted", 409, origin);
+      console.error("vote insert error:", error);
+      return err("insert failed", 500, origin);
+    }
   }
+
+  // ★ cast 성공 시 캐시 무효화
+  _currentCache.delete(room_code);
 
   return json({ ok: true }, 200, origin);
 }
@@ -211,7 +282,7 @@ async function handleHostEnabled(
   const { room_code, enabled } = body;
   if (!room_code) return err("room_code required", 400, origin);
 
-  await ensureRoom(room_code);
+  await ensureRoom(room_code as string);
 
   const { error } = await sb
     .from("audience_polls")
@@ -320,6 +391,13 @@ async function handleHostStart(
         round_key: null,
         round_ends_at: null,
         vote_duration_sec: voteSec,
+        mode: "wc",
+        question_type: null,
+        prompt: null,
+        options: null,
+        reveal_answer: false,
+        correct_choice: null,
+        correct_text: null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "room_code" }
@@ -328,6 +406,9 @@ async function handleHostStart(
     console.error("host/start state error:", stateErr);
     return err("start failed", 500, origin);
   }
+
+  // ★ 캐시 무효화
+  _currentCache.delete(room_code);
 
   return json(
     { ok: true, room_code, enabled: true, vote_duration_sec: voteSec },
@@ -362,13 +443,18 @@ async function handleHostEnd(
     return err("end failed", 500, origin);
   }
 
+  // ★ 캐시 무효화
+  _currentCache.delete(room_code);
+
   return json({ ok: true, room_code, enabled: false }, 200, origin);
 }
 
 // ============================================================
 // POST /host/state  (★ 호스트 인증 필수)
 // headers: Authorization: Bearer <access_token>
-// body: { room, round_key, vote_duration_sec, round_ends_at }
+// body: { room, round_key, vote_duration_sec, round_ends_at,
+//         mode?, question_type?, prompt?, options?,
+//         reveal_answer?, correct_choice?, correct_text? }
 // 라운드 상태 직접 upsert — play.js가 라운드 시작마다 호출
 // ============================================================
 async function handleHostState(
@@ -401,6 +487,18 @@ async function handleHostState(
   const vote_duration_sec = Math.max(5, Math.min(300, Number(body.vote_duration_sec) || 45));
   const round_ends_at = body.round_ends_at as string | null;
 
+  // ★ 퀴즈 확장 필드 (없으면 기본값)
+  const mode = (body.mode === "quiz") ? "quiz" : "wc";
+  const question_type = (body.question_type === "mcq4" || body.question_type === "text")
+    ? body.question_type as string : null;
+  const prompt = typeof body.prompt === "string" ? (body.prompt as string).slice(0, 500) : null;
+  const options = Array.isArray(body.options) ? body.options.slice(0, 6) : null;
+  const reveal_answer = !!body.reveal_answer;
+  const correct_choice = typeof body.correct_choice === "number"
+    ? Math.max(0, Math.min(4, body.correct_choice as number)) : null;
+  const correct_text = typeof body.correct_text === "string"
+    ? (body.correct_text as string).slice(0, 200) : null;
+
   // 1) enabled=true 보장
   const { error: pollErr } = await sb
     .from("audience_polls")
@@ -423,6 +521,13 @@ async function handleHostState(
         round_key,
         vote_duration_sec,
         round_ends_at: effectiveEndsAt,
+        mode,
+        question_type,
+        prompt,
+        options,
+        reveal_answer,
+        correct_choice,
+        correct_text,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "room_code" }
@@ -435,10 +540,10 @@ async function handleHostState(
   // 3) /current 캐시 즉시 무효화 (라운드 변경 즉반영)
   _currentCache.delete(room_code as string);
 
-  console.log("host/state OK: room=%s round=%s ends=%s user=%s", room_code, round_key, effectiveEndsAt, user.id);
+  console.log("host/state OK: room=%s mode=%s round=%s ends=%s user=%s", room_code, mode, round_key, effectiveEndsAt, user.id);
 
   return json(
-    { ok: true, room_code, round_key, vote_duration_sec, round_ends_at: effectiveEndsAt },
+    { ok: true, room_code, round_key, vote_duration_sec, round_ends_at: effectiveEndsAt, mode },
     200,
     origin
   );
