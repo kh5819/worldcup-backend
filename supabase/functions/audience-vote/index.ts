@@ -159,6 +159,19 @@ async function handleCurrent(
     }
   }
 
+  // ---- ★ 퀴즈 텍스트: 최근 답변 10개 조회 (호스트 정답 공개 화면용) ----
+  if (row?.mode === "quiz" && row?.question_type === "text" && row?.round_key) {
+    const { data: recentRows } = await sb
+      .from("audience_votes")
+      .select("text_answer, created_at")
+      .eq("room_code", room_code)
+      .eq("round_key", row.round_key)
+      .not("text_answer", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(10);
+    payload.recent_texts = (recentRows || []).map((r: { text_answer: string }) => r.text_answer);
+  }
+
   // ---- 캐시 저장 ----
   _currentCache.set(room_code, { ts: now, payload });
 
