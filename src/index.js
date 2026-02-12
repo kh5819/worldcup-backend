@@ -2108,12 +2108,23 @@ app.post("/quiz/finish", async (req, res) => {
     }
 
     const { quizId, mode, correctCount, totalCount, durationMs, questionResults } = req.body;
-    if (!quizId || totalCount == null || correctCount == null) {
-      return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+
+    // 필수 필드 검증 (구체적 에러 메시지)
+    const missing = [];
+    if (!quizId) missing.push("quizId");
+    if (totalCount == null) missing.push("totalCount");
+    if (correctCount == null) missing.push("correctCount");
+    if (missing.length) {
+      return res.status(400).json({
+        ok: false,
+        error: "MISSING_FIELDS",
+        message: `필수 필드 누락: ${missing.join(", ")}`,
+        received: { quizId, mode, correctCount, totalCount },
+      });
     }
-    if (!Array.isArray(questionResults) || questionResults.length === 0) {
-      return res.status(400).json({ ok: false, error: "MISSING_QUESTION_RESULTS" });
-    }
+
+    // questionResults: 선택적 (멀티 퀴즈는 문항별 추적 없음)
+    const hasQuestionResults = Array.isArray(questionResults) && questionResults.length > 0;
 
     // 1) quiz_attempts insert
     const { data: attempt, error: aErr } = await supabaseAdmin
@@ -2131,24 +2142,26 @@ app.post("/quiz/finish", async (req, res) => {
 
     if (aErr) {
       console.error("[POST /quiz/finish] quiz_attempts insert error:", aErr);
-      return res.status(500).json({ ok: false, error: "DB_INSERT_FAIL" });
+      return res.status(500).json({ ok: false, error: "DB_INSERT_FAIL", message: aErr.message });
     }
 
-    // 2) quiz_question_attempts bulk insert
-    const rows = questionResults.map(qr => ({
-      attempt_id: attempt.id,
-      quiz_id: quizId,
-      question_id: qr.questionId,
-      is_correct: !!qr.isCorrect,
-    }));
+    // 2) quiz_question_attempts bulk insert (있을 때만)
+    if (hasQuestionResults) {
+      const rows = questionResults.map(qr => ({
+        attempt_id: attempt.id,
+        quiz_id: quizId,
+        question_id: qr.questionId,
+        is_correct: !!qr.isCorrect,
+      }));
 
-    const { error: qErr } = await supabaseAdmin
-      .from("quiz_question_attempts")
-      .insert(rows);
+      const { error: qErr } = await supabaseAdmin
+        .from("quiz_question_attempts")
+        .insert(rows);
 
-    if (qErr) {
-      console.warn("[POST /quiz/finish] quiz_question_attempts insert error:", qErr);
-      // attempt은 이미 저장됨 — 문항 상세만 실패, 응답은 성공 처리
+      if (qErr) {
+        console.warn("[POST /quiz/finish] quiz_question_attempts insert error:", qErr);
+        // attempt은 이미 저장됨 — 문항 상세만 실패, 응답은 성공 처리
+      }
     }
 
     console.log(`[POST /quiz/finish] recorded: quizId=${quizId} user=${userId || "anon"} ${correctCount}/${totalCount}`);

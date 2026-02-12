@@ -5,16 +5,20 @@
 // 엔드포인트:
 //   GET  /audience-vote/current       — 현재 상태 + 집계 (auto-init)
 //   POST /audience-vote/cast          — 투표 저장
-//   POST /audience-vote/host/enabled  — ON/OFF
+//   POST /audience-vote/host/start    — 방송 시작 (room 생성 + enabled=true)
+//   POST /audience-vote/host/end      — 방송 종료 (enabled=false)
+//   POST /audience-vote/host/enabled  — ON/OFF (레거시)
 //   POST /audience-vote/host/round    — 라운드 설정
+//   POST /audience-vote/host/state    — 라운드 상태 직접 upsert (play.js용)
 //
 // ⚠️  배포 체크리스트:
 //   1. Supabase Dashboard → Edge Functions → audience-vote → Settings
 //      "Verify JWT" 토글을 반드시 OFF 로 설정할 것!
 //      ON이면 apikey+anon Bearer만으로는 401이 남.
 //      시청자(audience.js)는 로그인 세션이 없으므로 Verify JWT=OFF 필수.
-//   2. host/* 엔드포인트는 auth 없이 동작 (Verify JWT OFF).
-//      service_role로 DB 직접 접근하므로 별도 인증 불필요.
+//   2. host/* 엔드포인트는 Verify JWT OFF 환경에서도 동작.
+//      host/state는 Authorization Bearer 토큰으로 호스트 인증 (getUser).
+//      나머지 host/* + cast/current는 인증 없이 동작.
 //   3. 배포 명령:
 //      supabase functions deploy audience-vote --no-verify-jwt \
 //        --project-ref irqhgsusfzvytpgirwdo
@@ -28,6 +32,10 @@ const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
 const ALLOWED_ORIGIN = "https://playduo.kr";
+
+// ---- room_code별 1초 인메모리 캐시 (/current용) ----
+const CACHE_TTL_MS = 1000;
+const _currentCache = new Map<string, { ts: number; payload: Record<string, unknown> }>();
 
 function corsHeaders(origin?: string | null) {
   // Allow playduo.kr and localhost for dev
@@ -67,9 +75,8 @@ async function ensureRoom(room_code: string) {
 }
 
 // ============================================================
-// GET /current?room=XXXXXX&round=...
-// 통합 응답: enabled + round state + 집계 + server time
-// round 쿼리가 있으면 해당 라운드 집계, 없으면 DB state의 round_key 사용
+// GET /current?room=XXXXXX
+// VIEW 1회 조회 + room_code별 1초 인메모리 캐시
 // ============================================================
 async function handleCurrent(
   params: URLSearchParams,
@@ -78,65 +85,44 @@ async function handleCurrent(
   const room_code = params.get("room") || params.get("room_code");
   if (!room_code) return err("room required", 400, origin);
 
-  const queryRound = params.get("round") || null;
+  const now = Date.now();
+
+  // ---- 1초 캐시 히트 체크 ----
+  const cached = _currentCache.get(room_code);
+  if (cached && now - cached.ts < CACHE_TTL_MS) {
+    return json({ ...cached.payload, now: new Date().toISOString() }, 200, origin);
+  }
 
   // Auto-init if missing
   await ensureRoom(room_code);
 
-  // Parallel queries
-  const [pollRes, stateRes] = await Promise.all([
-    sb
-      .from("audience_polls")
-      .select("enabled")
-      .eq("room_code", room_code)
-      .maybeSingle(),
-    sb
-      .from("audience_room_state")
-      .select("round_key, vote_duration_sec, round_ends_at, updated_at")
-      .eq("room_code", room_code)
-      .maybeSingle(),
-  ]);
+  // ---- VIEW 1회 조회 ----
+  const { data: row, error: viewErr } = await sb
+    .from("audience_current_state")
+    .select("*")
+    .eq("room_code", room_code)
+    .maybeSingle();
 
-  const enabled = pollRes.data?.enabled ?? false;
-  // ★ 서버 state가 항상 authoritative — 클라이언트 round는 집계 조회용 힌트
-  const server_round_key = stateRes.data?.round_key || null;
-  const round_key = server_round_key || queryRound || null;
-
-  // Aggregate votes for current round
-  let left_votes = 0,
-    right_votes = 0,
-    total_votes = 0;
-
-  if (round_key) {
-    const { data: agg } = await sb
-      .from("audience_vote_agg")
-      .select("*")
-      .eq("room_code", room_code)
-      .eq("round_key", round_key)
-      .maybeSingle();
-
-    if (agg) {
-      left_votes = agg.left_votes ?? 0;
-      right_votes = agg.right_votes ?? 0;
-      total_votes = agg.total_votes ?? 0;
-    }
+  if (viewErr) {
+    console.error("/current view error:", viewErr);
+    return err("query failed", 500, origin);
   }
 
-  return json(
-    {
-      ok: true,
-      now: new Date().toISOString(),
-      enabled,
-      round_key,
-      vote_duration_sec: stateRes.data?.vote_duration_sec ?? 12,
-      round_ends_at: stateRes.data?.round_ends_at ?? null,
-      left_votes,
-      right_votes,
-      total_votes,
-    },
-    200,
-    origin
-  );
+  const payload = {
+    ok: true as const,
+    enabled: row?.enabled ?? false,
+    round_key: row?.round_key ?? null,
+    vote_duration_sec: row?.vote_duration_sec ?? 12,
+    round_ends_at: row?.round_ends_at ?? null,
+    left_votes: row?.left_votes ?? 0,
+    right_votes: row?.right_votes ?? 0,
+    total_votes: row?.total_votes ?? 0,
+  };
+
+  // ---- 캐시 저장 ----
+  _currentCache.set(room_code, { ts: now, payload });
+
+  return json({ ...payload, now: new Date().toISOString() }, 200, origin);
 }
 
 // ============================================================
@@ -278,6 +264,167 @@ async function handleHostRound(
 }
 
 // ============================================================
+// POST /host/start
+// body: { room, vote_duration_sec? }
+// 방송 시작: room 생성 + enabled=true + state 초기화
+// ============================================================
+async function handleHostStart(
+  body: Record<string, unknown>,
+  origin?: string | null
+) {
+  const room_code = body.room || body.room_code;
+  if (!room_code || typeof room_code !== "string") {
+    return err("room required", 400, origin);
+  }
+
+  const voteSec = Math.max(5, Math.min(300, Number(body.vote_duration_sec) || 45));
+
+  // 1) audience_polls: enabled=true
+  const { error: pollErr } = await sb
+    .from("audience_polls")
+    .upsert(
+      { room_code, enabled: true, updated_at: new Date().toISOString() },
+      { onConflict: "room_code" }
+    );
+  if (pollErr) {
+    console.error("host/start polls error:", pollErr);
+    return err("start failed", 500, origin);
+  }
+
+  // 2) audience_room_state: round 초기화 (아직 라운드 시작 전)
+  const { error: stateErr } = await sb
+    .from("audience_room_state")
+    .upsert(
+      {
+        room_code,
+        round_key: null,
+        round_ends_at: null,
+        vote_duration_sec: voteSec,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "room_code" }
+    );
+  if (stateErr) {
+    console.error("host/start state error:", stateErr);
+    return err("start failed", 500, origin);
+  }
+
+  return json(
+    { ok: true, room_code, enabled: true, vote_duration_sec: voteSec },
+    200,
+    origin
+  );
+}
+
+// ============================================================
+// POST /host/end
+// body: { room }
+// 방송 종료: enabled=false
+// ============================================================
+async function handleHostEnd(
+  body: Record<string, unknown>,
+  origin?: string | null
+) {
+  const room_code = body.room || body.room_code;
+  if (!room_code || typeof room_code !== "string") {
+    return err("room required", 400, origin);
+  }
+
+  const { error } = await sb
+    .from("audience_polls")
+    .upsert(
+      { room_code, enabled: false, updated_at: new Date().toISOString() },
+      { onConflict: "room_code" }
+    );
+
+  if (error) {
+    console.error("host/end error:", error);
+    return err("end failed", 500, origin);
+  }
+
+  return json({ ok: true, room_code, enabled: false }, 200, origin);
+}
+
+// ============================================================
+// POST /host/state  (★ 호스트 인증 필수)
+// headers: Authorization: Bearer <access_token>
+// body: { room, round_key, vote_duration_sec, round_ends_at }
+// 라운드 상태 직접 upsert — play.js가 라운드 시작마다 호출
+// ============================================================
+async function handleHostState(
+  body: Record<string, unknown>,
+  req: Request,
+  origin?: string | null
+) {
+  // ---- JWT 인증: 호스트(로그인 유저)만 허용 ----
+  const authHeader = req.headers.get("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return err("authorization required", 401, origin);
+  }
+  const token = authHeader.replace("Bearer ", "");
+  const { data: { user }, error: authErr } = await sb.auth.getUser(token);
+  if (authErr || !user) {
+    console.warn("host/state auth failed:", authErr?.message);
+    return err("invalid or expired token", 401, origin);
+  }
+  // ---- 인증 통과 (user.id 로깅) ----
+
+  const room_code = body.room || body.room_code;
+  if (!room_code || typeof room_code !== "string") {
+    return err("room required", 400, origin);
+  }
+
+  const round_key = body.round_key as string | null;
+  if (!round_key) {
+    return err("round_key required", 400, origin);
+  }
+  const vote_duration_sec = Math.max(5, Math.min(300, Number(body.vote_duration_sec) || 45));
+  const round_ends_at = body.round_ends_at as string | null;
+
+  // 1) enabled=true 보장
+  const { error: pollErr } = await sb
+    .from("audience_polls")
+    .upsert(
+      { room_code, enabled: true, updated_at: new Date().toISOString() },
+      { onConflict: "room_code" }
+    );
+  if (pollErr) {
+    console.error("host/state polls error:", pollErr);
+    return err("state failed", 500, origin);
+  }
+
+  // 2) audience_room_state upsert (round_key는 위에서 검증됨 — 절대 null 아님)
+  const effectiveEndsAt = round_ends_at || new Date(Date.now() + vote_duration_sec * 1000).toISOString();
+  const { error: stateErr } = await sb
+    .from("audience_room_state")
+    .upsert(
+      {
+        room_code,
+        round_key,
+        vote_duration_sec,
+        round_ends_at: effectiveEndsAt,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "room_code" }
+    );
+  if (stateErr) {
+    console.error("host/state state error:", stateErr);
+    return err("state failed", 500, origin);
+  }
+
+  // 3) /current 캐시 즉시 무효화 (라운드 변경 즉반영)
+  _currentCache.delete(room_code as string);
+
+  console.log("host/state OK: room=%s round=%s ends=%s user=%s", room_code, round_key, effectiveEndsAt, user.id);
+
+  return json(
+    { ok: true, room_code, round_key, vote_duration_sec, round_ends_at: effectiveEndsAt },
+    200,
+    origin
+  );
+}
+
+// ============================================================
 // Main handler
 // ============================================================
 Deno.serve(async (req) => {
@@ -313,10 +460,16 @@ Deno.serve(async (req) => {
       switch (action) {
         case "cast":
           return await handleCast(body, origin);
+        case "host/start":
+          return await handleHostStart(body, origin);
+        case "host/end":
+          return await handleHostEnd(body, origin);
         case "host/enabled":
           return await handleHostEnabled(body, origin);
         case "host/round":
           return await handleHostRound(body, origin);
+        case "host/state":
+          return await handleHostState(body, req, origin);
         default:
           return err("unknown action: " + action, 404, origin);
       }
