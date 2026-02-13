@@ -3011,13 +3011,29 @@ async function loadQuizQuestions(contentId, userId, isAdmin) {
 
 function extractVideoId(urlOrId) {
   if (!urlOrId) return null;
-  if (!urlOrId.includes("/") && !urlOrId.includes(".")) return urlOrId;
+  const s = String(urlOrId).trim();
+  // bare 11-char video ID
+  if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s;
+  // not a URL — return as-is (legacy)
+  if (!s.includes("/") && !s.includes(".")) return s;
   try {
-    const url = new URL(urlOrId);
-    if (url.hostname.includes("youtu.be")) return url.pathname.slice(1);
-    return url.searchParams.get("v") || urlOrId;
+    const url = new URL(s);
+    const host = url.hostname.replace("www.", "").replace("m.", "");
+    if (host === "youtu.be") {
+      const id = url.pathname.split("/")[1];
+      return id || null;
+    }
+    const v = url.searchParams.get("v");
+    if (v) return v;
+    // /shorts/ID, /embed/ID, /v/ID
+    const parts = url.pathname.split("/").filter(Boolean);
+    for (const key of ["shorts", "embed", "v"]) {
+      const idx = parts.indexOf(key);
+      if (idx >= 0 && parts[idx + 1]) return parts[idx + 1].split("?")[0];
+    }
+    return null;
   } catch {
-    return urlOrId;
+    return null;
   }
 }
 
