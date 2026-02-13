@@ -1877,21 +1877,66 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
       if (uErr) return res.status(500).json({ ok: false, error: "UPDATE_FAILED" });
     }
 
-    // 후보/문제 교체 (전체 삭제 후 재삽입)
+    // 후보 수정: 기존 ID 유지 (랭킹/전적 보존)
     if (existing.mode === "worldcup" && candidates && Array.isArray(candidates)) {
-      await supabaseAdmin.from("worldcup_candidates").delete().eq("content_id", req.params.id);
-      const rows = candidates.map((c, i) => ({
-        content_id: req.params.id,
-        name: c.name,
-        media_type: c.media_type || "image",
-        media_url: c.media_url || "",
-        start_sec: c.start_sec || null,
-        duration_sec: c.duration_sec || null,
-        sort_order: i + 1,
-      }));
-      if (rows.length > 0) {
-        const { error: iErr } = await supabaseAdmin.from("worldcup_candidates").insert(rows);
-        if (iErr) console.error("후보 재삽입 실패:", iErr);
+      // 1) 기존 후보 ID 조회
+      const { data: existingCands } = await supabaseAdmin
+        .from("worldcup_candidates")
+        .select("id")
+        .eq("content_id", req.params.id);
+      const existingIds = new Set((existingCands || []).map(r => r.id));
+
+      // incoming에서 유효한 기존 ID만 추출
+      const incomingIds = new Set(
+        candidates.filter(c => c.id && existingIds.has(c.id)).map(c => c.id)
+      );
+
+      // 2) 삭제: DB에 있지만 incoming에 없는 후보만 삭제
+      const toDelete = [...existingIds].filter(id => !incomingIds.has(id));
+      if (toDelete.length > 0) {
+        const { error: dErr } = await supabaseAdmin
+          .from("worldcup_candidates")
+          .delete()
+          .in("id", toDelete);
+        if (dErr) console.error("후보 삭제 실패:", dErr);
+      }
+
+      // 3) 수정: 기존 후보 UPDATE (id 유지 → 랭킹 보존)
+      for (let i = 0; i < candidates.length; i++) {
+        const c = candidates[i];
+        if (c.id && existingIds.has(c.id)) {
+          const { error: uErr } = await supabaseAdmin
+            .from("worldcup_candidates")
+            .update({
+              name: c.name,
+              media_type: c.media_type || "image",
+              media_url: c.media_url || "",
+              start_sec: c.start_sec || null,
+              duration_sec: c.duration_sec || null,
+              sort_order: i + 1,
+            })
+            .eq("id", c.id)
+            .eq("content_id", req.params.id);
+          if (uErr) console.error("후보 수정 실패:", uErr);
+        }
+      }
+
+      // 4) 추가: id가 없거나 DB에 없는 새 후보 INSERT
+      const newRows = candidates
+        .map((c, i) => ({ ...c, _sort: i + 1 }))
+        .filter(c => !c.id || !existingIds.has(c.id))
+        .map(c => ({
+          content_id: req.params.id,
+          name: c.name,
+          media_type: c.media_type || "image",
+          media_url: c.media_url || "",
+          start_sec: c.start_sec || null,
+          duration_sec: c.duration_sec || null,
+          sort_order: c._sort,
+        }));
+      if (newRows.length > 0) {
+        const { error: iErr } = await supabaseAdmin.from("worldcup_candidates").insert(newRows);
+        if (iErr) console.error("후보 추가 실패:", iErr);
       }
     }
 
