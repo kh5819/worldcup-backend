@@ -108,13 +108,20 @@ DECLARE
   banned_words TEXT[] := ARRAY[
     '시발', '씨발', '개새끼', '병신', '지랄', '꺼져',
     '닥쳐', '미친놈', '미친년', '느금마', 'ㅅㅂ', 'ㅂㅅ',
-    '좆', '씹', '엿먹어'
+    '좆', '엿먹어'
   ];
+  allowed_words TEXT[] := ARRAY['씹'];
   w TEXT;
+  cleaned TEXT;
 BEGIN
   IF input_text IS NULL THEN RETURN false; END IF;
+  cleaned := lower(input_text);
+  -- 허용 예외 단어 제거 후 검사
+  FOREACH w IN ARRAY allowed_words LOOP
+    cleaned := replace(cleaned, w, '');
+  END LOOP;
   FOREACH w IN ARRAY banned_words LOOP
-    IF position(w IN lower(input_text)) > 0 THEN
+    IF position(w IN cleaned) > 0 THEN
       RETURN true;
     END IF;
   END LOOP;
