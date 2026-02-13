@@ -971,23 +971,25 @@ app.get("/admin/contents", requireAdmin, async (req, res) => {
     }
 
     // owner_id로 profiles에서 creator_name 조회
+    // profiles PK는 id (= auth.users.id), user_id 컬럼은 존재하지 않음
     const ownerIds = [...new Set((data || []).map(c => c.owner_id).filter(Boolean))];
     let profilesMap = {};
     if (ownerIds.length > 0) {
       const { data: profiles } = await supabaseAdmin
         .from("profiles")
-        .select("user_id, nickname")
-        .in("user_id", ownerIds);
+        .select("id, nickname")
+        .in("id", ownerIds);
       if (profiles) {
-        profiles.forEach(p => { profilesMap[p.user_id] = p.nickname; });
+        profiles.forEach(p => { profilesMap[p.id] = p.nickname; });
       }
     }
 
     // 응답 데이터에 creator_name 추가
+    // 우선순위: profiles.nickname → owner_id 앞 8자리 → (알 수 없음)
     const items = (data || []).map(c => ({
       ...c,
       type: c.mode,
-      creator_name: profilesMap[c.owner_id] || "(알 수 없음)",
+      creator_name: profilesMap[c.owner_id] || c.owner_id?.slice(0, 8) || "(알 수 없음)",
     }));
 
     return res.json({
@@ -1288,18 +1290,20 @@ app.get("/admin/tier-templates", requireAdmin, async (req, res) => {
     }
 
     // creator_id → profiles 닉네임 조회
+    // profiles PK는 id (= auth.users.id), user_id 컬럼은 존재하지 않음
     const creatorIds = [...new Set((data || []).map(t => t.creator_id).filter(Boolean))];
     let profilesMap = {};
     if (creatorIds.length > 0) {
       const { data: profiles } = await supabaseAdmin
         .from("profiles")
-        .select("user_id, nickname")
-        .in("user_id", creatorIds);
+        .select("id, nickname")
+        .in("id", creatorIds);
       if (profiles) {
-        profiles.forEach(p => { profilesMap[p.user_id] = p.nickname; });
+        profiles.forEach(p => { profilesMap[p.id] = p.nickname; });
       }
     }
 
+    // 우선순위: profiles.nickname → creator_id 앞 8자리 → (알 수 없음)
     const items = (data || []).map(t => ({
       ...t,
       creator_name: profilesMap[t.creator_id] || t.creator_id?.slice(0, 8) || "(알 수 없음)",
@@ -1407,16 +1411,16 @@ app.get("/admin/tier-templates/:id/reports", requireAdmin, async (req, res) => {
       return res.status(500).json({ ok: false, error: "DB_ERROR" });
     }
 
-    // reporter_user_id → nickname lookup
+    // reporter_user_id → nickname lookup (profiles PK = id)
     const reporterIds = [...new Set((data || []).map(r => r.reporter_user_id).filter(Boolean))];
     let profilesMap = {};
     if (reporterIds.length > 0) {
       const { data: profiles } = await supabaseAdmin
         .from("profiles")
-        .select("user_id, nickname")
-        .in("user_id", reporterIds);
+        .select("id, nickname")
+        .in("id", reporterIds);
       if (profiles) {
-        profiles.forEach(p => { profilesMap[p.user_id] = p.nickname; });
+        profiles.forEach(p => { profilesMap[p.id] = p.nickname; });
       }
     }
 
@@ -1590,10 +1594,10 @@ app.get("/admin/tier-reports", requireAdmin, async (req, res) => {
     if (userIds.size > 0) {
       const { data: profiles } = await supabaseAdmin
         .from("profiles")
-        .select("user_id, nickname")
-        .in("user_id", [...userIds]);
+        .select("id, nickname")
+        .in("id", [...userIds]);
       if (profiles) {
-        for (const p of profiles) profilesMap[p.user_id] = p.nickname;
+        for (const p of profiles) profilesMap[p.id] = p.nickname;
       }
     }
 
