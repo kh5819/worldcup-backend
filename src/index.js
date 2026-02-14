@@ -2323,25 +2323,24 @@ app.post("/events", async (req, res) => {
     const dedupSec = isFinish ? CE_FINISH_DEDUP_SEC : CE_DEDUP_SEC;
     const threshold = new Date(Date.now() - dedupSec * 1000).toISOString();
 
-    if (isFinish && userId) {
-      // 로그인 유저 finish: user_id + content_id로 dedup
+    if (isFinish && userId && sessionId) {
+      // 로그인 유저 finish: session_id 단위 dedup (DB 유니크 인덱스가 최종 방어)
       const { data: recent, error: dedupErr } = await supabaseAdmin
         .from("content_events")
         .select("id")
         .eq("content_id", contentId)
         .eq("event_type", "finish")
         .eq("user_id", userId)
-        .gte("created_at", threshold)
+        .eq("session_id", sessionId)
         .limit(1);
 
       if (dedupErr) {
         console.error("[POST /events] dedup query error:", dedupErr.message);
-        // dedup 실패는 치명적이지 않음 — 계속 진행
       } else if (recent && recent.length > 0) {
         return res.json({ ok: true, dedup: true });
       }
-    } else if (sessionId) {
-      // play/share: session_id 기반 dedup
+    } else if (!isFinish && sessionId) {
+      // play/share: session_id + 시간 기반 dedup
       const { data: recent, error: dedupErr } = await supabaseAdmin
         .from("content_events")
         .select("id")
@@ -2359,6 +2358,8 @@ app.post("/events", async (req, res) => {
     }
 
     // ── 5) content_events INSERT ──
+    // finish + 로그인: DB 유니크 인덱스(content_id, user_id, event_type, session_id)가
+    // 중복을 막아줌 → 23505 에러 시 dedup 처리
     const { error: insertErr } = await supabaseAdmin.from("content_events").insert({
       content_id: contentId,
       content_type: contentType,
@@ -2369,17 +2370,17 @@ app.post("/events", async (req, res) => {
     });
 
     if (insertErr) {
-      console.error("[POST /events] insert error:", insertErr.message, insertErr.details, insertErr.hint);
-      // DB 제약 위반 (unique 등)
+      // 유니크 인덱스 위반 = 세션 내 중복 finish → dedup 정상 처리
       if (insertErr.code === "23505") {
-        return res.json({ ok: true, dedup: true, reason: "UNIQUE_VIOLATION" });
+        console.log(`[POST /events] dedup(unique) ${contentType}/${eventType} cid=${contentId} uid=${userId}`);
+        return res.json({ ok: true, dedup: true });
       }
+      console.error("[POST /events] insert error:", insertErr.message, insertErr.details, insertErr.hint);
       return res.status(400).json({ ok: false, error: "DB_INSERT_FAIL", detail: insertErr.message });
     }
 
     // complete_count 증가는 DB 트리거(trg_auto_increment_complete)가 자동 처리
-    // — content_events INSERT 시 event_type='finish' && user_id IS NOT NULL
-    //   && content_type IN ('worldcup','quiz')이면 contents.complete_count +1
+    // — INSERT 성공(중복 아님) 시에만 트리거 실행 → +1
 
     console.log(`[POST /events] OK ${contentType}/${eventType} cid=${contentId} uid=${userId || "anon"}`);
     return res.json({ ok: true });
