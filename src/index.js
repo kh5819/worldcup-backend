@@ -2280,20 +2280,29 @@ const CE_DEDUP_SEC = 600; // 10분 dedup (play/share)
 const CE_FINISH_DEDUP_SEC = 180; // 3분 dedup (finish — 완주)
 
 // POST /events — 이벤트 기록 (play/finish/share)
-// 인증 선택적: 로그인 시 user_id 저장, 비로그인도 기록
+// ★ finish 이벤트는 로그인 유저만 허용 (complete_count 집계 정책)
+// ★ play/share 이벤트는 익명도 허용 (카운트에 반영되지 않는 로그)
 app.post("/events", async (req, res) => {
   try {
-    // 선택적 인증
+    // ── 1) 인증 (토큰이 있으면 검증) ──
     let userId = null;
     const authHeader = req.headers.authorization;
-    if (authHeader && jwks) {
+    if (authHeader) {
+      if (!jwks) {
+        console.warn("[POST /events] JWKS 미초기화 — 인증 불가");
+        return res.status(401).json({ ok: false, error: "AUTH_UNAVAILABLE" });
+      }
       try {
         const token = authHeader.replace(/^Bearer\s+/i, "");
         const { payload } = await jwtVerify(token, jwks, { issuer: JWT_ISSUER });
         userId = payload.sub || null;
-      } catch (_) { /* 비로그인 */ }
+      } catch (jwtErr) {
+        console.warn("[POST /events] JWT 검증 실패:", jwtErr.code || jwtErr.message);
+        return res.status(401).json({ ok: false, error: "INVALID_TOKEN" });
+      }
     }
 
+    // ── 2) 요청 바디 검증 ──
     const { contentId, contentType, eventType, sessionId, meta } = req.body;
     if (!contentId || !contentType || !eventType) {
       return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
@@ -2304,15 +2313,19 @@ app.post("/events", async (req, res) => {
       return res.status(400).json({ ok: false, error: "INVALID_TYPE" });
     }
 
-    // finish 이벤트: 3분 dedup (user_id 우선, 없으면 session_id)
-    // play/share 이벤트: 10분 dedup (session_id 기반)
+    // ── 3) finish 이벤트는 로그인 필수 ──
     const isFinish = eventType === "finish";
+    if (isFinish && !userId) {
+      return res.status(401).json({ ok: false, error: "LOGIN_REQUIRED_FOR_FINISH" });
+    }
+
+    // ── 4) dedup (중복 방지) ──
     const dedupSec = isFinish ? CE_FINISH_DEDUP_SEC : CE_DEDUP_SEC;
     const threshold = new Date(Date.now() - dedupSec * 1000).toISOString();
 
     if (isFinish && userId) {
       // 로그인 유저 finish: user_id + content_id로 dedup
-      const { data: recent } = await supabaseAdmin
+      const { data: recent, error: dedupErr } = await supabaseAdmin
         .from("content_events")
         .select("id")
         .eq("content_id", contentId)
@@ -2321,12 +2334,15 @@ app.post("/events", async (req, res) => {
         .gte("created_at", threshold)
         .limit(1);
 
-      if (recent && recent.length > 0) {
+      if (dedupErr) {
+        console.error("[POST /events] dedup query error:", dedupErr.message);
+        // dedup 실패는 치명적이지 않음 — 계속 진행
+      } else if (recent && recent.length > 0) {
         return res.json({ ok: true, dedup: true });
       }
     } else if (sessionId) {
-      // 비로그인 finish 또는 play/share: session_id 기반 dedup
-      const { data: recent } = await supabaseAdmin
+      // play/share: session_id 기반 dedup
+      const { data: recent, error: dedupErr } = await supabaseAdmin
         .from("content_events")
         .select("id")
         .eq("content_id", contentId)
@@ -2335,12 +2351,15 @@ app.post("/events", async (req, res) => {
         .gte("created_at", threshold)
         .limit(1);
 
-      if (recent && recent.length > 0) {
+      if (dedupErr) {
+        console.error("[POST /events] dedup query error:", dedupErr.message);
+      } else if (recent && recent.length > 0) {
         return res.json({ ok: true, dedup: true });
       }
     }
 
-    const { error } = await supabaseAdmin.from("content_events").insert({
+    // ── 5) content_events INSERT ──
+    const { error: insertErr } = await supabaseAdmin.from("content_events").insert({
       content_id: contentId,
       content_type: contentType,
       event_type: eventType,
@@ -2349,19 +2368,25 @@ app.post("/events", async (req, res) => {
       meta: meta || {},
     });
 
-    if (error) {
-      console.error("[POST /events] insert error:", error.message);
-      return res.status(500).json({ ok: false, error: "DB_INSERT_FAIL" });
+    if (insertErr) {
+      console.error("[POST /events] insert error:", insertErr.message, insertErr.details, insertErr.hint);
+      // DB 제약 위반 (unique 등)
+      if (insertErr.code === "23505") {
+        return res.json({ ok: true, dedup: true, reason: "UNIQUE_VIOLATION" });
+      }
+      return res.status(400).json({ ok: false, error: "DB_INSERT_FAIL", detail: insertErr.message });
     }
 
     // complete_count 증가는 DB 트리거(trg_auto_increment_complete)가 자동 처리
-    // — content_events INSERT 시 event_type='finish' && content_type IN ('worldcup','quiz')이면 +1
+    // — content_events INSERT 시 event_type='finish' && user_id IS NOT NULL
+    //   && content_type IN ('worldcup','quiz')이면 contents.complete_count +1
 
-    console.log(`[POST /events] ${contentType}/${eventType} cid=${contentId} sid=${sessionId || "none"} uid=${userId || "anon"}`);
+    console.log(`[POST /events] OK ${contentType}/${eventType} cid=${contentId} uid=${userId || "anon"}`);
     return res.json({ ok: true });
   } catch (err) {
-    console.error("[POST /events] error:", err);
-    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+    // ★ 예상치 못한 에러도 상세 로그 + 400 반환 (절대 500 금지)
+    console.error("[POST /events] unexpected error:", err?.message || err, err?.stack);
+    return res.status(400).json({ ok: false, error: "UNEXPECTED_ERROR", detail: String(err?.message || err) });
   }
 });
 
