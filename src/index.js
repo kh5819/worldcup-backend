@@ -191,13 +191,14 @@ app.get("/og/content/:id", async (req, res) => {
       }));
     }
 
-    // 후보/문제 수 조회
+    // 후보/문제 수 조회 (활성 후보만)
     let itemCount = 0;
     if (content.mode === "worldcup") {
       const { count } = await supabaseAdmin
         .from("worldcup_candidates")
         .select("*", { count: "exact", head: true })
-        .eq("content_id", contentId);
+        .eq("content_id", contentId)
+        .eq("is_active", true);
       itemCount = count || 0;
     } else if (content.mode === "quiz") {
       const { count } = await supabaseAdmin
@@ -625,13 +626,14 @@ app.get("/content/:id", async (req, res) => {
       }
     }
 
-    // 후보/문제 수
+    // 후보/문제 수 (활성 후보만)
     let itemCount = 0;
     if (content.mode === "worldcup") {
       const { count } = await supabaseAdmin
         .from("worldcup_candidates")
         .select("*", { count: "exact", head: true })
-        .eq("content_id", contentId);
+        .eq("content_id", contentId)
+        .eq("is_active", true);
       itemCount = count || 0;
     } else {
       const { count } = await supabaseAdmin
@@ -1832,6 +1834,7 @@ app.get("/my/contents/:id", requireAuth, async (req, res) => {
         .from("worldcup_candidates")
         .select("*")
         .eq("content_id", content.id)
+        .eq("is_active", true)
         .order("sort_order", { ascending: true });
       children = data || [];
     } else if (content.mode === "quiz") {
@@ -1882,13 +1885,14 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
       if (uErr) return res.status(500).json({ ok: false, error: "UPDATE_FAILED" });
     }
 
-    // 후보 수정: 기존 ID 유지 (랭킹/전적 보존)
+    // 후보 수정: 기존 ID 유지 (랭킹/전적 보존), soft delete
     if (existing.mode === "worldcup" && candidates && Array.isArray(candidates)) {
-      // 1) 기존 후보 ID 조회
+      // 1) 기존 활성 후보 ID 조회
       const { data: existingCands } = await supabaseAdmin
         .from("worldcup_candidates")
         .select("id")
-        .eq("content_id", req.params.id);
+        .eq("content_id", req.params.id)
+        .eq("is_active", true);
       const existingIds = new Set((existingCands || []).map(r => r.id));
 
       // incoming에서 유효한 기존 ID만 추출
@@ -1896,14 +1900,14 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
         candidates.filter(c => c.id && existingIds.has(c.id)).map(c => c.id)
       );
 
-      // 2) 삭제: DB에 있지만 incoming에 없는 후보만 삭제
-      const toDelete = [...existingIds].filter(id => !incomingIds.has(id));
-      if (toDelete.length > 0) {
+      // 2) soft delete: DB에 있지만 incoming에 없는 후보 → is_active=false
+      const toDeactivate = [...existingIds].filter(id => !incomingIds.has(id));
+      if (toDeactivate.length > 0) {
         const { error: dErr } = await supabaseAdmin
           .from("worldcup_candidates")
-          .delete()
-          .in("id", toDelete);
-        if (dErr) console.error("후보 삭제 실패:", dErr);
+          .update({ is_active: false })
+          .in("id", toDeactivate);
+        if (dErr) console.error("후보 비활성화 실패:", dErr);
       }
 
       // 3) 수정: 기존 후보 UPDATE (id 유지 → 랭킹 보존)
@@ -2735,6 +2739,7 @@ async function loadCandidates(contentId, userId, isAdmin) {
     .from("worldcup_candidates")
     .select("*")
     .eq("content_id", contentId)
+    .eq("is_active", true)
     .order("sort_order", { ascending: true });
 
   if (rErr || !rows) return { error: "CANDIDATES_LOAD_FAILED" };
