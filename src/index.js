@@ -20,16 +20,6 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }, // OG 이미지 프록시 허용
 }));
 
-// ── REST Rate limiting (IP 기준) ──
-const restLimiter = rateLimit({
-  windowMs: 60 * 1000,  // 1분
-  max: 60,              // IP당 60 req/min
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { ok: false, error: "RATE_LIMITED" },
-});
-app.use(restLimiter);
-
 // ── CORS 허용 Origin 목록 ──
 // 환경변수 FRONTEND_ORIGINS (쉼표 구분)로 관리, 하드코딩 폴백 포함
 const ALLOWED_ORIGINS = new Set([
@@ -59,10 +49,21 @@ function checkOrigin(origin, callback) {
   callback(new Error(`CORS: origin '${origin}' is not allowed`));
 }
 
+// ★ CORS를 rate limiter보다 먼저 적용 — 429 응답에도 CORS 헤더 포함
 app.use(cors({
   origin: checkOrigin,
   credentials: true
 }));
+
+// ── REST Rate limiting (IP 기준) ──
+const restLimiter = rateLimit({
+  windowMs: 60 * 1000,  // 1분
+  max: 120,             // IP당 120 req/min (admin 다건 호출 대응)
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "RATE_LIMITED" },
+});
+app.use(restLimiter);
 
 // Supabase (토큰 검증용)
 const supabase = createClient(
