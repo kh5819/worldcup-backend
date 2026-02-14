@@ -10,7 +10,7 @@ CREATE OR REPLACE FUNCTION auto_increment_complete_count()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET role = 'service_role'
+SET search_path = public
 AS $$
 BEGIN
   IF NEW.event_type = 'finish' THEN
