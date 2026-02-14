@@ -5,7 +5,7 @@
 
 BEGIN;
 
--- PART A 롤백: auto_increment_complete_count → user_id 체크 없는 원래 버전
+-- PART A 롤백: auto_increment_complete_count → 3분 dedup 없는 단순 버전
 CREATE OR REPLACE FUNCTION auto_increment_complete_count()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -43,6 +43,30 @@ $$;
 
 -- PART D 롤백: bump_tier_play_count RPC 제거
 DROP FUNCTION IF EXISTS public.bump_tier_play_count(uuid) CASCADE;
--- last_play_count_at 컬럼은 남겨둠 (데이터 유실 방지, 필요시 수동 삭제)
+-- last_play_count_at 컬럼은 유지 (DROP COLUMN 금지 — 데이터 유실 방지)
+
+-- PART F 롤백: VIEW를 원래 정렬로 복원
+DROP VIEW IF EXISTS public_contents_list;
+CREATE VIEW public_contents_list AS
+  SELECT
+    c.id,
+    c.mode AS type,
+    c.title,
+    c.description,
+    c.thumbnail_url,
+    c.thumbnail_version,
+    c.category,
+    c.tags,
+    c.play_count,
+    c.complete_count,
+    c.timer_enabled,
+    c.item_count,
+    c.created_at,
+    c.updated_at,
+    COALESCE(u.raw_user_meta_data->>'display_name', u.email, '익명') AS creator_name
+  FROM contents c
+  LEFT JOIN auth.users u ON u.id = c.owner_id
+  WHERE c.visibility = 'public'
+    AND (c.is_hidden IS NULL OR c.is_hidden = false);
 
 COMMIT;
