@@ -109,22 +109,23 @@ app.get("/health", (req, res) => {
 });
 // =========================
 // 홈 리스트 API
-// GET /contents?type=worldcup|quiz|all&sort=popular|newest&limit=24
+// GET /contents?type=worldcup|quiz|all&sort=popular|newest|likes&limit=24&offset=0
 // =========================
 app.get("/contents", async (req, res) => {
   try {
     // 1) 쿼리 파라미터 받기
     const type = String(req.query.type || "all");      // worldcup | quiz | all
-    const sort = String(req.query.sort || "popular");  // popular | newest
+    const sort = String(req.query.sort || "popular");  // popular | newest | likes
     const limitRaw = Number(req.query.limit || 24);
     const limit = Math.min(60, Math.max(1, limitRaw)); // 1~60 제한
+    const offsetRaw = Number(req.query.offset || 0);
+    const offset = Math.max(0, offsetRaw);
 
     // 2) 기본 쿼리: public_contents_list(View)에서 읽기
-    //    (홈에서 공개용으로 만든 view라 이게 가장 안전/간단)
     let q = supabaseAdmin
       .from("public_contents_list")
-      .select("id, type, title, thumbnail_url, creator_name, play_count, complete_count, created_at")
-      .limit(limit);
+      .select("id, type, title, thumbnail_url, creator_name, play_count, complete_count, like_count, created_at")
+      .range(offset, offset + limit - 1);
 
     // 3) type 필터 적용
     if (type === "worldcup" || type === "quiz") {
@@ -134,6 +135,8 @@ app.get("/contents", async (req, res) => {
     // 4) 정렬 적용
     if (sort === "newest") {
       q = q.order("created_at", { ascending: false });
+    } else if (sort === "likes") {
+      q = q.order("like_count", { ascending: false }).order("created_at", { ascending: false });
     } else {
       // 기본 popular
       q = q.order("complete_count", { ascending: false }).order("created_at", { ascending: false });
@@ -146,8 +149,9 @@ app.get("/contents", async (req, res) => {
       return res.status(500).json({ ok: false, error: "DB_QUERY_FAILED" });
     }
 
-    // 6) 응답
-    return res.json({ ok: true, items: data || [] });
+    // 6) 응답 (hasMore: 다음 페이지 존재 여부)
+    const items = data || [];
+    return res.json({ ok: true, items, hasMore: items.length === limit });
   } catch (err) {
     console.error("GET /contents internal:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
