@@ -122,7 +122,7 @@ app.get("/contents", async (req, res) => {
     //    (홈에서 공개용으로 만든 view라 이게 가장 안전/간단)
     let q = supabaseAdmin
       .from("public_contents_list")
-      .select("id, type, title, thumbnail_url, creator_name, play_count, created_at")
+      .select("id, type, title, thumbnail_url, creator_name, play_count, complete_count, created_at")
       .limit(limit);
 
     // 3) type 필터 적용
@@ -135,7 +135,7 @@ app.get("/contents", async (req, res) => {
       q = q.order("created_at", { ascending: false });
     } else {
       // 기본 popular
-      q = q.order("play_count", { ascending: false }).order("created_at", { ascending: false });
+      q = q.order("complete_count", { ascending: false }).order("created_at", { ascending: false });
     }
 
     // 5) 실행
@@ -171,7 +171,7 @@ app.get("/og/content/:id", async (req, res) => {
     // DB에서 콘텐츠 정보 조회
     const { data: content, error } = await supabaseAdmin
       .from("contents")
-      .select("id, mode, title, description, thumbnail_url, play_count, created_at, owner_id")
+      .select("id, mode, title, description, thumbnail_url, play_count, complete_count, created_at, owner_id")
       .eq("id", contentId)
       .single();
 
@@ -602,7 +602,7 @@ app.get("/content/:id", async (req, res) => {
 
     const { data: content, error } = await supabaseAdmin
       .from("contents")
-      .select("id, mode, title, description, thumbnail_url, play_count, created_at, owner_id, visibility")
+      .select("id, mode, title, description, thumbnail_url, play_count, complete_count, created_at, owner_id, visibility")
       .eq("id", contentId)
       .single();
 
@@ -927,7 +927,7 @@ app.get("/admin/contents", requireAdmin, async (req, res) => {
     // 기본 쿼리 빌드
     let query = supabaseAdmin
       .from("contents")
-      .select("id, title, mode, visibility, is_hidden, hidden_reason, report_count, owner_id, play_count, thumbnail_url, description, category, tags, created_at, updated_at", { count: "exact" });
+      .select("id, title, mode, visibility, is_hidden, hidden_reason, report_count, owner_id, play_count, complete_count, thumbnail_url, description, category, tags, created_at, updated_at", { count: "exact" });
 
     // 타입 필터
     if (type && type !== "all") {
@@ -954,7 +954,7 @@ app.get("/admin/contents", requireAdmin, async (req, res) => {
 
     // 정렬
     if (sort === "popular") {
-      query = query.order("play_count", { ascending: false });
+      query = query.order("complete_count", { ascending: false });
     } else if (sort === "reports") {
       query = query.order("report_count", { ascending: false });
     } else {
@@ -1251,7 +1251,7 @@ app.get("/admin/tier-templates", requireAdmin, async (req, res) => {
 
     let query = supabaseAdmin
       .from("tier_templates")
-      .select("id, title, description, tags, cards, is_public, creator_id, play_count, report_count, is_hidden, hidden_reason, deleted_at, created_at, updated_at", { count: "exact" });
+      .select("id, title, description, tags, cards, is_public, creator_id, play_count, complete_count, report_count, is_hidden, hidden_reason, deleted_at, created_at, updated_at", { count: "exact" });
 
     if (visibility === "public") {
       query = query.eq("is_public", true);
@@ -1274,7 +1274,7 @@ app.get("/admin/tier-templates", requireAdmin, async (req, res) => {
     }
 
     if (sort === "popular") {
-      query = query.order("play_count", { ascending: false });
+      query = query.order("complete_count", { ascending: false });
     } else if (sort === "reports") {
       query = query.order("report_count", { ascending: false });
     } else {
@@ -1799,7 +1799,7 @@ app.get("/my/contents", requireAuth, async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
       .from("contents")
-      .select("id, title, mode, visibility, play_count, timer_enabled, category, tags, thumbnail_url, description, created_at, updated_at")
+      .select("id, title, mode, visibility, play_count, complete_count, timer_enabled, category, tags, thumbnail_url, description, created_at, updated_at")
       .eq("owner_id", req.user.id)
       .order("created_at", { ascending: false });
     if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
@@ -2275,7 +2275,8 @@ app.get("/quiz/stats/:quizId", async (req, res) => {
 // 콘텐츠 이벤트 로그 (content_events)
 // =========================
 
-const CE_DEDUP_SEC = 600; // 10분 dedup
+const CE_DEDUP_SEC = 600; // 10분 dedup (play/share)
+const CE_FINISH_DEDUP_SEC = 180; // 3분 dedup (finish — 완주)
 
 // POST /events — 이벤트 기록 (play/finish/share)
 // 인증 선택적: 로그인 시 user_id 저장, 비로그인도 기록
@@ -2302,9 +2303,28 @@ app.post("/events", async (req, res) => {
       return res.status(400).json({ ok: false, error: "INVALID_TYPE" });
     }
 
-    // 10분 dedup (session_id 있을 때만)
-    if (sessionId) {
-      const threshold = new Date(Date.now() - CE_DEDUP_SEC * 1000).toISOString();
+    // finish 이벤트: 3분 dedup (user_id 우선, 없으면 session_id)
+    // play/share 이벤트: 10분 dedup (session_id 기반)
+    const isFinish = eventType === "finish";
+    const dedupSec = isFinish ? CE_FINISH_DEDUP_SEC : CE_DEDUP_SEC;
+    const threshold = new Date(Date.now() - dedupSec * 1000).toISOString();
+
+    if (isFinish && userId) {
+      // 로그인 유저 finish: user_id + content_id로 dedup
+      const { data: recent } = await supabaseAdmin
+        .from("content_events")
+        .select("id")
+        .eq("content_id", contentId)
+        .eq("event_type", "finish")
+        .eq("user_id", userId)
+        .gte("created_at", threshold)
+        .limit(1);
+
+      if (recent && recent.length > 0) {
+        return res.json({ ok: true, dedup: true });
+      }
+    } else if (sessionId) {
+      // 비로그인 finish 또는 play/share: session_id 기반 dedup
       const { data: recent } = await supabaseAdmin
         .from("content_events")
         .select("id")
@@ -2331,6 +2351,17 @@ app.post("/events", async (req, res) => {
     if (error) {
       console.error("[POST /events] insert error:", error.message);
       return res.status(500).json({ ok: false, error: "DB_INSERT_FAIL" });
+    }
+
+    // finish 이벤트 insert 성공 → complete_count +1 (fire-and-forget)
+    if (isFinish) {
+      supabaseAdmin.rpc("increment_complete_count", {
+        p_content_id: contentId,
+        p_content_type: contentType,
+      }).then(({ error: rpcErr }) => {
+        if (rpcErr) console.error("[POST /events] increment_complete_count error:", rpcErr.message);
+        else console.log(`[POST /events] complete_count+1 ${contentType} cid=${contentId}`);
+      });
     }
 
     console.log(`[POST /events] ${contentType}/${eventType} cid=${contentId} sid=${sessionId || "none"} uid=${userId || "anon"}`);
