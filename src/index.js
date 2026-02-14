@@ -1252,7 +1252,7 @@ app.get("/admin/tier-templates", requireAdmin, async (req, res) => {
 
     let query = supabaseAdmin
       .from("tier_templates")
-      .select("id, title, description, tags, cards, is_public, creator_id, play_count, complete_count, report_count, is_hidden, hidden_reason, deleted_at, created_at, updated_at", { count: "exact" });
+      .select("id, title, description, tags, cards, is_public, creator_id, play_count, report_count, is_hidden, hidden_reason, deleted_at, created_at, updated_at", { count: "exact" });
 
     if (visibility === "public") {
       query = query.eq("is_public", true);
@@ -1275,7 +1275,7 @@ app.get("/admin/tier-templates", requireAdmin, async (req, res) => {
     }
 
     if (sort === "popular") {
-      query = query.order("complete_count", { ascending: false });
+      query = query.order("play_count", { ascending: false });
     } else if (sort === "reports") {
       query = query.order("report_count", { ascending: false });
     } else {
@@ -2354,16 +2354,8 @@ app.post("/events", async (req, res) => {
       return res.status(500).json({ ok: false, error: "DB_INSERT_FAIL" });
     }
 
-    // finish 이벤트 insert 성공 → complete_count +1 (fire-and-forget)
-    if (isFinish) {
-      supabaseAdmin.rpc("increment_complete_count", {
-        p_content_id: contentId,
-        p_content_type: contentType,
-      }).then(({ error: rpcErr }) => {
-        if (rpcErr) console.error("[POST /events] increment_complete_count error:", rpcErr.message);
-        else console.log(`[POST /events] complete_count+1 ${contentType} cid=${contentId}`);
-      });
-    }
+    // complete_count 증가는 DB 트리거(trg_auto_increment_complete)가 자동 처리
+    // — content_events INSERT 시 event_type='finish' && content_type IN ('worldcup','quiz')이면 +1
 
     console.log(`[POST /events] ${contentType}/${eventType} cid=${contentId} sid=${sessionId || "none"} uid=${userId || "anon"}`);
     return res.json({ ok: true });
