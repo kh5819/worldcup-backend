@@ -124,7 +124,7 @@ app.get("/contents", async (req, res) => {
     // 2) 기본 쿼리: public_contents_list(View)에서 읽기
     let q = supabaseAdmin
       .from("public_contents_list")
-      .select("id, type, title, thumbnail_url, creator_name, play_count, complete_count, like_count, created_at")
+      .select("id, type, title, thumbnail_url, creator_name, play_count, complete_count, like_count, item_count, created_at")
       .range(offset, offset + limit - 1);
 
     // 3) type 필터 적용
