@@ -3360,16 +3360,32 @@ function doQuizReveal(room) {
 
   const scores = buildQuizScores(room);
 
-  // 정답 공개용 미디어: reveal > question fallback (유튜브 제외)
+  // 정답 공개용 미디어: reveal > question fallback
+  // 표시 가능한 미디어 타입만 허용 (youtube/none 등 제외)
+  const _displayable = new Set(["image", "gif", "mp4", "webp", "video"]);
   let revealMedia = null;
-  if (question.type !== "audio_youtube") {
-    const rUrl = question.revealMediaUrl || question.mediaUrl || null;
-    const rType = question.revealMediaUrl ? question.revealMediaType : question.mediaType;
-    if (rUrl && rType && rType !== "none" && rType !== "youtube") {
-      revealMedia = { media_type: rType, media_url: rUrl };
+  const qIdx = q.questionIndex;
+
+  if (question.type === "audio_youtube") {
+    console.log(`[REVEAL-MEDIA] multi q${qIdx}: skip because youtube type`);
+  } else if (question.revealMediaUrl) {
+    // 1순위: reveal_media_url 사용
+    const rType = question.revealMediaType || "image";
+    if (_displayable.has(rType)) {
+      revealMedia = { media_type: rType, media_url: question.revealMediaUrl };
+      console.log(`[REVEAL-MEDIA] multi q${qIdx}: resolved from reveal_media_url`);
+    } else {
+      console.log(`[REVEAL-MEDIA] multi q${qIdx}: skip because unsupported reveal media_type=${rType}`);
+    }
+  } else if (question.mediaUrl && question.mediaType) {
+    // 2순위: question media fallback (displayable만)
+    if (_displayable.has(question.mediaType)) {
+      revealMedia = { media_type: question.mediaType, media_url: question.mediaUrl };
+      console.log(`[REVEAL-MEDIA] multi q${qIdx}: resolved from question media fallback`);
+    } else {
+      console.log(`[REVEAL-MEDIA] multi q${qIdx}: fallback rejected because invalid media_type=${question.mediaType}`);
     }
   }
-  console.log(`[REVEAL-MEDIA] multi quiz:reveal q${q.questionIndex}: revealMediaUrl=${question.revealMediaUrl}, mediaUrl=${question.mediaUrl}, resolved=${JSON.stringify(revealMedia)}, fallback=${!question.revealMediaUrl && !!question.mediaUrl}`);
 
   const revealPayload = {
     questionIndex: q.questionIndex,
