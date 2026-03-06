@@ -1951,21 +1951,30 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
 
     if (existing.mode === "quiz" && questions && Array.isArray(questions)) {
       await supabaseAdmin.from("quiz_questions").delete().eq("content_id", req.params.id);
-      const rows = questions.map((q, i) => ({
-        content_id: req.params.id,
-        sort_order: i + 1,
-        type: q.type || "mcq",
-        prompt: q.prompt,
-        choices: q.choices || [],
-        answer: q.answer || [],
-        media_type: q.media_type || null,
-        media_url: q.media_url || null,
-        start_sec: q.start_sec || 0,
-        duration_sec: q.duration_sec || 10,
-      }));
+      const rows = questions.map((q, i) => {
+        const row = {
+          content_id: req.params.id,
+          sort_order: i + 1,
+          type: q.type || "mcq",
+          prompt: q.prompt,
+          choices: q.choices || [],
+          answer: q.answer || [],
+          media_type: q.media_type || null,
+          media_url: q.media_url || null,
+          start_sec: q.start_sec || 0,
+          duration_sec: q.duration_sec || 10,
+          reveal_media_type: q.reveal_media_type || null,
+          reveal_media_url: q.reveal_media_url || null,
+        };
+        if (row.reveal_media_url) {
+          console.log(`[REVEAL-MEDIA] PUT q${i}: reveal_media_url=${row.reveal_media_url}, reveal_media_type=${row.reveal_media_type}`);
+        }
+        return row;
+      });
       if (rows.length > 0) {
         const { error: iErr } = await supabaseAdmin.from("quiz_questions").insert(rows);
         if (iErr) console.error("문제 재삽입 실패:", iErr);
+        else console.log(`[REVEAL-MEDIA] PUT ${req.params.id}: ${rows.length} questions re-inserted, reveal count=${rows.filter(r => r.reveal_media_url).length}`);
       }
     }
 
@@ -3104,18 +3113,32 @@ async function loadQuizQuestions(contentId, userId, isAdmin) {
 
   return {
     content: { id: content.id, title: content.title, visibility: content.visibility, timerEnabled: content.timer_enabled !== false },
-    questions: rows.map(q => ({
-      id: q.id,
-      type: q.type,
-      prompt: q.prompt,
-      choices: q.choices || [],
-      answer: q.answer || [],
-      mediaType: q.media_type,
-      mediaUrl: q.media_url,
-      startSec: q.start_sec || 0,
-      durationSec: q.duration_sec || 10,
-      sortOrder: q.sort_order
-    }))
+    questions: rows.map(q => {
+      const rawStart = q.start_sec;
+      const rawDur = q.duration_sec;
+      const startSec = (typeof rawStart === "number" && rawStart >= 0) ? rawStart : 0;
+      const durationSec = (typeof rawDur === "number" && rawDur > 0) ? rawDur : 10;
+      if (rawStart !== null && rawStart !== undefined && rawStart !== startSec) {
+        console.warn(`[QUIZ] startSec parse: raw=${JSON.stringify(rawStart)} → ${startSec} (qId=${q.id})`);
+      }
+      if (rawDur !== null && rawDur !== undefined && rawDur !== durationSec) {
+        console.warn(`[QUIZ] durationSec parse: raw=${JSON.stringify(rawDur)} → ${durationSec} (qId=${q.id})`);
+      }
+      return {
+        id: q.id,
+        type: q.type,
+        prompt: q.prompt,
+        choices: q.choices || [],
+        answer: q.answer || [],
+        mediaType: q.media_type,
+        mediaUrl: q.media_url,
+        startSec,
+        durationSec,
+        sortOrder: q.sort_order,
+        revealMediaType: q.reveal_media_type || null,
+        revealMediaUrl: q.reveal_media_url || null,
+      };
+    })
   };
 }
 
@@ -3337,6 +3360,17 @@ function doQuizReveal(room) {
 
   const scores = buildQuizScores(room);
 
+  // 정답 공개용 미디어: reveal > question fallback (유튜브 제외)
+  let revealMedia = null;
+  if (question.type !== "audio_youtube") {
+    const rUrl = question.revealMediaUrl || question.mediaUrl || null;
+    const rType = question.revealMediaUrl ? question.revealMediaType : question.mediaType;
+    if (rUrl && rType && rType !== "none" && rType !== "youtube") {
+      revealMedia = { media_type: rType, media_url: rUrl };
+    }
+  }
+  console.log(`[REVEAL-MEDIA] multi quiz:reveal q${q.questionIndex}: revealMediaUrl=${question.revealMediaUrl}, mediaUrl=${question.mediaUrl}, resolved=${JSON.stringify(revealMedia)}, fallback=${!question.revealMediaUrl && !!question.mediaUrl}`);
+
   const revealPayload = {
     questionIndex: q.questionIndex,
     totalQuestions: q.questions.length,
@@ -3348,6 +3382,7 @@ function doQuizReveal(room) {
     choiceStats,
     scores,
     isLastQuestion: q.questionIndex >= q.questions.length - 1,
+    revealMedia,
   };
 
   q.lastReveal = revealPayload;
