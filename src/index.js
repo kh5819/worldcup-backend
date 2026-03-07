@@ -2634,6 +2634,7 @@ function buildSyncPayload(room, userId) {
       phase: q.phase || "lobby",
       content: room.content || null,
       isHost: room.hostUserId === userId,
+      quizMode: room.quizMode || "normal",
       quiz: {
         questionIndex: q.questionIndex,
         totalQuestions: q.questions.length,
@@ -2646,6 +2647,7 @@ function buildSyncPayload(room, userId) {
         readyPlayers: Array.from(q.readyPlayers),
         lastReveal: q.lastReveal || null,
         lastScoreboard: q.lastScoreboard || null,
+        speedSolver: q.speedSolver || null,
       }
     };
   }
@@ -2680,7 +2682,13 @@ function publicRoom(room) {
     } else if (room.mode === "quiz" && room.quiz) {
       const q = room.quiz;
       if (q.phase === "answering") {
-        status = q.answers.has(userId) ? "제출 완료" : "답변 중…";
+        if (room.quizMode === "speed") {
+          if (q.speedSolver?.userId === userId) status = "정답!";
+          else if (q.answers.has(userId)) status = "제출 완료";
+          else status = "도전 중…";
+        } else {
+          status = q.answers.has(userId) ? "제출 완료" : "답변 중…";
+        }
       } else if (q.phase === "show") {
         const curQ = q.questions[q.questionIndex];
         if (curQ?.type === "audio_youtube") {
@@ -2721,7 +2729,9 @@ function publicRoom(room) {
     revoteCount: room.revoteCount || 0,
     maxRevotes: 2,
     // ✅ 재접속 시 유튜브 구간 재생 복원용
-    quizYoutube: room.quiz?.youtube || null
+    quizYoutube: room.quiz?.youtube || null,
+    // ✅ 퀴즈 모드 (normal / speed)
+    quizMode: room.quizMode || "normal"
   };
 }
 
@@ -3221,6 +3231,9 @@ function initQuizState(room, questions) {
     lastReveal: null,
     lastScoreboard: null,
     youtube: null,
+    // 스피드 모드 전용
+    speedSolver: null,          // { userId, name } — 선착 정답자
+    speedAttempts: new Map(),   // userId → { lastWrongAt, wrongCount }
   };
   for (const userId of room.players.keys()) {
     room.quiz.scores[userId] = 0;
@@ -3243,6 +3256,9 @@ function advanceQuizQuestion(room) {
   q.readyPlayers.clear();
   q.youtube = null;
   q.lastReveal = null;
+  // 스피드 모드 리셋
+  q.speedSolver = null;
+  q.speedAttempts.clear();
 
   const questionPayload = safeQuestion(question, q.questionIndex, q.questions.length);
   io.to(room.id).emit("quiz:question", questionPayload);
@@ -3281,6 +3297,7 @@ function startQuizAnswering(room) {
     questionIndex: q.questionIndex,
     timer: { enabled: !!room.timerEnabled, sec: room.timerSec },
     youtube: youtubePayload,
+    quizMode: room.quizMode || "normal",
   });
   io.to(room.id).emit("room:state", publicRoom(room));
 
@@ -3289,7 +3306,26 @@ function startQuizAnswering(room) {
 
 function startQuizTimer(room) {
   if (room.quizTimer) { clearTimeout(room.quizTimer); room.quizTimer = null; }
-  if (!room.timerEnabled) { room.roundEndsAt = null; return; }
+  if (!room.timerEnabled) {
+    room.roundEndsAt = null;
+    // 스피드 모드: 타이머 비활성이어도 최대 시간 제한 (120초)
+    if (room.quizMode === "speed") {
+      const SPEED_MAX_SEC = 120;
+      room.roundEndsAt = Date.now() + SPEED_MAX_SEC * 1000;
+      room.quizTimer = setTimeout(() => {
+        room.quizTimer = null;
+        room.roundEndsAt = null;
+        for (const [userId] of room.players.entries()) {
+          if (!room.quiz.answers.has(userId)) {
+            room.quiz.answers.set(userId, { submitted: true, answer: null, isCorrect: false });
+          }
+        }
+        io.to(room.id).emit("room:state", publicRoom(room));
+        doQuizReveal(room);
+      }, SPEED_MAX_SEC * 1000);
+    }
+    return;
+  }
 
   room.roundEndsAt = Date.now() + room.timerSec * 1000;
   room.quizTimer = setTimeout(() => {
@@ -3318,17 +3354,24 @@ function doQuizReveal(room) {
   const question = q.questions[q.questionIndex];
   const results = [];
 
+  const isSpeedMode = room.quizMode === "speed";
+
   for (const [userId, p] of room.players.entries()) {
     const entry = q.answers.get(userId) || { submitted: false, answer: null, isCorrect: false };
 
-    if (entry.submitted && entry.answer !== null) {
-      entry.isCorrect = checkAnswer(question, entry.answer);
+    if (isSpeedMode) {
+      // 스피드 모드: 이미 submit 시점에 isCorrect + score 처리됨
+      // entry.isCorrect 그대로 사용
     } else {
-      entry.isCorrect = false;
-    }
-
-    if (entry.isCorrect) {
-      q.scores[userId] = (q.scores[userId] || 0) + 1;
+      // 일반 모드: reveal 시점에 정답 판정 + 점수 부여
+      if (entry.submitted && entry.answer !== null) {
+        entry.isCorrect = checkAnswer(question, entry.answer);
+      } else {
+        entry.isCorrect = false;
+      }
+      if (entry.isCorrect) {
+        q.scores[userId] = (q.scores[userId] || 0) + 1;
+      }
     }
 
     results.push({
@@ -3399,6 +3442,9 @@ function doQuizReveal(room) {
     scores,
     isLastQuestion: q.questionIndex >= q.questions.length - 1,
     revealMedia,
+    // 스피드 모드 전용
+    speedSolver: q.speedSolver || null,
+    quizMode: room.quizMode || "normal",
   };
 
   q.lastReveal = revealPayload;
@@ -3552,6 +3598,8 @@ io.on("connection", (socket) => {
       // ✅ 동률 시 재투표 옵션
       revoteEnabled: payload?.revoteEnabled !== false,  // 기본값 true
       revoteCount: 0,  // 현재 매치에서 재투표 횟수
+      // ✅ 퀴즈 스피드 모드
+      quizMode: payload?.quizMode === "speed" ? "speed" : "normal",
     };
     rooms.set(roomId, room);
     inviteCodeMap.set(inviteCode, roomId);
@@ -3909,6 +3957,68 @@ io.on("connection", (socket) => {
     const p = room.players.get(me.id);
     if (!p) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
 
+    // ── 스피드 모드 분기 ──
+    if (room.quizMode === "speed") {
+      const q = room.quiz;
+      const question = q.questions[q.questionIndex];
+
+      // 이미 누가 풀었으면 거부
+      if (q.speedSolver) return cb?.({ ok: false, error: "ALREADY_SOLVED" });
+
+      // 이미 정답 맞힌 본인이면 거부 (안전장치)
+      if (q.answers.has(me.id)) return cb?.({ ok: false, error: "ALREADY_SUBMITTED" });
+
+      // 쿨다운 체크 (오답 후 2초)
+      const attempt = q.speedAttempts.get(me.id);
+      const COOLDOWN_MS = 2000;
+      if (attempt?.lastWrongAt) {
+        const elapsed = Date.now() - attempt.lastWrongAt;
+        if (elapsed < COOLDOWN_MS) {
+          return cb?.({ ok: false, error: "COOLDOWN", remainMs: COOLDOWN_MS - elapsed });
+        }
+      }
+
+      const userAnswer = payload?.answer ?? null;
+      const isCorrect = checkAnswer(question, userAnswer);
+
+      if (isCorrect) {
+        // ✅ 선착 정답자!
+        q.speedSolver = { userId: me.id, name: p.name };
+        q.answers.set(me.id, { submitted: true, answer: userAnswer, isCorrect: true });
+        q.scores[me.id] = (q.scores[me.id] || 0) + 1;
+
+        // 전원에게 선착 정답자 알림
+        io.to(room.id).emit("quiz:speed-solved", {
+          solverId: me.id,
+          solverName: p.name,
+        });
+
+        cb?.({ ok: true, correct: true });
+
+        // 1.5초 후 reveal (정답자 표시 시간)
+        if (room.quizTimer) { clearTimeout(room.quizTimer); room.quizTimer = null; }
+        room.quizTimer = setTimeout(() => {
+          room.quizTimer = null;
+          // 미정답자 → 오답 처리
+          for (const [userId] of room.players.entries()) {
+            if (!q.answers.has(userId)) {
+              q.answers.set(userId, { submitted: true, answer: null, isCorrect: false });
+            }
+          }
+          doQuizReveal(room);
+        }, 1500);
+      } else {
+        // ❌ 오답 → 쿨다운 설정, 재시도 허용
+        q.speedAttempts.set(me.id, {
+          lastWrongAt: Date.now(),
+          wrongCount: (attempt?.wrongCount || 0) + 1,
+        });
+        cb?.({ ok: true, correct: false, cooldownMs: COOLDOWN_MS });
+      }
+      return;
+    }
+
+    // ── 일반 모드 (기존 로직) ──
     // 이미 제출했으면 거부
     if (room.quiz.answers.has(me.id)) return cb?.({ ok: false, error: "ALREADY_SUBMITTED" });
 
