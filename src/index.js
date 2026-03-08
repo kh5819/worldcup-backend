@@ -956,7 +956,7 @@ app.get("/admin/contents", requireAdmin, async (req, res) => {
     // 검색어 (제목 또는 태그)
     if (q && q.trim()) {
       const searchTerm = q.trim();
-      query = query.or(`title.ilike.%${searchTerm}%,tags.cs.{${searchTerm}}`);
+      query = query.or(`title.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%,tags.cs.{${searchTerm}}`);
     }
 
     // 정렬
@@ -1277,7 +1277,8 @@ app.get("/admin/tier-templates", requireAdmin, async (req, res) => {
     }
 
     if (q && q.trim()) {
-      query = query.ilike("title", `%${q.trim()}%`);
+      const searchTerm = q.trim();
+      query = query.or(`title.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%,tags.cs.{${searchTerm}}`);
     }
 
     if (sort === "popular") {
