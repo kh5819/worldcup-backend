@@ -1883,12 +1883,13 @@ app.delete("/admin/highlights/:id", requireAdmin, async (req, res) => {
 // 공개 하이라이트 목록 (비로그인 접근 가능)
 app.get("/highlights", async (req, res) => {
   try {
-    const { page = 1, limit = 20, content_id } = req.query;
+    const { page = 1, limit = 20, content_id, platform } = req.query;
     const offset = (Number(page) - 1) * Number(limit);
 
     let query = supabaseAdmin.from("highlights").select("*", { count: "exact" })
       .eq("status", "approved").eq("is_public", true);
     if (content_id) query = query.or(`content_id.eq.${content_id},tier_template_id.eq.${content_id}`);
+    if (platform && platform !== "all") query = query.eq("platform", platform);
     query = query.order("sort_order", { ascending: false }).order("created_at", { ascending: false })
       .range(offset, offset + Number(limit) - 1);
 
@@ -1897,6 +1898,56 @@ app.get("/highlights", async (req, res) => {
     return res.json({ ok: true, items: data || [], total: count || 0, totalPages: Math.ceil((count || 0) / Number(limit)) });
   } catch (err) {
     console.error("GET /highlights:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 하이라이트 제보 (비로그인도 가능, 승인 대기로 저장)
+app.post("/highlights/submit", async (req, res) => {
+  try {
+    const { video_url, channel_name, content_id, memo } = req.body;
+    if (!video_url || !video_url.trim()) return res.status(400).json({ ok: false, error: "MISSING_URL" });
+
+    // 플랫폼 자동 감지
+    let platform = "other";
+    const urlLower = (video_url || "").toLowerCase();
+    if (urlLower.includes("youtube.com") || urlLower.includes("youtu.be")) platform = "youtube";
+    else if (urlLower.includes("soop.co") || urlLower.includes("sooplive")) platform = "soop";
+    else if (urlLower.includes("chzzk.naver")) platform = "chzzk";
+    else if (urlLower.includes("twitch.tv")) platform = "twitch";
+
+    // 유튜브 썸네일 자동 추출
+    let thumbnail_url = null;
+    if (platform === "youtube") {
+      try {
+        const u = new URL(video_url);
+        let ytId = null;
+        if (u.hostname.includes("youtu.be")) ytId = u.pathname.slice(1).split("/")[0];
+        else if (u.hostname.includes("youtube")) ytId = u.searchParams.get("v");
+        if (ytId) thumbnail_url = `https://img.youtube.com/vi/${ytId}/hqdefault.jpg`;
+      } catch { /* ignore */ }
+    }
+
+    const row = {
+      platform,
+      video_url: video_url.trim(),
+      title: "(제보) " + (channel_name || "").trim().slice(0, 50),
+      channel_name: (channel_name || "").trim(),
+      content_id: content_id || null,
+      tier_template_id: null,
+      thumbnail_url,
+      description: (memo || "").trim().slice(0, 300) || null,
+      status: "pending",
+      is_public: false,
+      sort_order: 0,
+      admin_note: null,
+    };
+
+    const { error } = await supabaseAdmin.from("highlights").insert(row);
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /highlights/submit:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
 });
