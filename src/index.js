@@ -1834,8 +1834,8 @@ app.post("/admin/highlights", requireAdmin, async (req, res) => {
     const row = {
       platform, video_url, title,
       channel_name: channel_name || "",
-      content_id: content_id || null,
-      tier_template_id: tier_template_id || null,
+      content_id: (content_id && content_id.trim()) || null,
+      tier_template_id: (tier_template_id && tier_template_id.trim()) || null,
       thumbnail_url: thumbnail_url || null,
       description: description || null,
       status: status || "approved",
@@ -1856,8 +1856,13 @@ app.post("/admin/highlights", requireAdmin, async (req, res) => {
 app.patch("/admin/highlights/:id", requireAdmin, async (req, res) => {
   try {
     const allowed = ["platform", "video_url", "title", "channel_name", "content_id", "tier_template_id", "thumbnail_url", "description", "status", "is_public", "sort_order", "admin_note"];
+    const uuidFields = new Set(["content_id", "tier_template_id"]);
     const updates = {};
-    for (const k of allowed) { if (req.body[k] !== undefined) updates[k] = req.body[k]; }
+    for (const k of allowed) {
+      if (req.body[k] !== undefined) {
+        updates[k] = uuidFields.has(k) ? ((req.body[k] && String(req.body[k]).trim()) || null) : req.body[k];
+      }
+    }
 
     const { error } = await supabaseAdmin.from("highlights").update(updates).eq("id", req.params.id);
     if (error) return res.status(500).json({ ok: false, error: "DB_ERROR", detail: error.message });
@@ -1933,7 +1938,7 @@ app.post("/highlights/submit", async (req, res) => {
       video_url: video_url.trim(),
       title: "(제보) " + (channel_name || "").trim().slice(0, 50),
       channel_name: (channel_name || "").trim(),
-      content_id: content_id || null,
+      content_id: (content_id && content_id.trim()) || null,
       tier_template_id: null,
       thumbnail_url,
       description: (memo || "").trim().slice(0, 300) || null,
