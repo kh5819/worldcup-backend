@@ -159,6 +159,68 @@ app.get("/contents", async (req, res) => {
 });
 
 // =========================
+// 콘텐츠 검색 (하이라이트 연결용 등)
+// GET /content-search?q=키워드 → 월드컵/퀴즈/티어 통합 검색
+// =========================
+app.get("/content-search", async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    if (!q || q.length < 1) return res.json({ ok: true, items: [] });
+    const like = `%${q}%`;
+
+    // 1) contents (월드컵/퀴즈)
+    const { data: cData } = await supabaseAdmin
+      .from("contents")
+      .select("id, title, mode, created_at")
+      .ilike("title", like)
+      .eq("is_hidden", false)
+      .order("created_at", { ascending: false })
+      .limit(10);
+
+    // 2) tier_templates
+    const { data: tData } = await supabaseAdmin
+      .from("tier_templates")
+      .select("id, title, created_at")
+      .ilike("title", like)
+      .eq("is_hidden", false)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false })
+      .limit(10);
+
+    const items = [];
+    for (const c of (cData || [])) {
+      items.push({ id: c.id, title: c.title, type: c.mode === "quiz" ? "퀴즈" : "월드컵", linkField: "content_id", created_at: c.created_at });
+    }
+    for (const t of (tData || [])) {
+      items.push({ id: t.id, title: t.title, type: "티어", linkField: "tier_template_id", created_at: t.created_at });
+    }
+    // 최신순 정렬, 최대 15개
+    items.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    return res.json({ ok: true, items: items.slice(0, 15) });
+  } catch (err) {
+    console.error("GET /content-search:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 콘텐츠 ID로 제목 조회 (하이라이트 연결 표시용)
+app.get("/content-lookup/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    // contents 먼저
+    const { data: c } = await supabaseAdmin.from("contents").select("id, title, mode").eq("id", id).maybeSingle();
+    if (c) return res.json({ ok: true, item: { id: c.id, title: c.title, type: c.mode === "quiz" ? "퀴즈" : "월드컵", linkField: "content_id" } });
+    // tier_templates
+    const { data: t } = await supabaseAdmin.from("tier_templates").select("id, title").eq("id", id).maybeSingle();
+    if (t) return res.json({ ok: true, item: { id: t.id, title: t.title, type: "티어", linkField: "tier_template_id" } });
+    return res.json({ ok: true, item: null });
+  } catch (err) {
+    console.error("GET /content-lookup:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // OG 메타 미리보기 (카톡/디코/트위터 공유용)
 // GET /og/content/:id → SSR HTML 반환
 // =========================
@@ -1910,7 +1972,7 @@ app.get("/highlights", async (req, res) => {
 // 하이라이트 제보 (비로그인도 가능, 승인 대기로 저장)
 app.post("/highlights/submit", async (req, res) => {
   try {
-    const { video_url, channel_name, content_id, memo } = req.body;
+    const { video_url, channel_name, content_id, tier_template_id, memo } = req.body;
     if (!video_url || !video_url.trim()) return res.status(400).json({ ok: false, error: "MISSING_URL" });
 
     // 플랫폼 자동 감지
@@ -1938,8 +2000,8 @@ app.post("/highlights/submit", async (req, res) => {
       video_url: video_url.trim(),
       title: "(제보) " + (channel_name || "").trim().slice(0, 50),
       channel_name: (channel_name || "").trim(),
-      content_id: (content_id && content_id.trim()) || null,
-      tier_template_id: null,
+      content_id: (content_id && String(content_id).trim()) || null,
+      tier_template_id: (tier_template_id && String(tier_template_id).trim()) || null,
       thumbnail_url,
       description: (memo || "").trim().slice(0, 300) || null,
       status: "pending",
