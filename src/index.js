@@ -1799,6 +1799,109 @@ app.delete("/admin/tier-instances/:id", requireAdmin, async (req, res) => {
 });
 
 // =========================
+// 하이라이트 관리 API (Admin)
+// =========================
+
+// 목록 조회
+app.get("/admin/highlights", requireAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 30, status: st, q } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
+
+    let query = supabaseAdmin.from("highlights").select("*", { count: "exact" });
+    if (st && st !== "all") query = query.eq("status", st);
+    if (q && q.trim()) {
+      const s = q.trim();
+      query = query.or(`title.ilike.%${s}%,channel_name.ilike.%${s}%`);
+    }
+    query = query.order("created_at", { ascending: false }).range(offset, offset + Number(limit) - 1);
+
+    const { data, error, count } = await query;
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    return res.json({ ok: true, items: data || [], total: count || 0, totalPages: Math.ceil((count || 0) / Number(limit)) });
+  } catch (err) {
+    console.error("GET /admin/highlights:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 등록
+app.post("/admin/highlights", requireAdmin, async (req, res) => {
+  try {
+    const { platform, video_url, title, channel_name, content_id, tier_template_id, thumbnail_url, description, status, is_public, sort_order, admin_note } = req.body;
+    if (!platform || !video_url || !title) return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+
+    const row = {
+      platform, video_url, title,
+      channel_name: channel_name || "",
+      content_id: content_id || null,
+      tier_template_id: tier_template_id || null,
+      thumbnail_url: thumbnail_url || null,
+      description: description || null,
+      status: status || "approved",
+      is_public: is_public !== false,
+      sort_order: sort_order || 0,
+      admin_note: admin_note || null,
+    };
+    const { data, error } = await supabaseAdmin.from("highlights").insert(row).select().single();
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR", detail: error.message });
+    return res.json({ ok: true, item: data });
+  } catch (err) {
+    console.error("POST /admin/highlights:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 수정
+app.patch("/admin/highlights/:id", requireAdmin, async (req, res) => {
+  try {
+    const allowed = ["platform", "video_url", "title", "channel_name", "content_id", "tier_template_id", "thumbnail_url", "description", "status", "is_public", "sort_order", "admin_note"];
+    const updates = {};
+    for (const k of allowed) { if (req.body[k] !== undefined) updates[k] = req.body[k]; }
+
+    const { error } = await supabaseAdmin.from("highlights").update(updates).eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR", detail: error.message });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /admin/highlights/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 삭제
+app.delete("/admin/highlights/:id", requireAdmin, async (req, res) => {
+  try {
+    const { error } = await supabaseAdmin.from("highlights").delete().eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/highlights/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 공개 하이라이트 목록 (비로그인 접근 가능)
+app.get("/highlights", async (req, res) => {
+  try {
+    const { page = 1, limit = 20, content_id } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
+
+    let query = supabaseAdmin.from("highlights").select("*", { count: "exact" })
+      .eq("status", "approved").eq("is_public", true);
+    if (content_id) query = query.or(`content_id.eq.${content_id},tier_template_id.eq.${content_id}`);
+    query = query.order("sort_order", { ascending: false }).order("created_at", { ascending: false })
+      .range(offset, offset + Number(limit) - 1);
+
+    const { data, error, count } = await query;
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    return res.json({ ok: true, items: data || [], total: count || 0, totalPages: Math.ceil((count || 0) / Number(limit)) });
+  } catch (err) {
+    console.error("GET /highlights:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 내 콘텐츠 API (제작자 수정/삭제)
 // =========================
 
