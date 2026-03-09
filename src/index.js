@@ -2065,7 +2065,7 @@ app.get("/my/contents/:id", requireAuth, async (req, res) => {
         .select("*")
         .eq("content_id", content.id)
         .order("sort_order", { ascending: true });
-      children = data || [];
+      children = (data || []).map(q => ({ ...q, choices: _normalizeChoices(q.choices || []) }));
     }
 
     return res.json({ ok: true, content, children });
@@ -3360,7 +3360,7 @@ async function loadQuizQuestions(contentId, userId, isAdmin) {
         id: q.id,
         type: q.type,
         prompt: q.prompt,
-        choices: q.choices || [],
+        choices: _normalizeChoices(q.choices || []),
         answer: q.answer || [],
         mediaType: q.media_type,
         mediaUrl: q.media_url,
@@ -3372,6 +3372,17 @@ async function loadQuizQuestions(contentId, userId, isAdmin) {
       };
     })
   };
+}
+
+/** text[] 컬럼에서 객체가 문자열화된 경우 다시 파싱 */
+function _normalizeChoices(choices) {
+  if (!Array.isArray(choices)) return choices;
+  return choices.map(c => {
+    if (typeof c === "string" && c.startsWith("{") && c.endsWith("}")) {
+      try { return JSON.parse(c); } catch { /* not JSON, keep as string */ }
+    }
+    return c;
+  });
 }
 
 function extractVideoId(urlOrId) {
