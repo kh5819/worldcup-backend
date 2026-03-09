@@ -3405,6 +3405,14 @@ function extractVideoId(urlOrId) {
 function checkAnswer(question, userAnswer) {
   if (userAnswer === null || userAnswer === undefined) return false;
 
+  if (question.type === "ordering") {
+    // 순서 퀴즈: 완전 일치만 true (부분 점수는 getOrderingScore에서 별도 처리)
+    if (!Array.isArray(userAnswer)) return false;
+    const total = question.choices?.length || 0;
+    if (userAnswer.length !== total) return false;
+    return userAnswer.every((v, i) => Number(v) === i);
+  }
+
   if (question.type === "mcq") {
     const correctIndex = question.answer[0];
     return Number(userAnswer) === Number(correctIndex);
@@ -3417,6 +3425,17 @@ function checkAnswer(question, userAnswer) {
   );
 }
 
+// 순서 퀴즈 부분 점수 계산
+function getOrderingScore(question, userAnswer) {
+  const total = question.choices?.length || 0;
+  if (!Array.isArray(userAnswer) || total === 0) return { score: 0, correctCount: 0, totalItems: total };
+  let correct = 0;
+  for (let i = 0; i < total; i++) {
+    if (i < userAnswer.length && Number(userAnswer[i]) === i) correct++;
+  }
+  return { score: Math.round((correct / total) * 100) / 100, correctCount: correct, totalItems: total };
+}
+
 // 클라이언트 전송용 문제 (정답 제외)
 function safeQuestion(q, index, total) {
   const payload = {
@@ -3427,6 +3446,9 @@ function safeQuestion(q, index, total) {
   };
   if (q.type === "mcq") {
     payload.choices = q.choices;
+  }
+  if (q.type === "ordering") {
+    payload.choices = q.choices; // 정답 순서 그대로 전달 (클라이언트에서 셔플)
   }
   if (q.type === "audio_youtube") {
     payload.mediaType = "youtube";
@@ -3584,6 +3606,21 @@ function doQuizReveal(room) {
     if (isSpeedMode) {
       // 스피드 모드: 이미 submit 시점에 isCorrect + score 처리됨
       // entry.isCorrect 그대로 사용
+    } else if (question.type === "ordering") {
+      // 순서 퀴즈: 부분 점수
+      if (entry.submitted && entry.answer !== null) {
+        const orderResult = getOrderingScore(question, entry.answer);
+        entry.isCorrect = orderResult.correctCount === orderResult.totalItems;
+        entry.orderingScore = orderResult.score;
+        entry.orderingCorrectCount = orderResult.correctCount;
+        entry.orderingTotalItems = orderResult.totalItems;
+        q.scores[userId] = (q.scores[userId] || 0) + orderResult.score;
+      } else {
+        entry.isCorrect = false;
+        entry.orderingScore = 0;
+        entry.orderingCorrectCount = 0;
+        entry.orderingTotalItems = question.choices?.length || 0;
+      }
     } else {
       // 일반 모드: reveal 시점에 정답 판정 + 점수 부여
       if (entry.submitted && entry.answer !== null) {
@@ -3596,13 +3633,19 @@ function doQuizReveal(room) {
       }
     }
 
-    results.push({
+    const resultEntry = {
       userId,
       name: p.name,
       answer: entry.answer,
       isCorrect: entry.isCorrect,
       submitted: entry.submitted,
-    });
+    };
+    if (question.type === "ordering") {
+      resultEntry.orderingScore = entry.orderingScore || 0;
+      resultEntry.orderingCorrectCount = entry.orderingCorrectCount || 0;
+      resultEntry.orderingTotalItems = entry.orderingTotalItems || 0;
+    }
+    results.push(resultEntry);
   }
 
   // 객관식 통계
@@ -3619,9 +3662,11 @@ function doQuizReveal(room) {
     });
   }
 
-  const correctAnswer = question.type === "mcq"
-    ? question.choices[question.answer[0]]
-    : question.answer[0];
+  const correctAnswer = question.type === "ordering"
+    ? question.choices.join(" → ")
+    : question.type === "mcq"
+      ? question.choices[question.answer[0]]
+      : question.answer[0];
 
   const scores = buildQuizScores(room);
 
@@ -3667,6 +3712,8 @@ function doQuizReveal(room) {
     // 스피드 모드 전용
     speedSolver: q.speedSolver || null,
     quizMode: room.quizMode || "normal",
+    // 순서 퀴즈 전용: 정답 순서 (choices 배열)
+    orderingChoices: question.type === "ordering" ? question.choices : undefined,
   };
 
   q.lastReveal = revealPayload;
