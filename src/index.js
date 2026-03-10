@@ -3674,7 +3674,7 @@ function doQuizReveal(room) {
   }
 
   const correctAnswer = question.type === "ordering"
-    ? question.choices.map(c => typeof c === "string" ? c : (c?.text || "")).join(" → ")
+    ? _normalizeChoices(question.choices).map(c => typeof c === "string" ? c : (c?.text || "")).join(" → ")
     : question.type === "mcq"
       ? question.choices[question.answer[0]]
       : question.answer[0];
