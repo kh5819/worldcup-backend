@@ -2665,6 +2665,114 @@ app.get("/content-metrics/:contentId", async (req, res) => {
 });
 
 // =========================
+// 주간 랭킹 API
+// =========================
+
+// GET /ranking/weekly — 현재 주(또는 지정 주) 랭킹
+app.get("/ranking/weekly", async (req, res) => {
+  try {
+    const { week_start, limit = 50, offset = 0 } = req.query;
+    const params = {
+      p_limit: Math.min(parseInt(limit) || 50, 100),
+      p_offset: parseInt(offset) || 0,
+    };
+    if (week_start) params.p_week_start = week_start;
+
+    // 직전 주 명예의 전당 아카이브 자동 체크 (lazy)
+    try {
+      await supabaseAdmin.rpc("archive_weekly_champion");
+    } catch (_) { /* ignore */ }
+
+    const { data, error } = await supabaseAdmin.rpc("get_weekly_ranking", params);
+    if (error) {
+      console.error("[GET /ranking/weekly] rpc error:", error.message);
+      return res.status(500).json({ ok: false, error: "RPC_FAIL" });
+    }
+    return res.json({ ok: true, ranking: data || [] });
+  } catch (err) {
+    console.error("[GET /ranking/weekly] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// GET /ranking/top1 — 홈 티저용 현재 주 1위
+app.get("/ranking/top1", async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin.rpc("get_ranking_top1");
+    if (error) {
+      console.error("[GET /ranking/top1] rpc error:", error.message);
+      return res.status(500).json({ ok: false, error: "RPC_FAIL" });
+    }
+    return res.json({ ok: true, top1: data && data.length > 0 ? data[0] : null });
+  } catch (err) {
+    console.error("[GET /ranking/top1] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// GET /ranking/hall-of-fame — 명예의 전당
+app.get("/ranking/hall-of-fame", async (req, res) => {
+  try {
+    const { limit = 20, offset = 0 } = req.query;
+    const { data, error } = await supabaseAdmin.rpc("get_hall_of_fame", {
+      p_limit: Math.min(parseInt(limit) || 20, 50),
+      p_offset: parseInt(offset) || 0,
+    });
+    if (error) {
+      console.error("[GET /ranking/hall-of-fame] rpc error:", error.message);
+      return res.status(500).json({ ok: false, error: "RPC_FAIL" });
+    }
+    return res.json({ ok: true, entries: data || [] });
+  } catch (err) {
+    console.error("[GET /ranking/hall-of-fame] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// POST /ranking/archive — 수동 아카이브 (관리자 전용)
+app.post("/ranking/archive", requireAdmin, async (req, res) => {
+  try {
+    const { week_start } = req.body;
+    const params = {};
+    if (week_start) params.p_target_week = week_start;
+
+    const { data, error } = await supabaseAdmin.rpc("archive_weekly_champion", params);
+    if (error) {
+      console.error("[POST /ranking/archive] rpc error:", error.message);
+      return res.status(500).json({ ok: false, error: "RPC_FAIL" });
+    }
+    return res.json({ ok: true, result: data });
+  } catch (err) {
+    console.error("[POST /ranking/archive] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// GET /ranking/me — 내 현재 주 랭킹 포인트 (로그인 필요)
+app.get("/ranking/me", requireAuth, async (req, res) => {
+  try {
+    // auth.uid()를 사용하는 RPC이므로 유저 토큰으로 호출
+    const token = req.headers.authorization?.replace("Bearer ", "");
+    const { createClient } = await import("@supabase/supabase-js");
+    const userSupabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY,
+      { global: { headers: { Authorization: `Bearer ${token}` } } }
+    );
+    const { data, error } = await userSupabase.rpc("get_my_ranking_points");
+    if (error) {
+      console.error("[GET /ranking/me] rpc error:", error.message);
+      return res.status(500).json({ ok: false, error: "RPC_FAIL" });
+    }
+    return res.json({ ok: true, stats: data && data.length > 0 ? data[0] : null });
+  } catch (err) {
+    console.error("[GET /ranking/me] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+
+// =========================
 // 월드컵 매치/판 기록 헬퍼
 // =========================
 async function recordWorldcupMatch(room, candA, candB, winner, loser, isTie, meta) {
