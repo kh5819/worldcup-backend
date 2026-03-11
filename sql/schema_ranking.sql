@@ -229,7 +229,7 @@ BEGIN
 
   RETURN QUERY
   SELECT
-    ROW_NUMBER() OVER (ORDER BY sub.total DESC, sub.play DESC, sub.uid) AS rank,
+    ROW_NUMBER() OVER (ORDER BY sub.total DESC, sub.play DESC, sub.last_at ASC, sub.uid) AS rank,
     sub.uid         AS user_id,
     COALESCE(p.nickname, '익명') AS nickname,
     p.avatar_url    AS avatar_url,
@@ -241,13 +241,14 @@ BEGIN
       rp.user_id AS uid,
       COUNT(*)                                          AS total,
       COUNT(*) FILTER (WHERE rp.point_type = 'play')    AS play,
-      COUNT(*) FILTER (WHERE rp.point_type = 'creator') AS creator
+      COUNT(*) FILTER (WHERE rp.point_type = 'creator') AS creator,
+      MAX(rp.created_at)                                AS last_at
     FROM public.ranking_points rp
     WHERE rp.week_start = v_week
     GROUP BY rp.user_id
   ) sub
   LEFT JOIN public.profiles p ON p.id = sub.uid
-  ORDER BY sub.total DESC, sub.play DESC, sub.uid
+  ORDER BY sub.total DESC, sub.play DESC, sub.last_at ASC, sub.uid
   LIMIT p_limit
   OFFSET p_offset;
 END;
@@ -278,11 +279,13 @@ BEGIN
   FROM (
     SELECT
       rp.user_id AS uid,
-      COUNT(*) AS total
+      COUNT(*) AS total,
+      COUNT(*) FILTER (WHERE rp.point_type = 'play') AS play,
+      MAX(rp.created_at) AS last_at
     FROM public.ranking_points rp
     WHERE rp.week_start = date_trunc('week', now())::date
     GROUP BY rp.user_id
-    ORDER BY total DESC
+    ORDER BY total DESC, play DESC, last_at ASC, rp.user_id
     LIMIT 1
   ) sub
   LEFT JOIN public.profiles p ON p.id = sub.uid;
@@ -364,7 +367,7 @@ BEGIN
     RETURN jsonb_build_object('ok', true, 'action', 'already_archived', 'week_start', v_week_start);
   END IF;
 
-  -- 해당 주 1위 조회
+  -- 해당 주 1위 조회 (타이브레이커: total → play → 먼저 도달 → uid)
   SELECT
     rp.user_id,
     COUNT(*),
@@ -374,7 +377,10 @@ BEGIN
   FROM public.ranking_points rp
   WHERE rp.week_start = v_week_start
   GROUP BY rp.user_id
-  ORDER BY COUNT(*) DESC
+  ORDER BY COUNT(*) DESC,
+           COUNT(*) FILTER (WHERE rp.point_type = 'play') DESC,
+           MAX(rp.created_at) ASC,
+           rp.user_id
   LIMIT 1;
 
   -- 해당 주에 포인트가 아무도 없으면
@@ -457,12 +463,17 @@ BEGIN
   FROM public.ranking_points
   WHERE user_id = v_uid AND day_date = current_date;
 
-  -- 현재 등수
+  -- 현재 등수 (타이브레이커: total → play → 먼저 도달 → uid)
   SELECT r INTO v_rank
   FROM (
     SELECT
       rp2.user_id AS uid,
-      ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS r
+      ROW_NUMBER() OVER (
+        ORDER BY COUNT(*) DESC,
+                 COUNT(*) FILTER (WHERE rp2.point_type = 'play') DESC,
+                 MAX(rp2.created_at) ASC,
+                 rp2.user_id
+      ) AS r
     FROM public.ranking_points rp2
     WHERE rp2.week_start = v_week_start
     GROUP BY rp2.user_id
