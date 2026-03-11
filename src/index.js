@@ -2708,7 +2708,7 @@ async function recordWorldcupRun(room, championCand) {
 // =========================
 const rooms = new Map();
 const GRACE_MS = 15000;
-const MAX_PLAYERS = 4;
+const MAX_PLAYERS = 6;
 const userRoomMap = new Map();
 const inviteCodeMap = new Map(); // inviteCode → roomId
 
