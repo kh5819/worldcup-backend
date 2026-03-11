@@ -172,6 +172,28 @@ async function handleCurrent(
     payload.recent_texts = (recentRows || []).map((r: { text_answer: string }) => r.text_answer);
   }
 
+  // ---- ★ recent_responses: 닉네임 + 응답 카드형 표시용 (최신 20개) ----
+  if (row?.round_key) {
+    const { data: respRows } = await sb
+      .from("audience_votes")
+      .select("nickname, choice, text_answer, created_at")
+      .eq("room_code", room_code)
+      .eq("round_key", row.round_key)
+      .order("created_at", { ascending: false })
+      .limit(20);
+    payload.recent_responses = (respRows || []).map((r: {
+      nickname: string | null;
+      choice: number;
+      text_answer: string | null;
+      created_at: string;
+    }) => ({
+      nickname: r.nickname || "익명",
+      choice: r.choice,
+      text_answer: r.text_answer || null,
+      created_at: r.created_at,
+    }));
+  }
+
   // ---- 캐시 저장 ----
   _currentCache.set(room_code, { ts: now, payload });
 
@@ -226,6 +248,9 @@ async function handleCast(
 
   const choice = body.choice as number | undefined;
   const text_answer = body.text_answer as string | undefined;
+  const nickname = typeof body.nickname === "string"
+    ? (body.nickname as string).trim().slice(0, 10) || null
+    : null;
 
   if (isQuiz && qtype === "text") {
     // ★ 퀴즈 텍스트: text_answer 필수, choice=0 고정
@@ -238,6 +263,7 @@ async function handleCast(
       choice: 0,
       device_key,
       text_answer: text_answer.trim().slice(0, 200),
+      nickname,
     });
     if (error) {
       if (error.code === "23505") return err("already voted", 409, origin);
@@ -254,6 +280,7 @@ async function handleCast(
       round_key,
       choice: c,
       device_key,
+      nickname,
     });
     if (error) {
       if (error.code === "23505") return err("already voted", 409, origin);
@@ -270,6 +297,7 @@ async function handleCast(
       round_key,
       choice: c,
       device_key,
+      nickname,
     });
     if (error) {
       if (error.code === "23505") return err("already voted", 409, origin);
