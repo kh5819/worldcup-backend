@@ -3424,6 +3424,18 @@ function checkAnswer(question, userAnswer) {
     return userAnswer.every((v, i) => Number(v) === i);
   }
 
+  if (question.type === "classification") {
+    // 분류퀴즈: 모든 카드가 올바른 카테고리에 → true
+    if (typeof userAnswer !== "object" || userAnswer === null) return false;
+    const total = question.choices?.length || 0;
+    let correct = 0;
+    (question.choices || []).forEach((item, i) => {
+      const expected = typeof item === "string" ? "" : (item?.category || "");
+      if (userAnswer[String(i)] === expected) correct++;
+    });
+    return correct === total;
+  }
+
   if (question.type === "mcq") {
     const correctIndex = question.answer[0];
     return Number(userAnswer) === Number(correctIndex);
@@ -3447,6 +3459,18 @@ function getOrderingScore(question, userAnswer) {
   return { score: Math.round((correct / total) * 100) / 100, correctCount: correct, totalItems: total };
 }
 
+// 분류퀴즈 부분 점수 계산
+function getClassificationScore(question, userAnswer) {
+  const total = question.choices?.length || 0;
+  if (typeof userAnswer !== "object" || userAnswer === null || total === 0) return { score: 0, correctCount: 0, totalItems: total };
+  let correct = 0;
+  (question.choices || []).forEach((item, i) => {
+    const expected = typeof item === "string" ? "" : (item?.category || "");
+    if (userAnswer[String(i)] === expected) correct++;
+  });
+  return { score: Math.round((correct / total) * 100) / 100, correctCount: correct, totalItems: total };
+}
+
 // 클라이언트 전송용 문제 (정답 제외)
 function safeQuestion(q, index, total) {
   const payload = {
@@ -3460,6 +3484,11 @@ function safeQuestion(q, index, total) {
   }
   if (q.type === "ordering") {
     payload.choices = q.choices; // 정답 순서 그대로 전달 (클라이언트에서 셔플)
+  }
+  if (q.type === "classification") {
+    payload.choices = q.choices; // [{text, category}] 전달 (클라이언트에서 셔플)
+    // 카테고리 목록만 별도 전달 (answer 배열 = 카테고리 리스트)
+    payload.categories = q.answer; // ["CatA","CatB",...]
   }
   if (q.type === "audio_youtube") {
     payload.mediaType = "youtube";
@@ -3632,6 +3661,21 @@ function doQuizReveal(room) {
         entry.orderingCorrectCount = 0;
         entry.orderingTotalItems = question.choices?.length || 0;
       }
+    } else if (question.type === "classification") {
+      // 분류퀴즈: 부분 점수
+      if (entry.submitted && entry.answer !== null) {
+        const clResult = getClassificationScore(question, entry.answer);
+        entry.isCorrect = clResult.correctCount === clResult.totalItems;
+        entry.classifyScore = clResult.score;
+        entry.classifyCorrectCount = clResult.correctCount;
+        entry.classifyTotalItems = clResult.totalItems;
+        q.scores[userId] = (q.scores[userId] || 0) + clResult.score;
+      } else {
+        entry.isCorrect = false;
+        entry.classifyScore = 0;
+        entry.classifyCorrectCount = 0;
+        entry.classifyTotalItems = question.choices?.length || 0;
+      }
     } else {
       // 일반 모드: reveal 시점에 정답 판정 + 점수 부여
       if (entry.submitted && entry.answer !== null) {
@@ -3656,6 +3700,11 @@ function doQuizReveal(room) {
       resultEntry.orderingCorrectCount = entry.orderingCorrectCount || 0;
       resultEntry.orderingTotalItems = entry.orderingTotalItems || 0;
     }
+    if (question.type === "classification") {
+      resultEntry.classifyScore = entry.classifyScore || 0;
+      resultEntry.classifyCorrectCount = entry.classifyCorrectCount || 0;
+      resultEntry.classifyTotalItems = entry.classifyTotalItems || 0;
+    }
     results.push(resultEntry);
   }
 
@@ -3675,9 +3724,11 @@ function doQuizReveal(room) {
 
   const correctAnswer = question.type === "ordering"
     ? _normalizeChoices(question.choices).map(c => typeof c === "string" ? c : (c?.text || "")).join(" → ")
-    : question.type === "mcq"
-      ? question.choices[question.answer[0]]
-      : question.answer[0];
+    : question.type === "classification"
+      ? _normalizeChoices(question.choices).map(c => typeof c === "string" ? c : `${c?.text || ""}→${c?.category || ""}`).join(", ")
+      : question.type === "mcq"
+        ? question.choices[question.answer[0]]
+        : question.answer[0];
 
   const scores = buildQuizScores(room);
 
@@ -3725,6 +3776,9 @@ function doQuizReveal(room) {
     quizMode: room.quizMode || "normal",
     // 순서 퀴즈 전용: 정답 순서 (choices 배열)
     orderingChoices: question.type === "ordering" ? question.choices : undefined,
+    // 분류퀴즈 전용: choices + categories
+    classifyChoices: question.type === "classification" ? question.choices : undefined,
+    classifyCategories: question.type === "classification" ? question.answer : undefined,
   };
 
   q.lastReveal = revealPayload;
