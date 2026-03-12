@@ -3790,12 +3790,11 @@ function advanceQuizQuestion(room) {
   io.to(room.id).emit("room:state", publicRoom(room));
 
   if (question.type === "audio_youtube") {
-    // 유튜브: 3-2-1 카운트다운 후 자동 answering (준비완료 제거)
-    io.to(room.id).emit("quiz:countdown", { seconds: 3 });
+    // 유튜브: 즉시 answering 전환 (클라이언트에서 플레이어 준비 후 자동재생)
     room.quizShowTimer = setTimeout(() => {
       room.quizShowTimer = null;
       startQuizAnswering(room);
-    }, 3000);
+    }, 500);
   } else {
     // 일반 문제: 2초 후 자동으로 answering 전환
     room.quizShowTimer = setTimeout(() => {
@@ -3813,9 +3812,7 @@ function startQuizAnswering(room) {
   let youtubePayload = null;
 
   if (question.type === "audio_youtube") {
-    const startAt = Date.now() + 3000; // 3초 후 재생
     youtubePayload = {
-      startAt,
       videoId: extractVideoId(question.mediaUrl),
       startSec: question.startSec,
       durationSec: question.durationSec,
