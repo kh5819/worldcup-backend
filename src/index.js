@@ -1947,6 +1947,139 @@ app.delete("/admin/highlights/:id", requireAdmin, async (req, res) => {
   }
 });
 
+// ==============================
+// 공지사항 관리 (Admin)
+// ==============================
+
+// 공지 목록 (관리자)
+app.get("/admin/notices", requireAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 20, q } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
+
+    let query = supabaseAdmin.from("notices").select("*", { count: "exact" });
+    if (q && q.trim()) {
+      query = query.ilike("title", `%${q.trim()}%`);
+    }
+    query = query.order("is_pinned", { ascending: false })
+      .order("created_at", { ascending: false })
+      .range(offset, offset + Number(limit) - 1);
+
+    const { data, error, count } = await query;
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR", detail: error.message });
+    return res.json({ ok: true, items: data || [], total: count || 0, totalPages: Math.ceil((count || 0) / Number(limit)) });
+  } catch (err) {
+    console.error("GET /admin/notices:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 공지 작성
+app.post("/admin/notices", requireAdmin, async (req, res) => {
+  try {
+    const { title, body, is_pinned } = req.body;
+    if (!title || !body) return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+
+    const row = {
+      title: title.trim(),
+      body: body.trim(),
+      author_id: req.user.id,
+      is_pinned: !!is_pinned,
+    };
+    const { data, error } = await supabaseAdmin.from("notices").insert(row).select().single();
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR", detail: error.message });
+    return res.json({ ok: true, item: data });
+  } catch (err) {
+    console.error("POST /admin/notices:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 공지 수정
+app.patch("/admin/notices/:id", requireAdmin, async (req, res) => {
+  try {
+    const allowed = ["title", "body", "is_pinned"];
+    const updates = {};
+    for (const k of allowed) {
+      if (req.body[k] !== undefined) {
+        updates[k] = typeof req.body[k] === "string" ? req.body[k].trim() : req.body[k];
+      }
+    }
+    updates.updated_at = new Date().toISOString();
+
+    const { error } = await supabaseAdmin.from("notices").update(updates).eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR", detail: error.message });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /admin/notices/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 공지 삭제
+app.delete("/admin/notices/:id", requireAdmin, async (req, res) => {
+  try {
+    const { error } = await supabaseAdmin.from("notices").delete().eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/notices/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 관리자 댓글 삭제 (RLS 우회)
+app.delete("/admin/notice-comments/:id", requireAdmin, async (req, res) => {
+  try {
+    const { error } = await supabaseAdmin.from("notice_comments").delete().eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/notice-comments/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// ==============================
+// 공지사항 공개 API (비로그인 접근 가능)
+// ==============================
+
+// 공지 목록 (공개)
+app.get("/notices", async (req, res) => {
+  try {
+    const { page = 1, limit = 15 } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
+
+    const { data, error, count } = await supabaseAdmin.from("notices")
+      .select("id, title, is_pinned, comment_count, created_at", { count: "exact" })
+      .order("is_pinned", { ascending: false })
+      .order("created_at", { ascending: false })
+      .range(offset, offset + Number(limit) - 1);
+
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    return res.json({ ok: true, items: data || [], total: count || 0, totalPages: Math.ceil((count || 0) / Number(limit)) });
+  } catch (err) {
+    console.error("GET /notices:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 공지 상세 (공개)
+app.get("/notices/:id", async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin.from("notices")
+      .select("*")
+      .eq("id", req.params.id)
+      .single();
+
+    if (error || !data) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+    return res.json({ ok: true, item: data });
+  } catch (err) {
+    console.error("GET /notices/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
 // 공개 하이라이트 목록 (비로그인 접근 가능)
 app.get("/highlights", async (req, res) => {
   try {
