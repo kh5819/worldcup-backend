@@ -3165,7 +3165,7 @@ function publicRoom(room) {
     } else {
       status = room.committed.has(userId) ? "선택 완료" : "선택 중…";
     }
-    return { userId, name: p.name, status };
+    return { userId, name: p.name, status, isGuest: !!p.isGuest };
   });
 
   return {
@@ -3790,7 +3790,12 @@ function advanceQuizQuestion(room) {
   io.to(room.id).emit("room:state", publicRoom(room));
 
   if (question.type === "audio_youtube") {
-    // 유튜브: 유저가 quiz:ready 보낼 때까지 대기
+    // 유튜브: 3-2-1 카운트다운 후 자동 answering (준비완료 제거)
+    io.to(room.id).emit("quiz:countdown", { seconds: 3 });
+    room.quizShowTimer = setTimeout(() => {
+      room.quizShowTimer = null;
+      startQuizAnswering(room);
+    }, 3000);
   } else {
     // 일반 문제: 2초 후 자동으로 answering 전환
     room.quizShowTimer = setTimeout(() => {
@@ -4034,9 +4039,18 @@ function doQuizReveal(room) {
 io.use(async (socket, next) => {
   try {
     const token = socket.handshake.auth?.accessToken;
-    const user = await verify(token);
-    if (!user) return next(new Error("UNAUTHORIZED"));
-    socket.user = user;
+    if (token) {
+      const user = await verify(token);
+      if (!user) return next(new Error("UNAUTHORIZED"));
+      socket.user = user;
+    } else {
+      // 게스트 모드: 토큰 없으면 guestId 기반으로 연결 허용
+      const guestId = socket.handshake.auth?.guestId;
+      if (!guestId || typeof guestId !== "string" || !guestId.startsWith("guest_")) {
+        return next(new Error("UNAUTHORIZED"));
+      }
+      socket.user = { id: guestId, isGuest: true, isAdmin: false };
+    }
     next();
   } catch {
     next(new Error("UNAUTHORIZED"));
@@ -4147,6 +4161,11 @@ io.on("connection", (socket) => {
 
     const roomId = uuidv4();
     const inviteCode = generateInviteCode();
+    // 게스트는 방 생성 불가
+    if (me.isGuest) {
+      return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
+    }
+
     const room = {
       id: roomId,
       inviteCode,
@@ -4156,6 +4175,7 @@ io.on("connection", (socket) => {
       players: new Map(),
       committed: new Set(),
       disconnected: new Map(),
+      banned: new Set(), // 강퇴된 유저 ID 목록
       timerEnabled: !!payload?.timerEnabled,
       timerSec: Math.min(180, Math.max(10, Number(payload?.timerSec) || 45)),
       timeoutPolicy: payload?.timeoutPolicy === "AUTO_PASS" ? "AUTO_PASS" : "RANDOM",
@@ -4180,7 +4200,7 @@ io.on("connection", (socket) => {
     inviteCodeMap.set(inviteCode, roomId);
 
     const hostNick = pickNick(socket, payload);
-    room.players.set(me.id, { name: hostNick });
+    room.players.set(me.id, { name: hostNick, isGuest: false, joinedAt: Date.now() });
     socket.join(roomId);
     userRoomMap.set(me.id, roomId);
 
@@ -4200,6 +4220,11 @@ io.on("connection", (socket) => {
     const room = rooms.get(roomId);
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
 
+    // 강퇴된 유저 재입장 차단
+    if (room.banned && room.banned.has(me.id)) {
+      return cb?.({ ok: false, error: "BANNED_FROM_ROOM" });
+    }
+
     // 빈 방 삭제 타이머 취소 (재입장)
     if (room.emptyRoomTimer) {
       clearTimeout(room.emptyRoomTimer);
@@ -4218,7 +4243,7 @@ io.on("connection", (socket) => {
         return cb?.({ ok: false, error: "ROOM_FULL" });
       }
       // 신규 입장
-      room.players.set(me.id, { name: pickNick(socket, payload) });
+      room.players.set(me.id, { name: pickNick(socket, payload), isGuest: !!me.isGuest, joinedAt: Date.now() });
     }
     socket.join(roomId);
     userRoomMap.set(me.id, roomId);
@@ -4265,6 +4290,55 @@ io.on("connection", (socket) => {
   });
 
   safeOn(socket, "room:ping", () => {});
+
+  // =========================
+  // 호스트 강퇴 기능
+  // =========================
+  safeOn(socket, "room:kick", (payload, cb) => {
+    const roomId = payload?.roomId;
+    const targetUserId = payload?.targetUserId;
+    const room = rooms.get(roomId);
+    if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
+    if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+    if (targetUserId === me.id) return cb?.({ ok: false, error: "CANNOT_KICK_SELF" });
+    if (!room.players.has(targetUserId)) return cb?.({ ok: false, error: "PLAYER_NOT_FOUND" });
+
+    // banned Set에 추가 (재입장 차단)
+    if (!room.banned) room.banned = new Set();
+    room.banned.add(targetUserId);
+
+    // 플레이어 제거
+    room.players.delete(targetUserId);
+    room.committed.delete(targetUserId);
+    if (room.quiz) {
+      room.quiz.answers.delete(targetUserId);
+      room.quiz.readyPlayers.delete(targetUserId);
+    }
+    const disc = room.disconnected?.get(targetUserId);
+    if (disc) { clearTimeout(disc.timeoutId); room.disconnected.delete(targetUserId); }
+    userRoomMap.delete(targetUserId);
+
+    // 강퇴 대상에게 알림
+    io.to(roomId).emit("room:kicked", { targetUserId });
+
+    // 방 상태 업데이트
+    io.to(roomId).emit("room:state", publicRoom(room));
+
+    console.log(`[강퇴] roomId=${roomId} host=${me.id} kicked=${targetUserId}`);
+    cb?.({ ok: true });
+
+    // 전원 제출/committed 체크 (강퇴 후 자동 진행)
+    if (room.mode !== "quiz" && room.phase === "playing" && room.players.size > 0
+        && room.committed.size === room.players.size) {
+      doReveal(room);
+    }
+    if (room.mode === "quiz" && room.quiz?.phase === "answering" && room.players.size > 0) {
+      const allSubmitted = Array.from(room.players.keys()).every(uid => room.quiz.answers.has(uid));
+      if (allSubmitted) doQuizReveal(room);
+    }
+
+    maybeCleanupRoom(roomId, "EMPTY");
+  });
 
   // =========================
   // 월드컵 이벤트 (기존 그대로)
