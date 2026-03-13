@@ -438,11 +438,46 @@ app.get("/og/image/:id", async (req, res) => {
 });
 
 // =========================
-// 외부 영상 썸네일 프록시 (CHZZK / SOOP og:image)
+// 외부 영상 썸네일 프록시 (CHZZK / SOOP)
 // =========================
 
 const _ogThumbCache = new Map(); // url → { thumb: string|null, ts: number }
 const OG_THUMB_TTL = 3600_000;   // 1시간
+
+const _BROWSER_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.5",
+};
+
+/** CHZZK 클립 ID 추출 */
+function _extractChzzkClipId(url) {
+  const m = url.match(/chzzk\.naver\.com\/(?:embed\/)?clips?\/([A-Za-z0-9_-]+)/);
+  return m ? m[1] : null;
+}
+
+/** CHZZK API로 썸네일 가져오기 (og:image보다 안정적) */
+async function _fetchChzzkThumb(clipId) {
+  try {
+    const apiUrl = `https://api.chzzk.naver.com/service/v1/clips/${clipId}`;
+    const resp = await fetch(apiUrl, {
+      headers: _BROWSER_HEADERS,
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data?.content?.thumbnailImageUrl || data?.content?.clipThumbnailImageUrl || null;
+  } catch {
+    return null;
+  }
+}
+
+/** HTML에서 og:image 추출 */
+function _extractOgImage(html) {
+  const m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+         || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+  return m ? m[1] : null;
+}
 
 app.get("/api/og-thumb", async (req, res) => {
   const url = req.query.url;
@@ -463,17 +498,26 @@ app.get("/api/og-thumb", async (req, res) => {
   }
 
   try {
-    const resp = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; DUO-Bot/1.0)" },
-      redirect: "follow",
-      signal: AbortSignal.timeout(5000),
-    });
-    const html = await resp.text();
+    let thumb = null;
 
-    // og:image 추출 (property→content 순서 또는 content→property 순서 모두 대응)
-    const m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
-           || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
-    const thumb = m ? m[1] : null;
+    // ── CHZZK: API 우선, og:image 폴백 ──
+    const chzzkId = _extractChzzkClipId(url);
+    if (chzzkId) {
+      thumb = await _fetchChzzkThumb(chzzkId);
+      if (!thumb) {
+        // API 실패 시 페이지 og:image 시도
+        try {
+          const resp = await fetch(url, { headers: _BROWSER_HEADERS, redirect: "follow", signal: AbortSignal.timeout(5000) });
+          thumb = _extractOgImage(await resp.text());
+        } catch {}
+      }
+    } else {
+      // ── SOOP: og:image 추출 ──
+      try {
+        const resp = await fetch(url, { headers: _BROWSER_HEADERS, redirect: "follow", signal: AbortSignal.timeout(5000) });
+        thumb = _extractOgImage(await resp.text());
+      } catch {}
+    }
 
     _ogThumbCache.set(url, { thumb, ts: Date.now() });
 
