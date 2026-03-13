@@ -3605,7 +3605,8 @@ function doReveal(room) {
     winnerCand = Math.random() < 0.5 ? matchCands.A : matchCands.B;
   }
 
-  const loserCand = winnerCand === matchCands.A ? matchCands.B : matchCands.A;
+  const winningSide = winnerCand === matchCands.A ? "A" : "B";
+  const loserCand = winningSide === "A" ? matchCands.B : matchCands.A;
   const result = advanceBracket(room, winnerCand);
 
   // 매치 결과 DB 기록 (fire-and-forget)
@@ -3635,6 +3636,7 @@ function doReveal(room) {
       B: activePicks.length > 0 ? Math.round((bCount / total) * 100) : 0
     },
     roundWinner,
+    winningSide,
     winningCandidate: winnerCand.name,
     isTie: !roundWinner,
     // 재투표 초과로 인한 랜덤 진출 여부
