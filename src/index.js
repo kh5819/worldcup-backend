@@ -438,6 +438,57 @@ app.get("/og/image/:id", async (req, res) => {
 });
 
 // =========================
+// 외부 영상 썸네일 프록시 (CHZZK / SOOP og:image)
+// =========================
+
+const _ogThumbCache = new Map(); // url → { thumb: string|null, ts: number }
+const OG_THUMB_TTL = 3600_000;   // 1시간
+
+app.get("/api/og-thumb", async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: "url required" });
+
+  // 보안: CHZZK / SOOP 도메인만 허용
+  const ALLOWED = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.co\.kr)\//i;
+  if (!ALLOWED.test(url)) return res.status(403).json({ error: "domain not allowed" });
+
+  // 캐시 확인
+  const cached = _ogThumbCache.get(url);
+  if (cached && Date.now() - cached.ts < OG_THUMB_TTL) {
+    if (cached.thumb) {
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      return res.redirect(302, cached.thumb);
+    }
+    return res.status(404).json({ error: "no thumbnail" });
+  }
+
+  try {
+    const resp = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; DUO-Bot/1.0)" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(5000),
+    });
+    const html = await resp.text();
+
+    // og:image 추출 (property→content 순서 또는 content→property 순서 모두 대응)
+    const m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+           || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+    const thumb = m ? m[1] : null;
+
+    _ogThumbCache.set(url, { thumb, ts: Date.now() });
+
+    if (thumb) {
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      return res.redirect(302, thumb);
+    }
+    return res.status(404).json({ error: "no thumbnail" });
+  } catch (err) {
+    console.error("[og-thumb] fetch error:", url, err.message);
+    return res.status(502).json({ error: "fetch failed" });
+  }
+});
+
+// =========================
 // 플레이 히스토리 API
 // =========================
 
