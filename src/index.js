@@ -5177,83 +5177,16 @@ io.on("connection", (socket) => {
 // =============================================
 // 자동 대표 썸네일 (Auto Thumbnail Fallback)
 // - 수동 thumbnail_url이 없는 월드컵 콘텐츠에 대해
-//   랭킹 1위 후보의 썸네일을 auto_thumbnail_url에 저장
+//   우승수 기준 1위 후보의 media_url + media_type을 저장
+// - 프론트엔드 getThumbUrl(media_url, media_type)이 렌더 담당
+//   (기존 후보 썸네일 로직 그대로 재사용)
 // - 하루 1회만 갱신
 // =============================================
 const AUTO_THUMB_INTERVAL = 24 * 60 * 60 * 1000; // 24시간
 
 /**
- * 후보의 media_type + media_url로부터 썸네일 URL을 도출
- * @returns {Promise<string|null>}
- */
-async function _deriveCandidateThumb(mediaType, mediaUrl) {
-  if (!mediaUrl) return null;
-  const url = String(mediaUrl).trim();
-  if (!url) return null;
-
-  // YouTube: media_url이 video ID (11자) 또는 전체 URL
-  if (mediaType === "youtube") {
-    // 11자 ID인 경우
-    if (/^[A-Za-z0-9_-]{11}$/.test(url)) {
-      return `https://img.youtube.com/vi/${url}/hqdefault.jpg`;
-    }
-    // 전체 URL인 경우 ID 추출 시도
-    const m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|shorts\/))([A-Za-z0-9_-]{11})/);
-    if (m) return `https://img.youtube.com/vi/${m[1]}/hqdefault.jpg`;
-    return null;
-  }
-
-  // 이미지/GIF: 직접 URL 사용
-  if (mediaType === "image" || mediaType === "gif" ||
-      mediaType === "jpg" || mediaType === "png" || mediaType === "webp") {
-    if (/^https?:\/\//i.test(url)) return url;
-    return null;
-  }
-
-  // CHZZK 클립: 기존 _fetchChzzkThumb 활용
-  if (mediaType === "url" && /chzzk\.naver\.com/i.test(url)) {
-    const clipId = _extractChzzkClipId(url);
-    if (clipId) {
-      try {
-        const thumb = await _fetchChzzkThumb(clipId);
-        if (thumb) return thumb;
-      } catch (e) {
-        console.log(`[AUTO_THUMB] CHZZK fetch failed for ${clipId}:`, e.message);
-      }
-    }
-    return null;
-  }
-
-  // SOOP VOD: og:image 추출
-  if (mediaType === "url" && /vod\.sooplive\.co\.kr/i.test(url)) {
-    try {
-      const resp = await fetch(url, {
-        headers: _BROWSER_HEADERS,
-        redirect: "follow",
-        signal: AbortSignal.timeout(5000),
-      });
-      if (resp.ok) {
-        const ogImg = _extractOgImage(await resp.text());
-        if (ogImg) return ogImg;
-      }
-    } catch (e) {
-      console.log(`[AUTO_THUMB] SOOP fetch failed:`, e.message);
-    }
-    return null;
-  }
-
-  // Imgur: 직접 이미지 URL 추출
-  if (mediaType === "url" && /imgur\.com/i.test(url)) {
-    const imgurMatch = url.match(/imgur\.com\/(?:a\/)?([A-Za-z0-9]+)/);
-    if (imgurMatch) return `https://i.imgur.com/${imgurMatch[1]}.jpg`;
-    return null;
-  }
-
-  return null;
-}
-
-/**
- * 모든 대상 월드컵 콘텐츠의 auto_thumbnail_url을 갱신
+ * 모든 대상 월드컵 콘텐츠의 auto_thumbnail_url(=후보 media_url)을 갱신
+ * 우승수(champion_count) 기준 1위 후보의 원본 media_url + media_type 저장
  */
 async function refreshAutoThumbnails() {
   console.log("[AUTO_THUMB] Starting auto-thumbnail refresh...");
@@ -5291,7 +5224,7 @@ async function refreshAutoThumbnails() {
 
     for (const t of needRefresh) {
       try {
-        // 랭킹순(우승 횟수 → 승률 → 경기 수) 상위 3명 후보 조회
+        // 우승수(champion_count) 기준 상위 3명 후보 조회
         const { data: candidates } = await supabaseAdmin
           .from("worldcup_candidate_stats_v")
           .select("candidate_id, name, media_type, media_url, champion_count, win_rate, games")
@@ -5301,23 +5234,33 @@ async function refreshAutoThumbnails() {
           .order("games", { ascending: false })
           .limit(3);
 
-        let thumbUrl = null;
+        // media_url이 있는 첫 번째 후보 선택
+        let chosen = null;
         for (const cand of candidates || []) {
-          thumbUrl = await _deriveCandidateThumb(cand.media_type, cand.media_url);
-          if (thumbUrl) {
-            console.log(`[AUTO_THUMB] ${t.id} → candidate "${cand.name}" (${cand.media_type}): ${thumbUrl.slice(0, 80)}`);
+          if (cand.media_url && String(cand.media_url).trim()) {
+            chosen = cand;
             break;
           }
         }
 
-        // DB 업데이트 (thumbUrl이 null이어도 updated_at은 갱신 → 매번 재시도 방지)
+        // DB 업데이트: 후보의 원본 media_url + media_type 저장
+        // 프론트엔드 getThumbUrl(auto_thumbnail_url, auto_thumb_media_type)이 렌더 담당
+        const updateData = {
+          auto_thumbnail_url: chosen ? String(chosen.media_url).trim() : null,
+          auto_thumb_media_type: chosen ? chosen.media_type : null,
+          auto_thumb_updated_at: new Date().toISOString(),
+        };
+
         await supabaseAdmin
           .from("contents")
-          .update({
-            auto_thumbnail_url: thumbUrl,
-            auto_thumb_updated_at: new Date().toISOString(),
-          })
+          .update(updateData)
           .eq("id", t.id);
+
+        if (chosen) {
+          console.log(`[AUTO_THUMB] ${t.id} → "${chosen.name}" (${chosen.media_type}, champ=${chosen.champion_count}): ${String(chosen.media_url).slice(0, 80)}`);
+        } else {
+          console.log(`[AUTO_THUMB] ${t.id} → no candidate with media_url`);
+        }
 
       } catch (e) {
         console.error(`[AUTO_THUMB] Failed for ${t.id}:`, e.message);
