@@ -456,20 +456,61 @@ function _extractChzzkClipId(url) {
   return m ? m[1] : null;
 }
 
-/** CHZZK API로 썸네일 가져오기 (og:image보다 안정적) */
+/** CHZZK 썸네일 가져오기 — 다중 전략 (API → embed page → clips page) */
 async function _fetchChzzkThumb(clipId) {
-  try {
-    const apiUrl = `https://api.chzzk.naver.com/service/v1/clips/${clipId}`;
-    const resp = await fetch(apiUrl, {
-      headers: _BROWSER_HEADERS,
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    return data?.content?.thumbnailImageUrl || data?.content?.clipThumbnailImageUrl || null;
-  } catch {
-    return null;
+  const fetchOpts = { headers: _BROWSER_HEADERS, redirect: "follow", signal: AbortSignal.timeout(5000) };
+
+  // 전략 1: CHZZK API (v1, v2)
+  for (const ver of ["v1", "v2"]) {
+    try {
+      const apiUrl = `https://api.chzzk.naver.com/service/${ver}/clips/${clipId}`;
+      const resp = await fetch(apiUrl, fetchOpts);
+      if (resp.ok) {
+        const data = await resp.json();
+        const c = data?.content || data?.data || data;
+        const thumb = c?.thumbnailImageUrl || c?.clipThumbnailImageUrl || c?.thumbnail || c?.posterImageUrl;
+        if (thumb) { console.log(`[og-thumb] CHZZK API ${ver} hit:`, thumb.slice(0, 80)); return thumb; }
+      }
+    } catch {}
   }
+
+  // 전략 2: embed 페이지에서 썸네일 URL 추출 (JS config에 포함된 경우)
+  try {
+    const embedUrl = `https://chzzk.naver.com/embed/clip/${clipId}`;
+    const resp = await fetch(embedUrl, fetchOpts);
+    if (resp.ok) {
+      const html = await resp.text();
+      // JSON config의 thumbnailImageUrl
+      const m1 = html.match(/"thumbnailImageUrl"\s*:\s*"([^"]+)"/);
+      if (m1) { console.log("[og-thumb] CHZZK embed thumbnailImageUrl:", m1[1].slice(0, 80)); return m1[1]; }
+      // poster 속성
+      const m2 = html.match(/"poster"\s*:\s*"([^"]+)"/);
+      if (m2) { console.log("[og-thumb] CHZZK embed poster:", m2[1].slice(0, 80)); return m2[1]; }
+      // Naver CDN 이미지 URL (pstatic.net)
+      const m3 = html.match(/https?:\/\/[a-z0-9-]+\.pstatic\.net\/[^"'\s<>]+\.(?:jpg|jpeg|png|webp)/i);
+      if (m3) { console.log("[og-thumb] CHZZK embed CDN image:", m3[0].slice(0, 80)); return m3[0]; }
+      // og:image
+      const og = _extractOgImage(html);
+      if (og) { console.log("[og-thumb] CHZZK embed og:image:", og.slice(0, 80)); return og; }
+    }
+  } catch {}
+
+  // 전략 3: clips 페이지 og:image
+  try {
+    const clipsUrl = `https://chzzk.naver.com/clips/${clipId}`;
+    const resp = await fetch(clipsUrl, fetchOpts);
+    if (resp.ok) {
+      const html = await resp.text();
+      const og = _extractOgImage(html);
+      if (og) { console.log("[og-thumb] CHZZK clips og:image:", og.slice(0, 80)); return og; }
+      // clips 페이지의 JS에서도 썸네일 URL 검색
+      const m4 = html.match(/"thumbnailImageUrl"\s*:\s*"([^"]+)"/);
+      if (m4) { console.log("[og-thumb] CHZZK clips thumbnailImageUrl:", m4[1].slice(0, 80)); return m4[1]; }
+    }
+  } catch {}
+
+  console.log("[og-thumb] CHZZK all strategies failed for clip:", clipId);
+  return null;
 }
 
 /** HTML에서 og:image 추출 */
