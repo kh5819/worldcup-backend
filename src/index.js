@@ -456,68 +456,137 @@ function _extractChzzkClipId(url) {
   return m ? m[1] : null;
 }
 
-/** CHZZK 썸네일 가져오기 — 다중 전략 (API → embed page → clips page) */
-async function _fetchChzzkThumb(clipId) {
-  const fetchOpts = { headers: _BROWSER_HEADERS, redirect: "follow", signal: AbortSignal.timeout(5000) };
-
-  // 전략 1: CHZZK API (v1, v2)
-  for (const ver of ["v1", "v2"]) {
-    try {
-      const apiUrl = `https://api.chzzk.naver.com/service/${ver}/clips/${clipId}`;
-      const resp = await fetch(apiUrl, fetchOpts);
-      if (resp.ok) {
-        const data = await resp.json();
-        const c = data?.content || data?.data || data;
-        const thumb = c?.thumbnailImageUrl || c?.clipThumbnailImageUrl || c?.thumbnail || c?.posterImageUrl;
-        if (thumb) { console.log(`[og-thumb] CHZZK API ${ver} hit:`, thumb.slice(0, 80)); return thumb; }
-      }
-    } catch {}
-  }
-
-  // 전략 2: embed 페이지에서 썸네일 URL 추출 (JS config에 포함된 경우)
-  try {
-    const embedUrl = `https://chzzk.naver.com/embed/clip/${clipId}`;
-    const resp = await fetch(embedUrl, fetchOpts);
-    if (resp.ok) {
-      const html = await resp.text();
-      // JSON config의 thumbnailImageUrl
-      const m1 = html.match(/"thumbnailImageUrl"\s*:\s*"([^"]+)"/);
-      if (m1) { console.log("[og-thumb] CHZZK embed thumbnailImageUrl:", m1[1].slice(0, 80)); return m1[1]; }
-      // poster 속성
-      const m2 = html.match(/"poster"\s*:\s*"([^"]+)"/);
-      if (m2) { console.log("[og-thumb] CHZZK embed poster:", m2[1].slice(0, 80)); return m2[1]; }
-      // Naver CDN 이미지 URL (pstatic.net)
-      const m3 = html.match(/https?:\/\/[a-z0-9-]+\.pstatic\.net\/[^"'\s<>]+\.(?:jpg|jpeg|png|webp)/i);
-      if (m3) { console.log("[og-thumb] CHZZK embed CDN image:", m3[0].slice(0, 80)); return m3[0]; }
-      // og:image
-      const og = _extractOgImage(html);
-      if (og) { console.log("[og-thumb] CHZZK embed og:image:", og.slice(0, 80)); return og; }
-    }
-  } catch {}
-
-  // 전략 3: clips 페이지 og:image
-  try {
-    const clipsUrl = `https://chzzk.naver.com/clips/${clipId}`;
-    const resp = await fetch(clipsUrl, fetchOpts);
-    if (resp.ok) {
-      const html = await resp.text();
-      const og = _extractOgImage(html);
-      if (og) { console.log("[og-thumb] CHZZK clips og:image:", og.slice(0, 80)); return og; }
-      // clips 페이지의 JS에서도 썸네일 URL 검색
-      const m4 = html.match(/"thumbnailImageUrl"\s*:\s*"([^"]+)"/);
-      if (m4) { console.log("[og-thumb] CHZZK clips thumbnailImageUrl:", m4[1].slice(0, 80)); return m4[1]; }
-    }
-  } catch {}
-
-  console.log("[og-thumb] CHZZK all strategies failed for clip:", clipId);
-  return null;
-}
-
 /** HTML에서 og:image 추출 */
 function _extractOgImage(html) {
   const m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
          || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
   return m ? m[1] : null;
+}
+
+/** HTML에서 모든 이미지 URL 후보 추출 (CHZZK 전용) */
+function _extractAllImageCandidates(html) {
+  const candidates = [];
+  // og:image
+  const og = _extractOgImage(html);
+  if (og) candidates.push({ src: og, tag: "og:image" });
+  // twitter:image
+  const tw = html.match(/<meta[^>]+(?:name|property)=["']twitter:image["'][^>]+content=["']([^"']+)["']/i)
+           || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']twitter:image["']/i);
+  if (tw) candidates.push({ src: tw[1], tag: "twitter:image" });
+  // thumbnailImageUrl in JSON
+  const tjson = html.match(/"thumbnailImageUrl"\s*:\s*"(https?:[^"]+)"/);
+  if (tjson) candidates.push({ src: tjson[1], tag: "json:thumbnailImageUrl" });
+  // clipThumbnailImageUrl
+  const ctjson = html.match(/"clipThumbnailImageUrl"\s*:\s*"(https?:[^"]+)"/);
+  if (ctjson) candidates.push({ src: ctjson[1], tag: "json:clipThumbnailImageUrl" });
+  // poster in JSON
+  const poster = html.match(/"poster"\s*:\s*"(https?:[^"]+)"/);
+  if (poster) candidates.push({ src: poster[1], tag: "json:poster" });
+  // Naver CDN (pstatic.net) image URLs
+  const cdnRe = /https?:\/\/[a-z0-9-]+\.pstatic\.net\/[^"'\s<>]+\.(?:jpg|jpeg|png|webp)/gi;
+  let cdnMatch;
+  while ((cdnMatch = cdnRe.exec(html)) !== null) {
+    candidates.push({ src: cdnMatch[0], tag: "cdn:pstatic" });
+  }
+  // nng-phinf (CHZZK-specific CDN)
+  const nngRe = /https?:\/\/nng-phinf\.pstatic\.net\/[^"'\s<>]+/gi;
+  let nngMatch;
+  while ((nngMatch = nngRe.exec(html)) !== null) {
+    if (!candidates.some(c => c.src === nngMatch[0])) {
+      candidates.push({ src: nngMatch[0], tag: "cdn:nng-phinf" });
+    }
+  }
+  return candidates;
+}
+
+/**
+ * CHZZK 썸네일 가져오기 — 개선된 다중 전략
+ * 순서: clips 페이지 (og:image 확률 높음) → embed 페이지 → API
+ */
+async function _fetchChzzkThumb(clipId) {
+  const fetchOpts = {
+    headers: {
+      ..._BROWSER_HEADERS,
+      "Referer": "https://chzzk.naver.com/",
+    },
+    redirect: "follow",
+    signal: AbortSignal.timeout(8000),
+  };
+
+  // 전략 1: clips 페이지 (og:image가 SSR로 렌더링될 확률 높음)
+  try {
+    const clipsUrl = `https://chzzk.naver.com/clips/${clipId}`;
+    console.log("[og-thumb] CHZZK strategy 1: clips page", clipsUrl);
+    const resp = await fetch(clipsUrl, fetchOpts);
+    console.log("[og-thumb] CHZZK clips response:", resp.status, "headers:", resp.headers.get("content-type"));
+    if (resp.ok) {
+      const html = await resp.text();
+      console.log("[og-thumb] CHZZK clips HTML length:", html.length);
+      const candidates = _extractAllImageCandidates(html);
+      if (candidates.length) {
+        console.log("[og-thumb] CHZZK clips candidates:", candidates.map(c => `${c.tag}=${c.src.slice(0, 60)}`).join(" | "));
+        return candidates[0].src;
+      } else {
+        // HTML snippet for debugging (first 500 chars of <head>)
+        const headSnippet = html.match(/<head[^>]*>([\s\S]{0,800})/i);
+        console.log("[og-thumb] CHZZK clips no candidates. head snippet:", headSnippet?.[1]?.slice(0, 300) || "(no head)");
+      }
+    }
+  } catch (e) { console.log("[og-thumb] CHZZK clips error:", e.message); }
+
+  // 전략 2: embed 페이지 (JS config에 썸네일 포함 가능)
+  try {
+    const embedUrl = `https://chzzk.naver.com/embed/clip/${clipId}`;
+    console.log("[og-thumb] CHZZK strategy 2: embed page", embedUrl);
+    const resp = await fetch(embedUrl, fetchOpts);
+    console.log("[og-thumb] CHZZK embed response:", resp.status);
+    if (resp.ok) {
+      const html = await resp.text();
+      console.log("[og-thumb] CHZZK embed HTML length:", html.length);
+      const candidates = _extractAllImageCandidates(html);
+      if (candidates.length) {
+        console.log("[og-thumb] CHZZK embed candidates:", candidates.map(c => `${c.tag}=${c.src.slice(0, 60)}`).join(" | "));
+        return candidates[0].src;
+      }
+    }
+  } catch (e) { console.log("[og-thumb] CHZZK embed error:", e.message); }
+
+  // 전략 3: CHZZK API (v1, v2)
+  for (const ver of ["v1", "v2"]) {
+    try {
+      const apiUrl = `https://api.chzzk.naver.com/service/${ver}/clips/${clipId}`;
+      console.log(`[og-thumb] CHZZK strategy 3: API ${ver}`, apiUrl);
+      const resp = await fetch(apiUrl, {
+        headers: { ..._BROWSER_HEADERS, "Accept": "application/json" },
+        redirect: "follow",
+        signal: AbortSignal.timeout(5000),
+      });
+      console.log(`[og-thumb] CHZZK API ${ver} response:`, resp.status);
+      if (resp.ok) {
+        const data = await resp.json();
+        const c = data?.content || data?.data || data;
+        const thumb = c?.thumbnailImageUrl || c?.clipThumbnailImageUrl
+                   || c?.thumbnail || c?.posterImageUrl || c?.thumbnailUrl;
+        if (thumb) { console.log(`[og-thumb] CHZZK API ${ver} hit:`, thumb.slice(0, 80)); return thumb; }
+        else { console.log(`[og-thumb] CHZZK API ${ver} keys:`, Object.keys(c || {}).slice(0, 15).join(",")); }
+      }
+    } catch (e) { console.log(`[og-thumb] CHZZK API ${ver} error:`, e.message); }
+  }
+
+  // 전략 4: Naver 검색 OG (naver.me 단축 URL)
+  try {
+    const naverUrl = `https://naver.me/chzzk/clip/${clipId}`;
+    console.log("[og-thumb] CHZZK strategy 4: naver.me", naverUrl);
+    const resp = await fetch(naverUrl, { ...fetchOpts, signal: AbortSignal.timeout(4000) });
+    if (resp.ok) {
+      const html = await resp.text();
+      const og = _extractOgImage(html);
+      if (og) { console.log("[og-thumb] CHZZK naver.me og:image:", og.slice(0, 80)); return og; }
+    }
+  } catch (e) { console.log("[og-thumb] CHZZK naver.me error:", e.message); }
+
+  console.log("[og-thumb] CHZZK all strategies failed for clip:", clipId);
+  return null;
 }
 
 app.get("/api/og-thumb", async (req, res) => {
@@ -535,23 +604,16 @@ app.get("/api/og-thumb", async (req, res) => {
       res.setHeader("Cache-Control", "public, max-age=3600");
       return res.redirect(302, cached.thumb);
     }
-    return res.status(404).json({ error: "no thumbnail" });
+    return res.status(404).json({ error: "no thumbnail (cached)" });
   }
 
   try {
     let thumb = null;
 
-    // ── CHZZK: API 우선, og:image 폴백 ──
+    // ── CHZZK ──
     const chzzkId = _extractChzzkClipId(url);
     if (chzzkId) {
       thumb = await _fetchChzzkThumb(chzzkId);
-      if (!thumb) {
-        // API 실패 시 페이지 og:image 시도
-        try {
-          const resp = await fetch(url, { headers: _BROWSER_HEADERS, redirect: "follow", signal: AbortSignal.timeout(5000) });
-          thumb = _extractOgImage(await resp.text());
-        } catch {}
-      }
     } else {
       // ── SOOP: og:image 추출 ──
       try {
@@ -571,6 +633,86 @@ app.get("/api/og-thumb", async (req, res) => {
     console.error("[og-thumb] fetch error:", url, err.message);
     return res.status(502).json({ error: "fetch failed" });
   }
+});
+
+// GET /api/og-thumb/debug — CHZZK 썸네일 디버그 (배포 후 확인용)
+app.get("/api/og-thumb/debug", async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: "url required" });
+
+  const ALLOWED = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.co\.kr)\//i;
+  if (!ALLOWED.test(url)) return res.status(403).json({ error: "domain not allowed" });
+
+  const chzzkId = _extractChzzkClipId(url);
+  const results = { url, chzzkId, strategies: [] };
+
+  if (chzzkId) {
+    // Test each strategy individually and report
+    const fetchOpts = {
+      headers: { ..._BROWSER_HEADERS, "Referer": "https://chzzk.naver.com/" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(8000),
+    };
+
+    // Strategy 1: clips page
+    try {
+      const resp = await fetch(`https://chzzk.naver.com/clips/${chzzkId}`, fetchOpts);
+      const html = resp.ok ? await resp.text() : "";
+      const candidates = resp.ok ? _extractAllImageCandidates(html) : [];
+      results.strategies.push({
+        name: "clips_page",
+        status: resp.status,
+        htmlLength: html.length,
+        candidates: candidates.map(c => ({ tag: c.tag, src: c.src.slice(0, 120) })),
+        headSnippet: html.match(/<head[^>]*>([\s\S]{0,500})/i)?.[1]?.slice(0, 300) || "",
+      });
+    } catch (e) { results.strategies.push({ name: "clips_page", error: e.message }); }
+
+    // Strategy 2: embed page
+    try {
+      const resp = await fetch(`https://chzzk.naver.com/embed/clip/${chzzkId}`, fetchOpts);
+      const html = resp.ok ? await resp.text() : "";
+      const candidates = resp.ok ? _extractAllImageCandidates(html) : [];
+      results.strategies.push({
+        name: "embed_page",
+        status: resp.status,
+        htmlLength: html.length,
+        candidates: candidates.map(c => ({ tag: c.tag, src: c.src.slice(0, 120) })),
+      });
+    } catch (e) { results.strategies.push({ name: "embed_page", error: e.message }); }
+
+    // Strategy 3: API
+    for (const ver of ["v1", "v2"]) {
+      try {
+        const resp = await fetch(`https://api.chzzk.naver.com/service/${ver}/clips/${chzzkId}`, {
+          headers: { ..._BROWSER_HEADERS, "Accept": "application/json" },
+          redirect: "follow",
+          signal: AbortSignal.timeout(5000),
+        });
+        let body = null;
+        if (resp.ok) {
+          const data = await resp.json();
+          const c = data?.content || data?.data || data;
+          body = { keys: Object.keys(c || {}), thumbnailImageUrl: c?.thumbnailImageUrl, clipThumbnailImageUrl: c?.clipThumbnailImageUrl, thumbnail: c?.thumbnail, posterImageUrl: c?.posterImageUrl };
+        }
+        results.strategies.push({ name: `api_${ver}`, status: resp.status, body });
+      } catch (e) { results.strategies.push({ name: `api_${ver}`, error: e.message }); }
+    }
+  } else {
+    // SOOP: just try og:image
+    try {
+      const resp = await fetch(url, { headers: _BROWSER_HEADERS, redirect: "follow", signal: AbortSignal.timeout(5000) });
+      const html = resp.ok ? await resp.text() : "";
+      results.strategies.push({
+        name: "soop_og",
+        status: resp.status,
+        htmlLength: html.length,
+        ogImage: resp.ok ? _extractOgImage(html) : null,
+      });
+    } catch (e) { results.strategies.push({ name: "soop_og", error: e.message }); }
+  }
+
+  res.json(results);
 });
 
 // =========================
