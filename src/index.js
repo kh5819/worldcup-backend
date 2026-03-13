@@ -5038,6 +5038,13 @@ io.on("connection", (socket) => {
       if (allSubmitted) doQuizReveal(room);
     }
 
+    // 퀴즈: show 단계 유튜브 — 전원 ready면 진행 (강퇴 후 자동 진행)
+    if (room.mode === "quiz" && room.quiz?.phase === "show" && room.players.size > 0) {
+      if (room.quiz.readyPlayers.size >= room.players.size) {
+        startQuizAnswering(room);
+      }
+    }
+
     maybeCleanupRoom(roomId, "EMPTY");
   });
 
