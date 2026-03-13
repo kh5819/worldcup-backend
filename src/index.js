@@ -643,8 +643,8 @@ app.get("/api/og-thumb", async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
 
-  // 보안: CHZZK / SOOP 도메인만 허용
-  const ALLOWED = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.co\.kr)\//i;
+  // 보안: 허용 도메인 (CHZZK / SOOP / 네이버 비디오)
+  const ALLOWED = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.co\.kr|serviceapi\.nmv\.naver\.com|nmv\.naver\.com)\//i;
   if (!ALLOWED.test(url)) return res.status(403).json({ error: "domain not allowed" });
 
   // 캐시 확인 (nocache=1로 우회 가능)
@@ -667,7 +667,7 @@ app.get("/api/og-thumb", async (req, res) => {
     if (chzzkId) {
       thumb = await _fetchChzzkThumb(chzzkId);
     } else {
-      // ── SOOP: og:image 추출 ──
+      // ── 네이버 비디오 / SOOP: og:image 추출 (서버 렌더 HTML, 봇 UA 불필요) ──
       try {
         const resp = await fetch(url, { headers: _BROWSER_HEADERS, redirect: "follow", signal: AbortSignal.timeout(5000) });
         thumb = _extractOgImage(await resp.text());
@@ -692,7 +692,7 @@ app.get("/api/og-thumb/debug", async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
 
-  const ALLOWED = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.co\.kr)\//i;
+  const ALLOWED = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.co\.kr|serviceapi\.nmv\.naver\.com|nmv\.naver\.com)\//i;
   if (!ALLOWED.test(url)) return res.status(403).json({ error: "domain not allowed" });
 
   const chzzkId = _extractChzzkClipId(url);
@@ -5269,6 +5269,20 @@ async function refreshAutoThumbnails() {
                 }
               } catch (e) { console.log(`[AUTO_THUMB] CHZZK resolve failed:`, e.message); }
             }
+          }
+          // 네이버 비디오 → og:image 해석 (서버 렌더 HTML, 봇 UA 불필요)
+          else if (/serviceapi\.nmv\.naver\.com|nmv\.naver\.com/i.test(thumbUrl)) {
+            try {
+              const resp = await fetch(thumbUrl, { headers: _BROWSER_HEADERS, redirect: "follow", signal: AbortSignal.timeout(8000) });
+              if (resp.ok) {
+                const ogImg = _extractOgImage(await resp.text());
+                if (ogImg) {
+                  console.log(`[AUTO_THUMB] Naver video resolved: ${ogImg.slice(0, 80)}`);
+                  thumbUrl = ogImg;
+                  thumbType = "image";
+                }
+              }
+            } catch (e) { console.log(`[AUTO_THUMB] Naver video resolve failed:`, e.message); }
           }
           // SOOP VOD → og:image 해석
           else if (/vod\.sooplive\.co\.kr/i.test(thumbUrl)) {
