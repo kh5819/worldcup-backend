@@ -450,6 +450,14 @@ const _BROWSER_HEADERS = {
   "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.5",
 };
 
+// 소셜 미디어 봇 UA — CSR 사이트(CHZZK 등)가 og:image 포함 SSR HTML을 반환하도록 유도
+const _BOT_UA_LIST = [
+  "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+  "Twitterbot/1.0",
+  "kakaotalk-scrap/1.0 (+https://devtalk.kakao.com/)",
+  "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+];
+
 /** CHZZK 클립 ID 추출 */
 function _extractChzzkClipId(url) {
   const m = url.match(/chzzk\.naver\.com\/(?:embed\/)?clips?\/([A-Za-z0-9_-]+)/);
@@ -500,90 +508,132 @@ function _extractAllImageCandidates(html) {
 }
 
 /**
- * CHZZK 썸네일 가져오기 — 개선된 다중 전략
- * 순서: clips 페이지 (og:image 확률 높음) → embed 페이지 → API
+ * CHZZK 썸네일 가져오기 — 봇 UA 전략
+ *
+ * 핵심 원인: CHZZK는 CSR(Client-Side Rendering) SPA이므로
+ * 일반 브라우저 UA로 요청 시 빈 HTML 셸(~1800bytes, favicon만 포함)을 반환.
+ * 하지만 소셜 미디어 봇(카카오톡/트위터/페이스북) UA로 요청하면
+ * og:image가 포함된 SSR 프리렌더 HTML을 반환함.
+ *
+ * 전략 순서:
+ * 1. 봇 UA로 clips 페이지 (og:image SSR 유도) ← 핵심 전략
+ * 2. 봇 UA로 embed 페이지
+ * 3. CHZZK API (v1, v2)
+ * 4. 일반 UA fallback (거의 실패하지만 보험)
  */
 async function _fetchChzzkThumb(clipId) {
-  const fetchOpts = {
-    headers: {
-      ..._BROWSER_HEADERS,
-      "Referer": "https://chzzk.naver.com/",
-    },
-    redirect: "follow",
-    signal: AbortSignal.timeout(8000),
-  };
+  const clipsUrl = `https://chzzk.naver.com/clips/${clipId}`;
+  const embedUrl = `https://chzzk.naver.com/embed/clip/${clipId}`;
 
-  // 전략 1: clips 페이지 (og:image가 SSR로 렌더링될 확률 높음)
-  try {
-    const clipsUrl = `https://chzzk.naver.com/clips/${clipId}`;
-    console.log("[og-thumb] CHZZK strategy 1: clips page", clipsUrl);
-    const resp = await fetch(clipsUrl, fetchOpts);
-    console.log("[og-thumb] CHZZK clips response:", resp.status, "headers:", resp.headers.get("content-type"));
-    if (resp.ok) {
-      const html = await resp.text();
-      console.log("[og-thumb] CHZZK clips HTML length:", html.length);
-      const candidates = _extractAllImageCandidates(html);
-      if (candidates.length) {
-        console.log("[og-thumb] CHZZK clips candidates:", candidates.map(c => `${c.tag}=${c.src.slice(0, 60)}`).join(" | "));
-        return candidates[0].src;
-      } else {
-        // HTML snippet for debugging (first 500 chars of <head>)
-        const headSnippet = html.match(/<head[^>]*>([\s\S]{0,800})/i);
-        console.log("[og-thumb] CHZZK clips no candidates. head snippet:", headSnippet?.[1]?.slice(0, 300) || "(no head)");
+  // ── 전략 1: 봇 UA로 clips 페이지 요청 (핵심) ──
+  for (const botUA of _BOT_UA_LIST) {
+    try {
+      const botName = botUA.split("/")[0];
+      console.log(`[og-thumb] CHZZK strategy 1: clips + bot UA (${botName})`);
+      const resp = await fetch(clipsUrl, {
+        headers: {
+          "User-Agent": botUA,
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.5",
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(8000),
+      });
+      console.log(`[og-thumb] CHZZK clips+${botName}: status=${resp.status}`);
+      if (resp.ok) {
+        const html = await resp.text();
+        console.log(`[og-thumb] CHZZK clips+${botName}: HTML length=${html.length}`);
+        const candidates = _extractAllImageCandidates(html);
+        // favicon 필터: favicon.png/ico 등은 제외
+        const real = candidates.filter(c =>
+          !c.src.includes("favicon") && !c.src.endsWith(".ico")
+        );
+        if (real.length) {
+          console.log(`[og-thumb] CHZZK clips+${botName} HIT:`, real.map(c => `${c.tag}=${c.src.slice(0, 80)}`).join(" | "));
+          return real[0].src;
+        }
+        // 디버그: HTML이 충분히 긴데 이미지가 없으면 head 스니펫 출력
+        if (html.length > 2000 && !real.length) {
+          const headSnippet = html.match(/<head[^>]*>([\s\S]{0,800})/i);
+          console.log(`[og-thumb] CHZZK clips+${botName}: long HTML but no real candidates. head:`, headSnippet?.[1]?.slice(0, 400) || "(no head)");
+        }
       }
-    }
-  } catch (e) { console.log("[og-thumb] CHZZK clips error:", e.message); }
+    } catch (e) { console.log(`[og-thumb] CHZZK clips+bot error:`, e.message); }
+  }
 
-  // 전략 2: embed 페이지 (JS config에 썸네일 포함 가능)
-  try {
-    const embedUrl = `https://chzzk.naver.com/embed/clip/${clipId}`;
-    console.log("[og-thumb] CHZZK strategy 2: embed page", embedUrl);
-    const resp = await fetch(embedUrl, fetchOpts);
-    console.log("[og-thumb] CHZZK embed response:", resp.status);
-    if (resp.ok) {
-      const html = await resp.text();
-      console.log("[og-thumb] CHZZK embed HTML length:", html.length);
-      const candidates = _extractAllImageCandidates(html);
-      if (candidates.length) {
-        console.log("[og-thumb] CHZZK embed candidates:", candidates.map(c => `${c.tag}=${c.src.slice(0, 60)}`).join(" | "));
-        return candidates[0].src;
+  // ── 전략 2: 봇 UA로 embed 페이지 ──
+  for (const botUA of _BOT_UA_LIST.slice(0, 2)) { // Facebook, Twitter만 시도
+    try {
+      const botName = botUA.split("/")[0];
+      console.log(`[og-thumb] CHZZK strategy 2: embed + bot UA (${botName})`);
+      const resp = await fetch(embedUrl, {
+        headers: {
+          "User-Agent": botUA,
+          "Accept": "text/html,*/*;q=0.8",
+          "Accept-Language": "ko-KR,ko;q=0.9",
+        },
+        redirect: "follow",
+        signal: AbortSignal.timeout(8000),
+      });
+      if (resp.ok) {
+        const html = await resp.text();
+        console.log(`[og-thumb] CHZZK embed+${botName}: HTML length=${html.length}`);
+        const candidates = _extractAllImageCandidates(html);
+        const real = candidates.filter(c => !c.src.includes("favicon") && !c.src.endsWith(".ico"));
+        if (real.length) {
+          console.log(`[og-thumb] CHZZK embed+${botName} HIT:`, real[0].src.slice(0, 80));
+          return real[0].src;
+        }
       }
-    }
-  } catch (e) { console.log("[og-thumb] CHZZK embed error:", e.message); }
+    } catch (e) { console.log(`[og-thumb] CHZZK embed+bot error:`, e.message); }
+  }
 
-  // 전략 3: CHZZK API (v1, v2)
+  // ── 전략 3: CHZZK API (v1, v2) ──
   for (const ver of ["v1", "v2"]) {
     try {
       const apiUrl = `https://api.chzzk.naver.com/service/${ver}/clips/${clipId}`;
-      console.log(`[og-thumb] CHZZK strategy 3: API ${ver}`, apiUrl);
+      console.log(`[og-thumb] CHZZK strategy 3: API ${ver}`);
       const resp = await fetch(apiUrl, {
-        headers: { ..._BROWSER_HEADERS, "Accept": "application/json" },
+        headers: {
+          "User-Agent": _BROWSER_HEADERS["User-Agent"],
+          "Accept": "application/json",
+          "Accept-Language": "ko-KR,ko;q=0.9",
+          "Referer": "https://chzzk.naver.com/",
+          "Origin": "https://chzzk.naver.com",
+        },
         redirect: "follow",
         signal: AbortSignal.timeout(5000),
       });
-      console.log(`[og-thumb] CHZZK API ${ver} response:`, resp.status);
+      console.log(`[og-thumb] CHZZK API ${ver}: status=${resp.status}`);
       if (resp.ok) {
         const data = await resp.json();
         const c = data?.content || data?.data || data;
         const thumb = c?.thumbnailImageUrl || c?.clipThumbnailImageUrl
                    || c?.thumbnail || c?.posterImageUrl || c?.thumbnailUrl;
-        if (thumb) { console.log(`[og-thumb] CHZZK API ${ver} hit:`, thumb.slice(0, 80)); return thumb; }
-        else { console.log(`[og-thumb] CHZZK API ${ver} keys:`, Object.keys(c || {}).slice(0, 15).join(",")); }
+        if (thumb) { console.log(`[og-thumb] CHZZK API ${ver} HIT:`, thumb.slice(0, 80)); return thumb; }
+        else { console.log(`[og-thumb] CHZZK API ${ver} keys:`, Object.keys(c || {}).slice(0, 20).join(",")); }
       }
     } catch (e) { console.log(`[og-thumb] CHZZK API ${ver} error:`, e.message); }
   }
 
-  // 전략 4: Naver 검색 OG (naver.me 단축 URL)
+  // ── 전략 4: 일반 브라우저 UA (보험) ──
   try {
-    const naverUrl = `https://naver.me/chzzk/clip/${clipId}`;
-    console.log("[og-thumb] CHZZK strategy 4: naver.me", naverUrl);
-    const resp = await fetch(naverUrl, { ...fetchOpts, signal: AbortSignal.timeout(4000) });
+    console.log("[og-thumb] CHZZK strategy 4: browser UA fallback");
+    const resp = await fetch(clipsUrl, {
+      headers: { ..._BROWSER_HEADERS, "Referer": "https://chzzk.naver.com/" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(5000),
+    });
     if (resp.ok) {
       const html = await resp.text();
-      const og = _extractOgImage(html);
-      if (og) { console.log("[og-thumb] CHZZK naver.me og:image:", og.slice(0, 80)); return og; }
+      const candidates = _extractAllImageCandidates(html);
+      const real = candidates.filter(c => !c.src.includes("favicon") && !c.src.endsWith(".ico"));
+      if (real.length) {
+        console.log("[og-thumb] CHZZK browser UA HIT:", real[0].src.slice(0, 80));
+        return real[0].src;
+      }
     }
-  } catch (e) { console.log("[og-thumb] CHZZK naver.me error:", e.message); }
+  } catch (e) { console.log("[og-thumb] CHZZK browser fallback error:", e.message); }
 
   console.log("[og-thumb] CHZZK all strategies failed for clip:", clipId);
   return null;
@@ -597,14 +647,16 @@ app.get("/api/og-thumb", async (req, res) => {
   const ALLOWED = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.co\.kr)\//i;
   if (!ALLOWED.test(url)) return res.status(403).json({ error: "domain not allowed" });
 
-  // 캐시 확인
-  const cached = _ogThumbCache.get(url);
-  if (cached && Date.now() - cached.ts < OG_THUMB_TTL) {
-    if (cached.thumb) {
-      res.setHeader("Cache-Control", "public, max-age=3600");
-      return res.redirect(302, cached.thumb);
+  // 캐시 확인 (nocache=1로 우회 가능)
+  if (req.query.nocache !== "1") {
+    const cached = _ogThumbCache.get(url);
+    if (cached && Date.now() - cached.ts < OG_THUMB_TTL) {
+      if (cached.thumb) {
+        res.setHeader("Cache-Control", "public, max-age=3600");
+        return res.redirect(302, cached.thumb);
+      }
+      return res.status(404).json({ error: "no thumbnail (cached)" });
     }
-    return res.status(404).json({ error: "no thumbnail (cached)" });
   }
 
   try {
@@ -647,45 +699,59 @@ app.get("/api/og-thumb/debug", async (req, res) => {
   const results = { url, chzzkId, strategies: [] };
 
   if (chzzkId) {
-    // Test each strategy individually and report
-    const fetchOpts = {
-      headers: { ..._BROWSER_HEADERS, "Referer": "https://chzzk.naver.com/" },
-      redirect: "follow",
-      signal: AbortSignal.timeout(8000),
-    };
+    const clipsUrl = `https://chzzk.naver.com/clips/${chzzkId}`;
+    const embedUrl = `https://chzzk.naver.com/embed/clip/${chzzkId}`;
 
-    // Strategy 1: clips page
+    // ── 봇 UA로 clips 페이지 (핵심 전략) ──
+    for (const botUA of _BOT_UA_LIST) {
+      const botName = botUA.split("/")[0];
+      try {
+        const resp = await fetch(clipsUrl, {
+          headers: { "User-Agent": botUA, "Accept": "text/html,*/*;q=0.8", "Accept-Language": "ko-KR,ko;q=0.9" },
+          redirect: "follow",
+          signal: AbortSignal.timeout(8000),
+        });
+        const html = resp.ok ? await resp.text() : "";
+        const candidates = resp.ok ? _extractAllImageCandidates(html) : [];
+        const real = candidates.filter(c => !c.src.includes("favicon") && !c.src.endsWith(".ico"));
+        results.strategies.push({
+          name: `clips_bot_${botName}`,
+          status: resp.status,
+          htmlLength: html.length,
+          allCandidates: candidates.map(c => ({ tag: c.tag, src: c.src.slice(0, 150) })),
+          realCandidates: real.map(c => ({ tag: c.tag, src: c.src.slice(0, 150) })),
+          headSnippet: html.length < 3000 ? html.match(/<head[^>]*>([\s\S]{0,600})/i)?.[1]?.slice(0, 400) || "" : "(large HTML, skipped)",
+        });
+      } catch (e) { results.strategies.push({ name: `clips_bot_${botName}`, error: e.message }); }
+    }
+
+    // ── 일반 브라우저 UA (비교용) ──
     try {
-      const resp = await fetch(`https://chzzk.naver.com/clips/${chzzkId}`, fetchOpts);
+      const resp = await fetch(clipsUrl, {
+        headers: { ..._BROWSER_HEADERS, "Referer": "https://chzzk.naver.com/" },
+        redirect: "follow",
+        signal: AbortSignal.timeout(8000),
+      });
       const html = resp.ok ? await resp.text() : "";
       const candidates = resp.ok ? _extractAllImageCandidates(html) : [];
       results.strategies.push({
-        name: "clips_page",
+        name: "clips_browser_ua",
         status: resp.status,
         htmlLength: html.length,
-        candidates: candidates.map(c => ({ tag: c.tag, src: c.src.slice(0, 120) })),
-        headSnippet: html.match(/<head[^>]*>([\s\S]{0,500})/i)?.[1]?.slice(0, 300) || "",
+        candidates: candidates.map(c => ({ tag: c.tag, src: c.src.slice(0, 150) })),
       });
-    } catch (e) { results.strategies.push({ name: "clips_page", error: e.message }); }
+    } catch (e) { results.strategies.push({ name: "clips_browser_ua", error: e.message }); }
 
-    // Strategy 2: embed page
-    try {
-      const resp = await fetch(`https://chzzk.naver.com/embed/clip/${chzzkId}`, fetchOpts);
-      const html = resp.ok ? await resp.text() : "";
-      const candidates = resp.ok ? _extractAllImageCandidates(html) : [];
-      results.strategies.push({
-        name: "embed_page",
-        status: resp.status,
-        htmlLength: html.length,
-        candidates: candidates.map(c => ({ tag: c.tag, src: c.src.slice(0, 120) })),
-      });
-    } catch (e) { results.strategies.push({ name: "embed_page", error: e.message }); }
-
-    // Strategy 3: API
+    // ── API v1, v2 ──
     for (const ver of ["v1", "v2"]) {
       try {
         const resp = await fetch(`https://api.chzzk.naver.com/service/${ver}/clips/${chzzkId}`, {
-          headers: { ..._BROWSER_HEADERS, "Accept": "application/json" },
+          headers: {
+            "User-Agent": _BROWSER_HEADERS["User-Agent"],
+            "Accept": "application/json",
+            "Referer": "https://chzzk.naver.com/",
+            "Origin": "https://chzzk.naver.com",
+          },
           redirect: "follow",
           signal: AbortSignal.timeout(5000),
         });
@@ -693,13 +759,20 @@ app.get("/api/og-thumb/debug", async (req, res) => {
         if (resp.ok) {
           const data = await resp.json();
           const c = data?.content || data?.data || data;
-          body = { keys: Object.keys(c || {}), thumbnailImageUrl: c?.thumbnailImageUrl, clipThumbnailImageUrl: c?.clipThumbnailImageUrl, thumbnail: c?.thumbnail, posterImageUrl: c?.posterImageUrl };
+          body = {
+            keys: Object.keys(c || {}),
+            thumbnailImageUrl: c?.thumbnailImageUrl || null,
+            clipThumbnailImageUrl: c?.clipThumbnailImageUrl || null,
+            thumbnail: c?.thumbnail || null,
+            posterImageUrl: c?.posterImageUrl || null,
+            thumbnailUrl: c?.thumbnailUrl || null,
+          };
         }
         results.strategies.push({ name: `api_${ver}`, status: resp.status, body });
       } catch (e) { results.strategies.push({ name: `api_${ver}`, error: e.message }); }
     }
   } else {
-    // SOOP: just try og:image
+    // SOOP
     try {
       const resp = await fetch(url, { headers: _BROWSER_HEADERS, redirect: "follow", signal: AbortSignal.timeout(5000) });
       const html = resp.ok ? await resp.text() : "";
