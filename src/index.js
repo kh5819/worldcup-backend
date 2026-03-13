@@ -1698,7 +1698,7 @@ app.get("/admin/contents", requireAdmin, async (req, res) => {
     // 기본 쿼리 빌드
     let query = supabaseAdmin
       .from("contents")
-      .select("id, title, mode, visibility, is_hidden, hidden_reason, report_count, owner_id, play_count, complete_count, thumbnail_url, description, category, tags, created_at, updated_at", { count: "exact" });
+      .select("id, title, mode, visibility, is_hidden, hidden_reason, report_count, owner_id, play_count, complete_count, thumbnail_url, auto_thumbnail_url, description, category, tags, created_at, updated_at", { count: "exact" });
 
     // 타입 필터
     if (type && type !== "all") {
