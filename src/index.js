@@ -1306,8 +1306,359 @@ app.post("/tier-reports", requireAuth, async (req, res) => {
 });
 
 // =========================
+// 댓글 신고 API
+// =========================
+app.post("/comment-reports", requireAuth, async (req, res) => {
+  try {
+    const { commentId, commentTable, reason, detail } = req.body;
+    if (!commentId || !commentTable || !reason) {
+      return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+    }
+    if (!["content_comments", "tier_instance_comments"].includes(commentTable)) {
+      return res.status(400).json({ ok: false, error: "INVALID_COMMENT_TABLE" });
+    }
+
+    const VALID_REASONS = ["욕설/비방", "도배/광고", "음란/부적절", "기타"];
+    if (!VALID_REASONS.includes(reason)) {
+      return res.status(400).json({ ok: false, error: "INVALID_REASON" });
+    }
+
+    // 댓글 존재 확인
+    const { data: comment, error: commentErr } = await supabaseAdmin
+      .from(commentTable)
+      .select("id, user_id")
+      .eq("id", commentId)
+      .maybeSingle();
+
+    if (commentErr || !comment) {
+      return res.status(404).json({ ok: false, error: "COMMENT_NOT_FOUND" });
+    }
+
+    // 자기 댓글 신고 방지
+    if (comment.user_id === req.user.id) {
+      return res.status(400).json({ ok: false, error: "CANNOT_REPORT_OWN" });
+    }
+
+    const { error } = await supabaseAdmin.from("comment_reports").insert({
+      comment_id: commentId,
+      comment_table: commentTable,
+      reporter_user_id: req.user.id,
+      reason,
+      detail: detail || null,
+    });
+
+    if (error) {
+      if (error.code === "23505") {
+        return res.status(409).json({ ok: false, error: "ALREADY_REPORTED" });
+      }
+      console.error("POST /comment-reports error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /comment-reports internal:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 관리자 API
 // =========================
+
+// 관리자: 댓글 신고 목록
+app.get("/admin/comment-reports", requireAdmin, async (req, res) => {
+  try {
+    const { status, sort } = req.query;
+
+    let query = supabaseAdmin
+      .from("comment_reports")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (status && status !== "all") {
+      query = query.eq("status", status);
+    }
+
+    const { data: reports, error } = await query;
+    if (error) {
+      console.error("GET /admin/comment-reports DB error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    if (!reports || reports.length === 0) {
+      return res.json({ ok: true, items: [] });
+    }
+
+    // 댓글별로 그룹핑
+    const groupMap = new Map();
+    for (const r of reports) {
+      const key = `${r.comment_table}::${r.comment_id}`;
+      if (!groupMap.has(key)) {
+        groupMap.set(key, {
+          comment_id: r.comment_id,
+          comment_table: r.comment_table,
+          report_count: 0,
+          group_status: "open",
+          first_reported_at: r.created_at,
+          last_reported_at: r.created_at,
+          reports: [],
+        });
+      }
+      const g = groupMap.get(key);
+      g.report_count++;
+      g.reports.push(r);
+      if (new Date(r.created_at) < new Date(g.first_reported_at)) g.first_reported_at = r.created_at;
+      if (new Date(r.created_at) > new Date(g.last_reported_at)) g.last_reported_at = r.created_at;
+      // group_status: open if any open
+      if (r.status === "open") g.group_status = "open";
+    }
+
+    // Determine group status more accurately
+    for (const g of groupMap.values()) {
+      const hasOpen = g.reports.some(r => r.status === "open");
+      const allResolved = g.reports.every(r => r.status === "resolved");
+      if (hasOpen) g.group_status = "open";
+      else if (allResolved) g.group_status = "resolved";
+      else g.group_status = "ignored";
+    }
+
+    // 댓글 원문 조회
+    const contentCommentIds = [];
+    const tierCommentIds = [];
+    for (const g of groupMap.values()) {
+      if (g.comment_table === "content_comments") contentCommentIds.push(g.comment_id);
+      else tierCommentIds.push(g.comment_id);
+    }
+
+    const commentMap = new Map();
+
+    if (contentCommentIds.length > 0) {
+      const { data: ccRows } = await supabaseAdmin
+        .from("content_comments")
+        .select("id, content_id, content_type, user_id, author_name, body, created_at")
+        .in("id", contentCommentIds);
+      if (ccRows) {
+        for (const c of ccRows) {
+          commentMap.set(c.id, { ...c, _table: "content_comments" });
+        }
+      }
+    }
+
+    if (tierCommentIds.length > 0) {
+      const { data: tcRows } = await supabaseAdmin
+        .from("tier_instance_comments")
+        .select("id, instance_id, user_id, author_name, body, created_at")
+        .in("id", tierCommentIds);
+      if (tcRows) {
+        for (const c of tcRows) {
+          commentMap.set(c.id, { ...c, _table: "tier_instance_comments" });
+        }
+      }
+    }
+
+    // 프로필 조회 (댓글 작성자 + 신고자)
+    const allUserIds = new Set();
+    for (const c of commentMap.values()) {
+      if (c.user_id) allUserIds.add(c.user_id);
+    }
+    for (const r of reports) {
+      if (r.reporter_user_id) allUserIds.add(r.reporter_user_id);
+    }
+
+    const profileMap = new Map();
+    if (allUserIds.size > 0) {
+      const { data: profiles } = await supabaseAdmin
+        .from("profiles")
+        .select("id, nickname, avatar_url")
+        .in("id", [...allUserIds]);
+      if (profiles) {
+        for (const p of profiles) profileMap.set(p.id, p);
+      }
+    }
+
+    // 콘텐츠 제목 조회 (content_comments의 content_id)
+    const contentIds = new Set();
+    for (const c of commentMap.values()) {
+      if (c._table === "content_comments" && c.content_id) contentIds.add(c.content_id);
+    }
+    const contentTitleMap = new Map();
+    if (contentIds.size > 0) {
+      const { data: contents } = await supabaseAdmin
+        .from("contents")
+        .select("id, title")
+        .in("id", [...contentIds]);
+      if (contents) {
+        for (const c of contents) contentTitleMap.set(c.id, c.title);
+      }
+    }
+
+    // 티어 인스턴스 → 템플릿 제목 조회
+    const instanceIds = new Set();
+    for (const c of commentMap.values()) {
+      if (c._table === "tier_instance_comments" && c.instance_id) instanceIds.add(c.instance_id);
+    }
+    const instanceTitleMap = new Map();
+    if (instanceIds.size > 0) {
+      const { data: instances } = await supabaseAdmin
+        .from("tier_instances")
+        .select("id, template_id")
+        .in("id", [...instanceIds]);
+      if (instances) {
+        const tplIds = [...new Set(instances.map(i => i.template_id).filter(Boolean))];
+        if (tplIds.length > 0) {
+          const { data: templates } = await supabaseAdmin
+            .from("tier_templates")
+            .select("id, title")
+            .in("id", tplIds);
+          const tplMap = new Map();
+          if (templates) for (const t of templates) tplMap.set(t.id, t.title);
+          for (const inst of instances) {
+            instanceTitleMap.set(inst.id, tplMap.get(inst.template_id) || "티어");
+          }
+        }
+      }
+    }
+
+    // 최종 응답 조립
+    const items = [];
+    for (const g of groupMap.values()) {
+      const comment = commentMap.get(g.comment_id);
+      const authorProfile = comment?.user_id ? profileMap.get(comment.user_id) : null;
+
+      let contentTitle = "-";
+      let contentLink = null;
+      if (comment?._table === "content_comments" && comment.content_id) {
+        contentTitle = contentTitleMap.get(comment.content_id) || "-";
+        contentLink = { type: comment.content_type, id: comment.content_id };
+      } else if (comment?._table === "tier_instance_comments" && comment.instance_id) {
+        contentTitle = instanceTitleMap.get(comment.instance_id) || "티어";
+        contentLink = { type: "tier", id: comment.instance_id };
+      }
+
+      items.push({
+        ...g,
+        comment: comment ? {
+          id: comment.id,
+          body: comment.body,
+          author_name: authorProfile?.nickname || comment.author_name || "알 수 없음",
+          author_avatar: authorProfile?.avatar_url || null,
+          user_id: comment.user_id,
+          created_at: comment.created_at,
+        } : null,
+        content_title: contentTitle,
+        content_link: contentLink,
+        reports: g.reports.map(r => ({
+          ...r,
+          reporter_name: profileMap.get(r.reporter_user_id)?.nickname || "알 수 없음",
+        })),
+      });
+    }
+
+    // 정렬: open first, then by report_count desc, then by last_reported_at desc
+    items.sort((a, b) => {
+      if (a.group_status === "open" && b.group_status !== "open") return -1;
+      if (a.group_status !== "open" && b.group_status === "open") return 1;
+      if (b.report_count !== a.report_count) return b.report_count - a.report_count;
+      return new Date(b.last_reported_at) - new Date(a.last_reported_at);
+    });
+
+    if (sort === "newest") {
+      items.sort((a, b) => new Date(b.last_reported_at) - new Date(a.last_reported_at));
+    }
+
+    return res.json({ ok: true, items });
+  } catch (err) {
+    console.error("GET /admin/comment-reports:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 관리자: 댓글 신고 일괄 상태 변경 (batch-status MUST come before :id/status)
+app.patch("/admin/comment-reports/batch-status", requireAdmin, async (req, res) => {
+  try {
+    const { commentId, commentTable, status: newStatus } = req.body;
+    if (!commentId || !commentTable || !["open", "resolved", "ignored"].includes(newStatus)) {
+      return res.status(400).json({ ok: false, error: "INVALID_PARAMS" });
+    }
+
+    const { error } = await supabaseAdmin
+      .from("comment_reports")
+      .update({ status: newStatus })
+      .eq("comment_id", commentId)
+      .eq("comment_table", commentTable);
+
+    if (error) {
+      console.error("PATCH /admin/comment-reports/batch-status error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /admin/comment-reports/batch-status:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 관리자: 댓글 신고 개별 상태 변경
+app.patch("/admin/comment-reports/:id/status", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status: newStatus } = req.body;
+    if (!["open", "resolved", "ignored"].includes(newStatus)) {
+      return res.status(400).json({ ok: false, error: "INVALID_STATUS" });
+    }
+
+    const { error } = await supabaseAdmin
+      .from("comment_reports")
+      .update({ status: newStatus })
+      .eq("id", id);
+
+    if (error) {
+      console.error("PATCH /admin/comment-reports/:id/status error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /admin/comment-reports/:id/status:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 관리자: 신고된 댓글 삭제 (hard delete)
+app.delete("/admin/comments/:commentTable/:commentId", requireAdmin, async (req, res) => {
+  try {
+    const { commentTable, commentId } = req.params;
+    if (!["content_comments", "tier_instance_comments"].includes(commentTable)) {
+      return res.status(400).json({ ok: false, error: "INVALID_TABLE" });
+    }
+
+    // 댓글 삭제
+    const { error } = await supabaseAdmin
+      .from(commentTable)
+      .delete()
+      .eq("id", commentId);
+
+    if (error) {
+      console.error(`DELETE /admin/comments/${commentTable}/${commentId} error:`, error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    // 관련 신고 → resolved 처리
+    await supabaseAdmin
+      .from("comment_reports")
+      .update({ status: "resolved" })
+      .eq("comment_id", commentId)
+      .eq("comment_table", commentTable);
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/comments:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
 app.get("/admin/reports", requireAdmin, async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
