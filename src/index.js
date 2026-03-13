@@ -4236,6 +4236,54 @@ function doReveal(room) {
 
   const scores = buildScores(room);
 
+  // ── 멀티 + 플레이어 1명 이하: 결과 공개 스킵 → 바로 다음 라운드 ──
+  // (스트리머/스피드 모드는 멀티 전용이므로 혼자 멀티 플레이 케이스 지원)
+  if (room.players.size <= 1) {
+    console.log(`[doReveal] 플레이어 ${room.players.size}명 → 결과 공개 스킵`);
+
+    if (room.champion) {
+      // 마지막 라운드: 바로 종료 처리
+      room.phase = "finished";
+      const _champMedia = room.champion ? {
+        type: room.champion.mediaType || "image",
+        url: room.champion.mediaUrl || "",
+        startSec: room.champion.startSec || 0
+      } : null;
+      io.to(room.id).emit("worldcup:finished", {
+        roomId: room.id,
+        champion: room.champion?.name || room.champion,
+        championMedia: _champMedia,
+        scores,
+        picksHistory: room.picksHistory
+      });
+      recordWorldcupRun(room, room.champion).catch(() => {});
+      if (!room.alreadyCounted && room.contentId && room.hostUserId) {
+        room.alreadyCounted = true;
+        recordPlayOnce({ contentId: room.contentId, userId: room.hostUserId, mode: "multi", gameType: "worldcup" }).catch(() => {});
+      }
+      return;
+    }
+
+    // 다음 라운드 자동 진행 (worldcup:next 핸들러와 동일 로직)
+    room.committed.clear();
+    for (const p of room.players.values()) delete p.choice;
+    room.roundIndex++;
+    room.phase = "playing";
+    nextMatch(room);
+
+    const timerInfo = { enabled: room.timerEnabled, sec: room.timerSec };
+    io.to(room.id).emit("worldcup:round", {
+      roomId: room.id,
+      roundIndex: room.roundIndex,
+      totalMatches: room.totalMatches,
+      match: room.currentMatch,
+      timer: timerInfo
+    });
+    io.to(room.id).emit("room:state", publicRoom(room));
+    startRoundTimer(room);
+    return;
+  }
+
   const revealPayload = {
     picks,
     percent: {
