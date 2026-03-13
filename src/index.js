@@ -5174,6 +5174,168 @@ io.on("connection", (socket) => {
   });
 });
 
+// =============================================
+// 자동 대표 썸네일 (Auto Thumbnail Fallback)
+// - 수동 thumbnail_url이 없는 월드컵 콘텐츠에 대해
+//   랭킹 1위 후보의 썸네일을 auto_thumbnail_url에 저장
+// - 하루 1회만 갱신
+// =============================================
+const AUTO_THUMB_INTERVAL = 24 * 60 * 60 * 1000; // 24시간
+
+/**
+ * 후보의 media_type + media_url로부터 썸네일 URL을 도출
+ * @returns {Promise<string|null>}
+ */
+async function _deriveCandidateThumb(mediaType, mediaUrl) {
+  if (!mediaUrl) return null;
+  const url = String(mediaUrl).trim();
+  if (!url) return null;
+
+  // YouTube: media_url이 video ID (11자) 또는 전체 URL
+  if (mediaType === "youtube") {
+    // 11자 ID인 경우
+    if (/^[A-Za-z0-9_-]{11}$/.test(url)) {
+      return `https://img.youtube.com/vi/${url}/hqdefault.jpg`;
+    }
+    // 전체 URL인 경우 ID 추출 시도
+    const m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|shorts\/))([A-Za-z0-9_-]{11})/);
+    if (m) return `https://img.youtube.com/vi/${m[1]}/hqdefault.jpg`;
+    return null;
+  }
+
+  // 이미지/GIF: 직접 URL 사용
+  if (mediaType === "image" || mediaType === "gif" ||
+      mediaType === "jpg" || mediaType === "png" || mediaType === "webp") {
+    if (/^https?:\/\//i.test(url)) return url;
+    return null;
+  }
+
+  // CHZZK 클립: 기존 _fetchChzzkThumb 활용
+  if (mediaType === "url" && /chzzk\.naver\.com/i.test(url)) {
+    const clipId = _extractChzzkClipId(url);
+    if (clipId) {
+      try {
+        const thumb = await _fetchChzzkThumb(clipId);
+        if (thumb) return thumb;
+      } catch (e) {
+        console.log(`[AUTO_THUMB] CHZZK fetch failed for ${clipId}:`, e.message);
+      }
+    }
+    return null;
+  }
+
+  // SOOP VOD: og:image 추출
+  if (mediaType === "url" && /vod\.sooplive\.co\.kr/i.test(url)) {
+    try {
+      const resp = await fetch(url, {
+        headers: _BROWSER_HEADERS,
+        redirect: "follow",
+        signal: AbortSignal.timeout(5000),
+      });
+      if (resp.ok) {
+        const ogImg = _extractOgImage(await resp.text());
+        if (ogImg) return ogImg;
+      }
+    } catch (e) {
+      console.log(`[AUTO_THUMB] SOOP fetch failed:`, e.message);
+    }
+    return null;
+  }
+
+  // Imgur: 직접 이미지 URL 추출
+  if (mediaType === "url" && /imgur\.com/i.test(url)) {
+    const imgurMatch = url.match(/imgur\.com\/(?:a\/)?([A-Za-z0-9]+)/);
+    if (imgurMatch) return `https://i.imgur.com/${imgurMatch[1]}.jpg`;
+    return null;
+  }
+
+  return null;
+}
+
+/**
+ * 모든 대상 월드컵 콘텐츠의 auto_thumbnail_url을 갱신
+ */
+async function refreshAutoThumbnails() {
+  console.log("[AUTO_THUMB] Starting auto-thumbnail refresh...");
+
+  try {
+    // 수동 썸네일이 없는 월드컵 콘텐츠 조회
+    const { data: targets, error } = await supabaseAdmin
+      .from("contents")
+      .select("id, auto_thumb_updated_at")
+      .eq("mode", "worldcup")
+      .or("thumbnail_url.is.null,thumbnail_url.eq.");
+
+    if (error) {
+      console.error("[AUTO_THUMB] Query error:", error.message);
+      return;
+    }
+    if (!targets || !targets.length) {
+      console.log("[AUTO_THUMB] No targets (all have manual thumbnails).");
+      return;
+    }
+
+    // 24시간 미경과 → 건너뛰기
+    const cutoff = Date.now() - AUTO_THUMB_INTERVAL;
+    const needRefresh = targets.filter(t =>
+      !t.auto_thumb_updated_at ||
+      new Date(t.auto_thumb_updated_at).getTime() < cutoff
+    );
+
+    if (!needRefresh.length) {
+      console.log(`[AUTO_THUMB] ${targets.length} target(s) all up-to-date, skipping.`);
+      return;
+    }
+
+    console.log(`[AUTO_THUMB] Refreshing ${needRefresh.length} content(s)...`);
+
+    for (const t of needRefresh) {
+      try {
+        // 랭킹순(우승 횟수 → 승률 → 경기 수) 상위 3명 후보 조회
+        const { data: candidates } = await supabaseAdmin
+          .from("worldcup_candidate_stats_v")
+          .select("candidate_id, name, media_type, media_url, champion_count, win_rate, games")
+          .eq("content_id", t.id)
+          .order("champion_count", { ascending: false })
+          .order("win_rate", { ascending: false })
+          .order("games", { ascending: false })
+          .limit(3);
+
+        let thumbUrl = null;
+        for (const cand of candidates || []) {
+          thumbUrl = await _deriveCandidateThumb(cand.media_type, cand.media_url);
+          if (thumbUrl) {
+            console.log(`[AUTO_THUMB] ${t.id} → candidate "${cand.name}" (${cand.media_type}): ${thumbUrl.slice(0, 80)}`);
+            break;
+          }
+        }
+
+        // DB 업데이트 (thumbUrl이 null이어도 updated_at은 갱신 → 매번 재시도 방지)
+        await supabaseAdmin
+          .from("contents")
+          .update({
+            auto_thumbnail_url: thumbUrl,
+            auto_thumb_updated_at: new Date().toISOString(),
+          })
+          .eq("id", t.id);
+
+      } catch (e) {
+        console.error(`[AUTO_THUMB] Failed for ${t.id}:`, e.message);
+      }
+    }
+
+    console.log("[AUTO_THUMB] Refresh complete.");
+  } catch (e) {
+    console.error("[AUTO_THUMB] Unexpected error:", e.message);
+  }
+}
+
+// 서버 시작 30초 후 1회 실행 + 24시간 주기 반복
+setTimeout(() => {
+  refreshAutoThumbnails();
+  setInterval(refreshAutoThumbnails, AUTO_THUMB_INTERVAL);
+}, 30_000);
+
 server.listen(process.env.PORT || 3001, () => {
   console.log(`Backend listening on http://localhost:${process.env.PORT || 3001}`);
 });
