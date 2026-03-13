@@ -1803,10 +1803,10 @@ app.patch("/admin/contents/:id/hide", requireAdmin, async (req, res) => {
   }
 });
 
-// 관리자 콘텐츠 일반 수정 (title, description, category, tags, visibility, is_hidden, hidden_reason)
+// 관리자 콘텐츠 일반 수정 (title, description, category, tags, visibility, is_hidden, hidden_reason, thumbnail_url)
 app.patch("/admin/contents/:id", requireAdmin, async (req, res) => {
   try {
-    const { title, description, category, tags, visibility, is_hidden, hidden_reason } = req.body;
+    const { title, description, category, tags, visibility, is_hidden, hidden_reason, thumbnail_url } = req.body;
 
     // 해당 콘텐츠 존재 확인
     const { data: existing, error: fetchErr } = await supabaseAdmin
@@ -1830,6 +1830,7 @@ app.patch("/admin/contents/:id", requireAdmin, async (req, res) => {
     }
     if (is_hidden !== undefined) updates.is_hidden = !!is_hidden;
     if (hidden_reason !== undefined) updates.hidden_reason = hidden_reason || null;
+    if (thumbnail_url !== undefined) updates.thumbnail_url = thumbnail_url || null;
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ ok: false, error: "NO_UPDATES" });
