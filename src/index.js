@@ -8,6 +8,7 @@ import { Server } from "socket.io";
 import { createClient } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import ioClient from "socket.io-client";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -5805,6 +5806,616 @@ setTimeout(() => {
   refreshAutoThumbnails();
   setInterval(refreshAutoThumbnails, AUTO_THUMB_INTERVAL);
 }, 30_000);
+
+// ===================================================
+// 치지직 OAuth 토큰 교환
+// ===================================================
+const CHZZK_CLIENT_ID     = process.env.CHZZK_CLIENT_ID;
+const CHZZK_CLIENT_SECRET = process.env.CHZZK_CLIENT_SECRET;
+const CHZZK_REDIRECT_URI  = process.env.CHZZK_REDIRECT_URI;
+
+// 연동된 세션 보관 (roomCode → { accessToken, refreshToken, expiresAt, channelId, nickname })
+const chzzkSessions = new Map();
+
+app.post("/chzzk/token", async (req, res) => {
+  try {
+    const { code, state, roomCode } = req.body;
+    if (!code || !state) {
+      return res.status(400).json({ ok: false, error: "MISSING_PARAMS", message: "code와 state가 필요합니다" });
+    }
+    if (!CHZZK_CLIENT_ID || !CHZZK_CLIENT_SECRET) {
+      console.error("[CHZZK] 환경변수 CHZZK_CLIENT_ID / CHZZK_CLIENT_SECRET 미설정");
+      return res.status(500).json({ ok: false, error: "SERVER_CONFIG", message: "치지직 설정이 완료되지 않았습니다" });
+    }
+
+    // 1) code → accessToken 교환
+    const tokenBody = {
+      grantType: "authorization_code",
+      clientId: CHZZK_CLIENT_ID,
+      clientSecret: CHZZK_CLIENT_SECRET,
+      code,
+      state,
+    };
+
+    // 치지직 토큰 엔드포인트 (공식 문서 상대경로 — chzzk.naver.com 기반)
+    const TOKEN_URLS = [
+      "https://chzzk.naver.com/auth/v1/token",
+      "https://openapi.chzzk.naver.com/auth/v1/token",
+    ];
+
+    let tokenData = null;
+    let tokenError = null;
+
+    for (const tokenUrl of TOKEN_URLS) {
+      try {
+        console.log(`[CHZZK] 토큰 교환 시도: ${tokenUrl}`);
+        const tokenRes = await fetch(tokenUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(tokenBody),
+        });
+        const raw = await tokenRes.text();
+        console.log(`[CHZZK] 토큰 응답 (${tokenUrl}): status=${tokenRes.status} body=${raw.slice(0, 300)}`);
+
+        if (!tokenRes.ok) {
+          tokenError = `${tokenUrl} → ${tokenRes.status}: ${raw.slice(0, 200)}`;
+          continue;
+        }
+
+        const parsed = JSON.parse(raw);
+        // 치지직 API 응답: { code: 200, content: { accessToken, refreshToken, ... } }
+        if (parsed.content?.accessToken) {
+          tokenData = parsed.content;
+        } else if (parsed.accessToken) {
+          tokenData = parsed;
+        } else {
+          tokenError = `${tokenUrl} → 응답에 accessToken 없음: ${raw.slice(0, 200)}`;
+          continue;
+        }
+        break; // 성공
+      } catch (e) {
+        tokenError = `${tokenUrl} → fetch 실패: ${e.message}`;
+        console.warn("[CHZZK]", tokenError);
+      }
+    }
+
+    if (!tokenData) {
+      console.error("[CHZZK] 모든 토큰 URL 실패:", tokenError);
+      return res.status(502).json({ ok: false, error: "TOKEN_EXCHANGE_FAILED", message: tokenError });
+    }
+
+    const { accessToken, refreshToken, expiresIn } = tokenData;
+    console.log(`[CHZZK] 토큰 교환 성공: expiresIn=${expiresIn}`);
+
+    // 2) accessToken으로 내 채널 정보 조회
+    let channelId = null;
+    let nickname = null;
+
+    // User API 또는 Channel API로 본인 정보 조회 시도
+    const meUrls = [
+      "https://openapi.chzzk.naver.com/open/v1/users/me",
+      "https://openapi.chzzk.naver.com/open/v1/channels/me",
+    ];
+
+    for (const meUrl of meUrls) {
+      try {
+        console.log(`[CHZZK] 사용자 정보 조회: ${meUrl}`);
+        const meRes = await fetch(meUrl, {
+          headers: { "Authorization": `Bearer ${accessToken}` },
+        });
+        const meRaw = await meRes.text();
+        console.log(`[CHZZK] 사용자 응답 (${meUrl}): status=${meRes.status} body=${meRaw.slice(0, 300)}`);
+
+        if (meRes.ok) {
+          const meParsed = JSON.parse(meRaw);
+          const content = meParsed.content || meParsed;
+          channelId = content.channelId || content.channel_id || content.id || null;
+          nickname = content.channelName || content.nickname || content.name || null;
+          if (channelId) break;
+        }
+      } catch (e) {
+        console.warn(`[CHZZK] ${meUrl} 실패:`, e.message);
+      }
+    }
+
+    console.log(`[CHZZK] 사용자: channelId=${channelId}, nickname=${nickname}`);
+
+    // 3) 서버 메모리에 세션 보관
+    if (roomCode) {
+      chzzkSessions.set(roomCode, {
+        accessToken,
+        refreshToken,
+        expiresAt: Date.now() + (Number(expiresIn) || 86400) * 1000,
+        channelId,
+        nickname,
+      });
+      console.log(`[CHZZK] 세션 저장: roomCode=${roomCode}`);
+    }
+
+    return res.json({
+      ok: true,
+      channelId: channelId || null,
+      nickname: nickname || null,
+    });
+
+  } catch (err) {
+    console.error("[CHZZK] /chzzk/token 예외:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR", message: err.message });
+  }
+});
+
+// 세션 조회 (디버그/상태확인용)
+app.get("/chzzk/status", (req, res) => {
+  const roomCode = req.query.room;
+  if (!roomCode) return res.status(400).json({ ok: false, error: "MISSING_ROOM" });
+  const sess = chzzkSessions.get(roomCode);
+  if (!sess) return res.json({ ok: true, linked: false });
+  return res.json({
+    ok: true,
+    linked: true,
+    channelId: sess.channelId,
+    nickname: sess.nickname,
+    expiresAt: new Date(sess.expiresAt).toISOString(),
+  });
+});
+
+// ===================================================
+// 채팅 연동형 시청자모드 — ChatBridge + API
+// ===================================================
+const CHZZK_API_BASE = "https://openapi.chzzk.naver.com";
+
+/**
+ * ChatBridge — roomCode별 치지직 채팅 연결 + !1/!2 집계
+ * 서버 메모리에서만 관리 (DB 불필요 — 라운드 단위 휘발성 데이터)
+ */
+class ChatBridge {
+  constructor(roomCode, accessToken, channelId) {
+    this.roomCode = roomCode;
+    this.accessToken = accessToken;
+    this.channelId = channelId;
+    this.socket = null;
+    this.sessionKey = null;
+    this.currentRoundKey = null;
+    this.roundEndsAt = null;         // Date | null
+    this.votes = new Map();          // senderChannelId → { choice: 1|2, nickname, timestamp }
+    this.status = "idle";            // idle | connecting | connected | error | stopped
+    this.errorCode = null;           // 구체적 에러 코드
+    this.errorMsg = null;
+    this.totalMessagesProcessed = 0;
+    this._rawDumpCount = 0;          // 처음 N개 이벤트 raw dump용
+    this._voteLogCount = 0;          // 투표 로그 카운트
+    this.connectedAt = null;         // 연결 시각
+    this.lastEventAt = null;         // 마지막 이벤트 수신 시각
+    this._allEventNames = new Set(); // 수신된 모든 이벤트 타입
+  }
+
+  /** 1) Session API로 WebSocket URL 획득 → 연결 → CHAT 구독 */
+  async connect() {
+    this.status = "connecting";
+    this.errorMsg = null;
+
+    try {
+      // (A) Session Auth — WebSocket URL 획득
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] Session Auth 요청...`);
+      const sessionRes = await fetch(`${CHZZK_API_BASE}/open/v1/sessions/auth`, {
+        headers: { "Authorization": `Bearer ${this.accessToken}` },
+      });
+      const sessionRaw = await sessionRes.text();
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] Session Auth 응답: ${sessionRes.status} ${sessionRaw.slice(0, 300)}`);
+
+      if (!sessionRes.ok) {
+        const errDetail = sessionRaw.slice(0, 200);
+        // 401 = 토큰 만료/무효, 403 = scope 부족
+        if (sessionRes.status === 401) {
+          this.errorCode = "TOKEN_INVALID";
+          throw new Error(`Session Auth 401 — 토큰 만료 또는 무효: ${errDetail}`);
+        }
+        if (sessionRes.status === 403) {
+          this.errorCode = "SCOPE_INSUFFICIENT";
+          throw new Error(`Session Auth 403 — scope 부족 (세션 권한 필요): ${errDetail}`);
+        }
+        this.errorCode = "SESSION_AUTH_FAILED";
+        throw new Error(`Session Auth 실패: ${sessionRes.status} ${errDetail}`);
+      }
+
+      const sessionParsed = JSON.parse(sessionRaw);
+      const socketUrl = sessionParsed.content?.socketUrl || sessionParsed.socketUrl;
+      if (!socketUrl) {
+        throw new Error("socketUrl이 응답에 없음");
+      }
+
+      // (B) Socket.IO v1~2 프로토콜로 연결
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] WebSocket 연결: ${socketUrl.slice(0, 60)}...`);
+      this.socket = ioClient(socketUrl, {
+        reconnection: false,
+        timeout: 5000,
+        transports: ["websocket"],
+      });
+
+      // 연결 완료 대기 (최대 10초)
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("WebSocket 연결 타임아웃")), 10000);
+
+        this.socket.on("connect", () => {
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] WebSocket 연결됨`);
+          clearTimeout(timer);
+          resolve();
+        });
+
+        this.socket.on("connect_error", (err) => {
+          console.error(`[CHAT_BRIDGE:${this.roomCode}] connect_error:`, err.message, err.description || "");
+          this.errorCode = "WS_CONNECT_FAILED";
+          clearTimeout(timer);
+          reject(new Error(`WebSocket 연결 실패: ${err.message}`));
+        });
+
+        this.socket.on("error", (err) => {
+          console.error(`[CHAT_BRIDGE:${this.roomCode}] socket error:`, err);
+        });
+
+        // 시스템 메시지에서 sessionKey 추출
+        this.socket.on("connected", (data) => {
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ "connected" 시스템 메시지 (full):`, JSON.stringify(data).slice(0, 500));
+          this.sessionKey = data?.sessionKey || data?.content?.sessionKey || null;
+          console.log(`[CHAT_BRIDGE:${this.roomCode}]   → sessionKey=${this.sessionKey ? this.sessionKey.slice(0, 16) + "..." : "null"}`);
+        });
+
+        // CHAT 이벤트 수신
+        this.socket.on("CHAT", (data) => this._onChatEvent(data));
+
+        // DONATION / SUBSCRIPTION 등 다른 이벤트도 로깅
+        this.socket.on("DONATION", (data) => {
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] DONATION 이벤트 수신 (무시):`, JSON.stringify(data).slice(0, 200));
+        });
+        this.socket.on("SUBSCRIPTION", (data) => {
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] SUBSCRIPTION 이벤트 수신 (무시):`, JSON.stringify(data).slice(0, 200));
+        });
+
+        // 알 수 없는 이벤트 catch-all
+        const origOnEvent = this.socket.onevent?.bind(this.socket);
+        if (origOnEvent) {
+          this.socket.onevent = (packet) => {
+            const eventName = packet.data?.[0];
+            if (eventName && !this._allEventNames.has(eventName)) {
+              this._allEventNames.add(eventName);
+              console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ 새 이벤트 타입 발견: "${eventName}"`, JSON.stringify(packet.data?.slice(1)).slice(0, 300));
+            }
+            origOnEvent(packet);
+          };
+        }
+
+        this.socket.on("disconnect", (reason) => {
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] WebSocket 끊김: ${reason}`);
+          if (this.status === "connected") {
+            this.status = "error";
+            this.errorCode = "WS_DISCONNECTED";
+            this.errorMsg = `연결 끊김: ${reason}`;
+          }
+        });
+      });
+
+      // (C) sessionKey 대기 (이미 받았을 수 있음, 최대 5초 추가 대기)
+      if (!this.sessionKey) {
+        await new Promise((resolve) => {
+          const timer = setTimeout(resolve, 5000);
+          const check = setInterval(() => {
+            if (this.sessionKey) { clearInterval(check); clearTimeout(timer); resolve(); }
+          }, 200);
+        });
+      }
+
+      if (!this.sessionKey) {
+        console.warn(`[CHAT_BRIDGE:${this.roomCode}] sessionKey를 받지 못함 — 구독 없이 진행`);
+      }
+
+      // (D) CHAT 이벤트 구독
+      if (this.sessionKey && this.channelId) {
+        console.log(`[CHAT_BRIDGE:${this.roomCode}] CHAT 구독 요청: channelId=${this.channelId}`);
+        const subRes = await fetch(`${CHZZK_API_BASE}/open/v1/sessions/events/subscribe/chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${this.accessToken}`,
+          },
+          body: JSON.stringify({
+            sessionKey: this.sessionKey,
+            channelId: this.channelId,
+          }),
+        });
+        const subRaw = await subRes.text();
+        console.log(`[CHAT_BRIDGE:${this.roomCode}] CHAT 구독 응답: ${subRes.status} ${subRaw.slice(0, 200)}`);
+
+        if (!subRes.ok) {
+          const subError = subRaw.slice(0, 300);
+          if (subRes.status === 403) {
+            this.errorCode = "CHAT_SUBSCRIBE_SCOPE";
+            console.error(`[CHAT_BRIDGE:${this.roomCode}] ❌ CHAT 구독 403 — scope 부족: ${subError}`);
+            console.error(`[CHAT_BRIDGE:${this.roomCode}]   → 치지직 앱 설정에서 "채팅" scope이 활성화되어 있는지 확인하세요`);
+          } else {
+            this.errorCode = "CHAT_SUBSCRIBE_FAILED";
+            console.error(`[CHAT_BRIDGE:${this.roomCode}] ❌ CHAT 구독 실패 (${subRes.status}): ${subError}`);
+          }
+          // 구독 실패해도 연결은 유지 — 이벤트가 올 수도 있음
+        } else {
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] ✅ CHAT 구독 성공`);
+        }
+      }
+
+      this.status = "connected";
+      this.connectedAt = new Date();
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] 채팅 연결 완료 ✅ sessionKey=${this.sessionKey ? "있음" : "없음"}, channelId=${this.channelId}`);
+
+    } catch (err) {
+      this.status = "error";
+      this.errorMsg = err.message;
+      console.error(`[CHAT_BRIDGE:${this.roomCode}] 연결 실패:`, err.message);
+      this.disconnect();
+      throw err;
+    }
+  }
+
+  /** CHAT 이벤트 콜백 — !1 / !2 필터링 + 집계 */
+  _onChatEvent(data) {
+    this.lastEventAt = new Date();
+    try {
+      // ★ 처음 5개 이벤트는 raw payload 전체 덤프 (구조 검증용)
+      if (this._rawDumpCount < 5) {
+        this._rawDumpCount++;
+        console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ RAW CHAT #${this._rawDumpCount}:`,
+          JSON.stringify(data).slice(0, 800));
+        console.log(`[CHAT_BRIDGE:${this.roomCode}]   type=${typeof data}, isArray=${Array.isArray(data)}, keys=${data && typeof data === "object" ? Object.keys(data).join(",") : "N/A"}`);
+      }
+
+      // 치지직 CHAT 이벤트 구조 — 공식 문서 기준:
+      //   { channelId, senderChannelId, profile: { nickname, badges, verifiedMark }, content, messageTime, userRoleCode, emojis }
+      // 실제 응답이 다를 수 있으므로 여러 경로 탐색
+      const events = Array.isArray(data) ? data : [data];
+
+      for (const evt of events) {
+        // content 필드가 문자열(메시지)일 수도, 객체(래핑)일 수도 있음
+        const msg = (typeof evt.content === "object" && evt.content !== null) ? evt.content : evt;
+
+        const senderChannelId = msg.senderChannelId || evt.senderChannelId || null;
+        const nickname = msg.profile?.nickname || evt.profile?.nickname || "익명";
+        const messageTime = msg.messageTime || evt.messageTime || Date.now();
+
+        // content 추출: 문자열 직접 or msg.content 문자열
+        let content = null;
+        if (typeof evt.content === "string") content = evt.content;
+        else if (typeof msg.content === "string") content = msg.content;
+        else if (typeof msg.message === "string") content = msg.message;  // 대체 필드명
+        else if (typeof msg.text === "string") content = msg.text;        // 대체 필드명
+
+        if (!content || !senderChannelId) {
+          // 파싱 실패 로그 (처음 3개만)
+          if (this._rawDumpCount <= 5) {
+            console.warn(`[CHAT_BRIDGE:${this.roomCode}] ⚠ 파싱 실패: content=${content}, sender=${senderChannelId}, keys=[${Object.keys(evt).join(",")}]`);
+          }
+          continue;
+        }
+
+        this.totalMessagesProcessed++;
+
+        // !1 또는 !2만 (정확히)
+        const match = content.trim().match(/^!([12])$/);
+        if (!match) continue;
+
+        // 라운드 진행 중이 아니면 무시
+        if (!this.currentRoundKey) {
+          if (this._voteLogCount < 3) console.log(`[CHAT_BRIDGE:${this.roomCode}] !${match[1]} 수신 but 라운드 없음 (무시)`);
+          continue;
+        }
+
+        // 타이머 만료 확인
+        if (this.roundEndsAt && Date.now() > this.roundEndsAt.getTime()) continue;
+
+        const choice = parseInt(match[1]);
+
+        // 마지막 입력 기준: Map.set으로 덮어쓰기
+        const prevVote = this.votes.get(senderChannelId);
+        this.votes.set(senderChannelId, { choice, nickname, timestamp: messageTime });
+
+        // 투표 로그 (처음 20개 + 이후 50개마다)
+        this._voteLogCount++;
+        if (this._voteLogCount <= 20 || this._voteLogCount % 50 === 0) {
+          const action = prevVote ? `변경 !${prevVote.choice}→!${choice}` : `투표 !${choice}`;
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] 🗳 #${this._voteLogCount} ${nickname}(${senderChannelId.slice(0, 8)}) ${action} | round=${this.currentRoundKey} | 현재: L=${this.votes.size > 0 ? [...this.votes.values()].filter(v => v.choice === 1).length : 0} R=${this.votes.size > 0 ? [...this.votes.values()].filter(v => v.choice === 2).length : 0}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[CHAT_BRIDGE:${this.roomCode}] 메시지 처리 오류:`, err.message, err.stack?.split("\n")[1]);
+    }
+  }
+
+  /** 라운드 변경 */
+  setRound(roundKey, endsAt) {
+    this.currentRoundKey = roundKey;
+    this.roundEndsAt = endsAt ? new Date(endsAt) : null;
+    this.votes.clear(); // 이전 집계 초기화
+    console.log(`[CHAT_BRIDGE:${this.roomCode}] 라운드 변경: ${roundKey}, 마감: ${endsAt || "없음"}, 집계 초기화`);
+  }
+
+  /** 집계 조회 */
+  getAggregates() {
+    let left = 0, right = 0;
+    const recentVoters = [];
+
+    for (const [id, v] of this.votes) {
+      if (v.choice === 1) left++;
+      else right++;
+      recentVoters.push({ nickname: v.nickname, choice: v.choice, timestamp: v.timestamp });
+    }
+
+    // 최근 투표자 20명 (타임스탬프 역순)
+    recentVoters.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+    return {
+      left,
+      right,
+      total: left + right,
+      recentVoters: recentVoters.slice(0, 20),
+    };
+  }
+
+  /** 연결 해제 */
+  disconnect() {
+    if (this.socket) {
+      try { this.socket.disconnect(); } catch (e) {}
+      this.socket = null;
+    }
+    this.sessionKey = null;
+    this.currentRoundKey = null;
+    this.roundEndsAt = null;
+    this.votes.clear();
+    if (this.status !== "error") this.status = "stopped";
+    console.log(`[CHAT_BRIDGE:${this.roomCode}] 연결 해제됨`);
+  }
+}
+
+// roomCode → ChatBridge 인스턴스
+const chatBridges = new Map();
+
+// --- POST /chat-audience/start ---
+app.post("/chat-audience/start", requireAuth, async (req, res) => {
+  try {
+    const { roomCode } = req.body;
+    console.log(`[CHAT_AUD] POST /start roomCode=${roomCode} userId=${req.user?.id}`);
+    if (!roomCode) return res.status(400).json({ ok: false, error: "MISSING_ROOM_CODE" });
+
+    // 이미 연결 중이면 상태 반환
+    const existing = chatBridges.get(roomCode);
+    if (existing && existing.status === "connected") {
+      console.log(`[CHAT_AUD] /start — 이미 연결됨: ${roomCode}`);
+      return res.json({ ok: true, status: "already_connected", channelId: existing.channelId, errorCode: null });
+    }
+
+    // chzzkSessions에서 토큰 조회
+    const sess = chzzkSessions.get(roomCode);
+    if (!sess || !sess.accessToken) {
+      console.warn(`[CHAT_AUD] /start — NO_CHZZK_SESSION: roomCode=${roomCode}, sessions=[${[...chzzkSessions.keys()].join(",")}]`);
+      return res.status(400).json({ ok: false, error: "NO_CHZZK_SESSION", message: "먼저 치지직 계정을 연동하세요" });
+    }
+
+    // 토큰 만료 확인
+    if (sess.expiresAt < Date.now()) {
+      console.warn(`[CHAT_AUD] /start — TOKEN_EXPIRED: expiresAt=${new Date(sess.expiresAt).toISOString()}`);
+      return res.status(401).json({ ok: false, error: "TOKEN_EXPIRED", message: "치지직 토큰이 만료되었습니다. 다시 연동하세요" });
+    }
+
+    if (!sess.channelId) {
+      console.warn(`[CHAT_AUD] /start — NO_CHANNEL_ID`);
+      return res.status(400).json({ ok: false, error: "NO_CHANNEL_ID", message: "치지직 채널 정보가 없습니다" });
+    }
+
+    console.log(`[CHAT_AUD] /start — 연결 시도: channelId=${sess.channelId}, tokenExpires=${new Date(sess.expiresAt).toISOString()}`);
+
+    // 기존 브릿지 정리
+    if (existing) existing.disconnect();
+
+    const bridge = new ChatBridge(roomCode, sess.accessToken, sess.channelId);
+    chatBridges.set(roomCode, bridge);
+
+    try {
+      await bridge.connect();
+    } catch (err) {
+      console.error(`[CHAT_AUD] /start — 연결 실패: errorCode=${bridge.errorCode}, msg=${err.message}`);
+      return res.status(502).json({
+        ok: false,
+        error: "CHAT_CONNECT_FAILED",
+        errorCode: bridge.errorCode || "UNKNOWN",
+        message: err.message,
+      });
+    }
+
+    console.log(`[CHAT_AUD] /start — 성공 ✅ status=${bridge.status}, errorCode=${bridge.errorCode || "none"}`);
+    return res.json({
+      ok: true,
+      status: bridge.status,
+      channelId: sess.channelId,
+      errorCode: bridge.errorCode || null,
+      connectedAt: bridge.connectedAt?.toISOString(),
+    });
+
+  } catch (err) {
+    console.error("[CHAT_AUD] /start 예외:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR", message: err.message });
+  }
+});
+
+// --- POST /chat-audience/round ---
+app.post("/chat-audience/round", requireAuth, async (req, res) => {
+  try {
+    const { roomCode, roundKey, endsAt } = req.body;
+    console.log(`[CHAT_AUD] POST /round roomCode=${roomCode} roundKey=${roundKey} endsAt=${endsAt}`);
+    if (!roomCode || !roundKey) {
+      return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
+    }
+
+    const bridge = chatBridges.get(roomCode);
+    if (!bridge) {
+      console.warn(`[CHAT_AUD] /round — NO_BRIDGE: bridges=[${[...chatBridges.keys()].join(",")}]`);
+      return res.status(404).json({ ok: false, error: "NO_BRIDGE", message: "채팅 연결이 없습니다" });
+    }
+
+    const prevVotes = bridge.votes.size;
+    bridge.setRound(roundKey, endsAt || null);
+    console.log(`[CHAT_AUD] /round OK — 이전 투표 ${prevVotes}개 초기화, bridge.status=${bridge.status}`);
+    return res.json({ ok: true, bridgeStatus: bridge.status });
+
+  } catch (err) {
+    console.error("[CHAT_AUD] /round 예외:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// --- GET /chat-audience/votes ---
+app.get("/chat-audience/votes", (req, res) => {
+  const roomCode = req.query.room;
+  if (!roomCode) return res.status(400).json({ ok: false, error: "MISSING_ROOM" });
+
+  const bridge = chatBridges.get(roomCode);
+  if (!bridge) {
+    return res.json({ ok: true, left: 0, right: 0, total: 0, recentVoters: [], status: "no_bridge", errorCode: null });
+  }
+
+  const agg = bridge.getAggregates();
+  return res.json({
+    ok: true,
+    ...agg,
+    status: bridge.status,
+    errorCode: bridge.errorCode || null,
+    errorMsg: bridge.errorMsg || null,
+    roundKey: bridge.currentRoundKey,
+    messagesProcessed: bridge.totalMessagesProcessed,
+    connectedAt: bridge.connectedAt?.toISOString() || null,
+    lastEventAt: bridge.lastEventAt?.toISOString() || null,
+  });
+});
+
+// --- POST /chat-audience/stop ---
+app.post("/chat-audience/stop", requireAuth, async (req, res) => {
+  try {
+    const { roomCode } = req.body;
+    console.log(`[CHAT_AUD] POST /stop roomCode=${roomCode}`);
+    if (!roomCode) return res.status(400).json({ ok: false, error: "MISSING_ROOM_CODE" });
+
+    const bridge = chatBridges.get(roomCode);
+    if (bridge) {
+      console.log(`[CHAT_AUD] /stop — 총 메시지 ${bridge.totalMessagesProcessed}개 처리, 투표 ${bridge._voteLogCount}개`);
+      bridge.disconnect();
+      chatBridges.delete(roomCode);
+    }
+
+    // chzzk 세션도 정리
+    chzzkSessions.delete(roomCode);
+
+    console.log(`[CHAT_AUD] /stop OK — 세션+브릿지 정리 완료`);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[CHAT_AUD] /stop 예외:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
 
 server.listen(process.env.PORT || 3001, () => {
   console.log(`Backend listening on http://localhost:${process.env.PORT || 3001}`);
