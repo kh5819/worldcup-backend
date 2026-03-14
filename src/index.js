@@ -6400,6 +6400,12 @@ class ChatBridge {
       case "SUBSCRIPTION":
         console.log(`[CHAT_BRIDGE:${this.roomCode}] ${eventName} 이벤트 수신 (무시)`);
         break;
+      case "error":
+      case "ERROR":
+        // ★ 치지직 서버에서 보내는 에러 이벤트 — 로깅 + 상태 기록
+        console.warn(`[CHAT_BRIDGE:${this.roomCode}] ⚠️ ERROR 이벤트:`, JSON.stringify(data).slice(0, 500));
+        this.errorMsg = `CHZZK error event: ${JSON.stringify(data).slice(0, 200)}`;
+        break;
       default:
         // ★ 알 수 없는 이벤트 — chat-like이면 시도
         console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ 미등록 이벤트: "${eventName}" isChatLike=${isChatLike}`);
