@@ -139,10 +139,12 @@ async function handleCurrent(
     payload.correct_text = row?.correct_text ?? null;
   }
 
-  // ---- ★ stale room 감지: enabled=true인데 room_state.updated_at이 60초 이상 지나면
-  //        호스트가 비정상 종료(새로고침/탭닫기)한 것으로 간주 → 응답만 enabled:false로 내림
-  //        (DB는 건드리지 않음 — 호스트가 복귀할 수 있으므로) ----
-  const STALE_THRESHOLD_MS = 60_000;
+  // ---- ★ stale room 감지: enabled=true인데 room_state.updated_at이 오래되면
+  //        호스트가 비정상 종료한 것으로 간주 → 응답만 enabled:false로 내림
+  //        (DB는 건드리지 않음 — 호스트가 복귀할 수 있으므로)
+  //        ★ 10분으로 확대 — 타이머 OFF 게임은 라운드가 길어질 수 있음
+  //        60초는 너무 짧아서 정상 진행 중 "방송 종료" 오판 발생 ----
+  const STALE_THRESHOLD_MS = 600_000; // 10분
   if (payload.enabled) {
     const { data: roomState } = await sb
       .from("audience_room_state")
@@ -353,11 +355,13 @@ async function handleHostRound(
     return err("room_code and round_key required", 400, origin);
   }
 
+  // ★ 타이머 판정: timer_enabled 명시적 true일 때만 ON
+  const isTimerOn = timer_enabled === true
+    || (timer_enabled === undefined && timer_sec != null);
   const rawSec = Number(timer_sec || vote_duration_sec) || 45;
-  const effectiveSec = timer_enabled !== false
-    ? Math.max(5, Math.min(300, rawSec))
-    : 12;
-  const endsAt = new Date(Date.now() + effectiveSec * 1000).toISOString();
+  // ★ NOT NULL 제약: 타이머 OFF → 0 (sentinel)
+  const effectiveSec = isTimerOn ? Math.max(5, Math.min(300, rawSec)) : 0;
+  const endsAt = isTimerOn ? new Date(Date.now() + (effectiveSec || 45) * 1000).toISOString() : null;
 
   // ★ audience_polls도 enabled=true로 upsert (라운드 설정 = 투표 활성화)
   await sb
@@ -409,7 +413,11 @@ async function handleHostStart(
     return err("room required", 400, origin);
   }
 
-  const voteSec = Math.max(5, Math.min(300, Number(body.vote_duration_sec) || 45));
+  // ★ 타이머 OFF이면 vote_duration_sec=0 (NOT NULL 제약 → null 불가)
+  const rawSec = body.vote_duration_sec;
+  const voteSec = (rawSec === null || rawSec === undefined || rawSec === 0)
+    ? 0
+    : Math.max(5, Math.min(300, Number(rawSec) || 45));
 
   // 1) audience_polls: enabled=true
   const { error: pollErr } = await sb
@@ -525,7 +533,13 @@ async function handleHostState(
   if (!round_key) {
     return err("round_key required", 400, origin);
   }
-  const vote_duration_sec = Math.max(5, Math.min(300, Number(body.vote_duration_sec) || 45));
+  // ★ 타이머 판정: timer_enabled 필드 우선, 없으면 round_ends_at null 여부로 판단
+  const timerEnabled = body.timer_enabled === true
+    || (body.timer_enabled === undefined && body.round_ends_at != null);
+  // ★ NOT NULL 제약: vote_duration_sec int NOT NULL → 타이머 OFF일 때 0 (sentinel)
+  const vote_duration_sec = timerEnabled
+    ? Math.max(5, Math.min(300, Number(body.vote_duration_sec) || 45))
+    : 0;
   const round_ends_at = body.round_ends_at as string | null;
 
   // ★ 퀴즈 확장 필드 (없으면 기본값)
@@ -553,14 +567,17 @@ async function handleHostState(
   }
 
   // 2) audience_room_state upsert (round_key는 위에서 검증됨 — 절대 null 아님)
-  const effectiveEndsAt = round_ends_at || new Date(Date.now() + vote_duration_sec * 1000).toISOString();
+  // ★ 타이머 OFF이면 round_ends_at=null (시청자 카운트다운 없음)
+  const effectiveEndsAt = timerEnabled
+    ? (round_ends_at || new Date(Date.now() + (vote_duration_sec || 45) * 1000).toISOString())
+    : null;
   const { error: stateErr } = await sb
     .from("audience_room_state")
     .upsert(
       {
         room_code,
         round_key,
-        vote_duration_sec,
+        vote_duration_sec: vote_duration_sec,
         round_ends_at: effectiveEndsAt,
         mode,
         question_type,
