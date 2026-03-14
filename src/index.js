@@ -126,7 +126,7 @@ app.get("/contents", async (req, res) => {
     // 2) 기본 쿼리: public_contents_list(View)에서 읽기
     let q = supabaseAdmin
       .from("public_contents_list")
-      .select("id, type, title, thumbnail_url, creator_name, play_count, complete_count, like_count, item_count, created_at")
+      .select("id, type, title, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, creator_name, play_count, complete_count, like_count, item_count, created_at")
       .range(offset, offset + limit - 1);
 
     // 3) type 필터 적용
@@ -240,7 +240,7 @@ app.get("/og/content/:id", async (req, res) => {
     // DB에서 콘텐츠 정보 조회
     const { data: content, error } = await supabaseAdmin
       .from("contents")
-      .select("id, mode, title, description, thumbnail_url, play_count, complete_count, created_at, owner_id")
+      .select("id, mode, title, description, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, play_count, complete_count, created_at, owner_id")
       .eq("id", contentId)
       .single();
 
@@ -1023,7 +1023,7 @@ app.get("/content/:id", async (req, res) => {
 
     const { data: content, error } = await supabaseAdmin
       .from("contents")
-      .select("id, mode, title, description, thumbnail_url, play_count, complete_count, created_at, owner_id, visibility")
+      .select("id, mode, title, description, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, play_count, complete_count, created_at, owner_id, visibility")
       .eq("id", contentId)
       .single();
 
@@ -2866,7 +2866,7 @@ app.get("/my/contents", requireAuth, async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
       .from("contents")
-      .select("id, title, mode, visibility, play_count, complete_count, timer_enabled, category, tags, thumbnail_url, description, created_at, updated_at")
+      .select("id, title, mode, visibility, play_count, complete_count, timer_enabled, category, tags, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, description, created_at, updated_at")
       .eq("owner_id", req.user.id)
       .order("created_at", { ascending: false });
     if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
