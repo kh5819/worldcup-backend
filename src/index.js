@@ -5998,16 +5998,23 @@ class ChatBridge {
 
     try {
       // (A) Session Auth — WebSocket URL 획득
-      console.log(`[CHAT_BRIDGE:${this.roomCode}] Session Auth 요청...`);
-      const sessionRes = await fetch(`${CHZZK_API_BASE}/open/v1/sessions/auth`, {
-        headers: { "Authorization": `Bearer ${this.accessToken}` },
-      });
+      const sessionApiUrl = `${CHZZK_API_BASE}/open/v1/sessions/auth`;
+      const sessionHeaders = {
+        "Authorization": `Bearer ${this.accessToken}`,
+        "Client-Id": CHZZK_CLIENT_ID,
+      };
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] Session Auth 요청: ${sessionApiUrl}`);
+      console.log(`[CHAT_BRIDGE:${this.roomCode}]   헤더: Authorization=Bearer ${this.accessToken.slice(0, 16)}..., Client-Id=${CHZZK_CLIENT_ID}`);
+
+      const sessionRes = await fetch(sessionApiUrl, { headers: sessionHeaders });
       const sessionRaw = await sessionRes.text();
-      console.log(`[CHAT_BRIDGE:${this.roomCode}] Session Auth 응답: ${sessionRes.status} ${sessionRaw.slice(0, 300)}`);
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] Session Auth 응답:`);
+      console.log(`[CHAT_BRIDGE:${this.roomCode}]   status: ${sessionRes.status}`);
+      console.log(`[CHAT_BRIDGE:${this.roomCode}]   headers: content-type=${sessionRes.headers.get("content-type")}`);
+      console.log(`[CHAT_BRIDGE:${this.roomCode}]   body(raw): ${sessionRaw.slice(0, 500)}`);
 
       if (!sessionRes.ok) {
-        const errDetail = sessionRaw.slice(0, 200);
-        // 401 = 토큰 만료/무효, 403 = scope 부족
+        const errDetail = sessionRaw.slice(0, 300);
         if (sessionRes.status === 401) {
           this.errorCode = "TOKEN_INVALID";
           throw new Error(`Session Auth 401 — 토큰 만료 또는 무효: ${errDetail}`);
@@ -6021,10 +6028,23 @@ class ChatBridge {
       }
 
       const sessionParsed = JSON.parse(sessionRaw);
-      const socketUrl = sessionParsed.content?.socketUrl || sessionParsed.socketUrl;
-      if (!socketUrl) {
-        throw new Error("socketUrl이 응답에 없음");
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] Session Auth parsed 키:`, Object.keys(sessionParsed));
+      if (sessionParsed.content) {
+        console.log(`[CHAT_BRIDGE:${this.roomCode}]   content 키:`, Object.keys(sessionParsed.content));
       }
+
+      // socketUrl 탐색 — 여러 가능한 경로 시도
+      const c = sessionParsed.content || {};
+      const socketUrl = c.socketUrl || c.socket_url || c.url || c.wsUrl || c.ws_url
+                      || sessionParsed.socketUrl || sessionParsed.socket_url || sessionParsed.url || null;
+
+      if (!socketUrl) {
+        console.error(`[CHAT_BRIDGE:${this.roomCode}] ❌ socketUrl을 찾을 수 없음!`);
+        console.error(`[CHAT_BRIDGE:${this.roomCode}]   전체 응답: ${sessionRaw.slice(0, 800)}`);
+        this.errorCode = "CHAT_CONNECT_FAILED";
+        throw new Error(`socketUrl이 응답에 없음 — parsed keys: [${Object.keys(sessionParsed)}], content keys: [${Object.keys(c)}]`);
+      }
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] ✅ socketUrl 발견: ${socketUrl.slice(0, 80)}...`);
 
       // (B) Socket.IO v1~2 프로토콜로 연결
       console.log(`[CHAT_BRIDGE:${this.roomCode}] WebSocket 연결: ${socketUrl.slice(0, 60)}...`);
@@ -6118,6 +6138,7 @@ class ChatBridge {
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${this.accessToken}`,
+            "Client-Id": CHZZK_CLIENT_ID,
           },
           body: JSON.stringify({
             sessionKey: this.sessionKey,
