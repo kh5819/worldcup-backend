@@ -5844,40 +5844,38 @@ app.post("/chzzk/token", async (req, res) => {
     let tokenError = null;
 
     // ★ 단일 URL (공식), Client-Id/Client-Secret 헤더 필수
-    {
-      const tokenUrl = TOKEN_URL;
-      try {
-        console.log(`[CHZZK] 토큰 교환 시도: ${tokenUrl}`);
-        const tokenRes = await fetch(tokenUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Client-Id": CHZZK_CLIENT_ID,
-            "Client-Secret": CHZZK_CLIENT_SECRET,
-          },
-          body: JSON.stringify(tokenBody),
-        });
-        const raw = await tokenRes.text();
-        console.log(`[CHZZK] 토큰 응답 (${tokenUrl}): status=${tokenRes.status} body=${raw.slice(0, 300)}`);
+    try {
+      console.log(`[CHZZK] 토큰 교환 시도: ${TOKEN_URL}`);
+      const tokenRes = await fetch(TOKEN_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Client-Id": CHZZK_CLIENT_ID,
+          "Client-Secret": CHZZK_CLIENT_SECRET,
+        },
+        body: JSON.stringify(tokenBody),
+      });
+      const raw = await tokenRes.text();
+      console.log(`[CHZZK] 토큰 응답: status=${tokenRes.status} body=${raw.slice(0, 300)}`);
 
-        if (!tokenRes.ok) {
-          tokenError = `${tokenUrl} → ${tokenRes.status}: ${raw.slice(0, 200)}`;
-          continue;
-        }
-
+      if (tokenRes.ok) {
         const parsed = JSON.parse(raw);
         // 치지직 API 응답: { code: 200, content: { accessToken, refreshToken, ... } }
         if (parsed.content?.accessToken) {
           tokenData = parsed.content;
         } else if (parsed.accessToken || parsed.access_token) {
-          tokenData = parsed.accessToken ? parsed : { accessToken: parsed.access_token, refreshToken: parsed.refresh_token, expiresIn: parsed.expires_in };
+          tokenData = parsed.accessToken
+            ? parsed
+            : { accessToken: parsed.access_token, refreshToken: parsed.refresh_token, expiresIn: parsed.expires_in };
         } else {
-          tokenError = `${tokenUrl} → 응답에 accessToken 없음: ${raw.slice(0, 200)}`;
+          tokenError = `응답에 accessToken 없음: ${raw.slice(0, 200)}`;
         }
-      } catch (e) {
-        tokenError = `${tokenUrl} → fetch 실패: ${e.message}`;
-        console.warn("[CHZZK]", tokenError);
+      } else {
+        tokenError = `${TOKEN_URL} → ${tokenRes.status}: ${raw.slice(0, 200)}`;
       }
+    } catch (e) {
+      tokenError = `${TOKEN_URL} → fetch 실패: ${e.message}`;
+      console.warn("[CHZZK]", tokenError);
     }
 
     if (!tokenData) {
