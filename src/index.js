@@ -5949,6 +5949,9 @@ app.post("/chzzk/token", async (req, res) => {
       ok: true,
       channelId: channelId || null,
       nickname: nickname || null,
+      // ★ 프론트에 토큰 반환 — sessionStorage에 보관하여 새 게임마다 /start에 전달
+      chzzkAccessToken: accessToken,
+      chzzkExpiresAt: sessObj.expiresAt,
     });
 
   } catch (err) {
@@ -6653,42 +6656,72 @@ app.post("/chat-audience/start", requireAuth, async (req, res) => {
       console.log(`[CHAT_AUD] /start — forceNew=true, 기존 브릿지 강제 정리 후 새로 생성`);
     }
 
-    // chzzkSessions에서 토큰 조회 — roomCode로 먼저, 없으면 전체 스캔 (roomCode 변경 대응)
-    let sess = chzzkSessions.get(roomCode);
-    if (!sess || !sess.accessToken) {
-      // ★ roomCode가 바뀌었을 수 있음 → 가장 최근 유효 세션 찾기
-      console.log(`[CHAT_AUD] /start — roomCode=${roomCode}에 세션 없음, 전체 스캔 시도 (keys=[${[...chzzkSessions.keys()]}])`);
-      let bestSess = null;
-      for (const [key, val] of chzzkSessions) {
-        if (val.accessToken && val.expiresAt > Date.now()) {
-          if (!bestSess || val.expiresAt > bestSess.expiresAt) {
-            bestSess = val;
-            console.log(`[CHAT_AUD] /start — 유효 세션 발견: key=${key}, channelId=${val.channelId}, expires=${new Date(val.expiresAt).toISOString()}`);
+    // ★ 세션 조회 전략 (우선순위):
+    //   1) 프론트에서 직접 전달한 chzzk 토큰 (sessionStorage 기반 — 서버 재시작/roomCode 변경에 강건)
+    //   2) 백엔드 메모리 Map: roomCode → 전체 스캔 → userId fallback
+    const userId = req.user?.id;
+    const { chzzkAccessToken: frontToken, chzzkChannelId: frontChannel, chzzkExpiresAt: frontExpires } = req.body;
+
+    let sess = null;
+
+    // ★ 1) 프론트 토큰 우선 — 가장 신뢰할 수 있는 소스
+    if (frontToken && frontChannel) {
+      const expiresAt = frontExpires || (Date.now() + 86400 * 1000);
+      if (expiresAt > Date.now()) {
+        sess = { accessToken: frontToken, channelId: frontChannel, expiresAt, nickname: null, refreshToken: null };
+        console.log(`[CHAT_AUD] /start — 프론트 토큰 사용: channelId=${frontChannel}, expires=${new Date(expiresAt).toISOString()}`);
+        // ★ 백엔드 Map에도 저장 (이후 /votes 등에서 활용)
+        chzzkSessions.set(roomCode, sess);
+        if (userId) chzzkSessionsByUser.set(userId, sess);
+      } else {
+        console.warn(`[CHAT_AUD] /start — 프론트 토큰 만료: expires=${new Date(expiresAt).toISOString()}`);
+      }
+    }
+
+    // ★ 2) 프론트 토큰 없으면 백엔드 Map fallback
+    if (!sess) {
+      sess = chzzkSessions.get(roomCode);
+      if (!sess || !sess.accessToken) {
+        console.log(`[CHAT_AUD] /start — roomCode=${roomCode}에 세션 없음, 전체 스캔 시도 (keys=[${[...chzzkSessions.keys()]}])`);
+        let bestSess = null;
+        for (const [key, val] of chzzkSessions) {
+          if (val.accessToken && val.expiresAt > Date.now()) {
+            if (!bestSess || val.expiresAt > bestSess.expiresAt) {
+              bestSess = val;
+              console.log(`[CHAT_AUD] /start — 유효 세션 발견: key=${key}, channelId=${val.channelId}, expires=${new Date(val.expiresAt).toISOString()}`);
+            }
           }
         }
+        if (bestSess) sess = bestSess;
       }
-      if (bestSess) {
-        sess = bestSess;
-        // ★ 새 roomCode에 세션 복사 (이후 조회 빠르게)
+      // userId 기반 fallback
+      if ((!sess || !sess.accessToken) && userId) {
+        const userSess = chzzkSessionsByUser.get(userId);
+        if (userSess && userSess.accessToken && userSess.expiresAt > Date.now()) {
+          console.log(`[CHAT_AUD] /start — userId fallback 성공: userId=${userId}, channelId=${userSess.channelId}`);
+          sess = userSess;
+        }
+      }
+      if (sess && sess.accessToken) {
         chzzkSessions.set(roomCode, sess);
-        console.log(`[CHAT_AUD] /start — 세션 재매핑: → roomCode=${roomCode}`);
+        if (userId) chzzkSessionsByUser.set(userId, sess);
       }
     }
 
     if (!sess || !sess.accessToken) {
-      console.warn(`[CHAT_AUD] /start — NO_CHZZK_SESSION: roomCode=${roomCode}, 전체keys=[${[...chzzkSessions.keys()]}]`);
-      return res.status(400).json({ ok: false, error: "NO_CHZZK_SESSION", message: "먼저 치지직 계정을 연동하세요 (방을 새로 만든 경우 치지직 재연동 필요)" });
+      console.warn(`[CHAT_AUD] /start — NO_CHZZK_SESSION: roomCode=${roomCode}, userId=${userId}, frontToken=${!!frontToken}, 전체keys=[${[...chzzkSessions.keys()]}]`);
+      return res.status(400).json({ ok: false, error: "NO_CHZZK_SESSION", errorCode: "NO_CHZZK_SESSION", message: "먼저 치지직 계정을 연동하세요 (방을 새로 만든 경우 치지직 재연동 필요)" });
     }
 
     // 토큰 만료 확인
     if (sess.expiresAt < Date.now()) {
       console.warn(`[CHAT_AUD] /start — TOKEN_EXPIRED: expiresAt=${new Date(sess.expiresAt).toISOString()}`);
-      return res.status(401).json({ ok: false, error: "TOKEN_EXPIRED", message: "치지직 토큰이 만료되었습니다. 다시 연동하세요" });
+      return res.status(401).json({ ok: false, error: "TOKEN_EXPIRED", errorCode: "TOKEN_EXPIRED", message: "치지직 토큰이 만료되었습니다. 다시 연동하세요" });
     }
 
     if (!sess.channelId) {
       console.warn(`[CHAT_AUD] /start — NO_CHANNEL_ID`);
-      return res.status(400).json({ ok: false, error: "NO_CHANNEL_ID", message: "치지직 채널 정보가 없습니다" });
+      return res.status(400).json({ ok: false, error: "NO_CHANNEL_ID", errorCode: "NO_CHANNEL_ID", message: "치지직 채널 정보가 없습니다" });
     }
 
     console.log(`[CHAT_AUD] /start — 연결 시도: channelId=${sess.channelId}, tokenExpires=${new Date(sess.expiresAt).toISOString()}`);
