@@ -6003,6 +6003,61 @@ class ChatBridge {
     this.subscribeError = null;      // ★ subscribe 실패 시 상세
   }
 
+  /** ★ 다양한 경로에서 sessionKey 추출 시도 */
+  _extractSessionKey(data, source) {
+    if (this.sessionKey) return; // 이미 확보됨
+    if (!data) return;
+
+    // 문자열이면 JSON 파싱 시도
+    if (typeof data === "string") {
+      try { data = JSON.parse(data); } catch (e) { return; }
+    }
+
+    // 모든 가능한 경로 탐색
+    const candidates = [
+      data.sessionKey,
+      data.body?.sessionKey,
+      data.content?.sessionKey,
+      data.message?.sessionKey,
+      data.data?.sessionKey,
+      data.result?.sessionKey,
+      // 배열인 경우
+      ...(Array.isArray(data) ? [data[0]?.sessionKey, data[1]?.sessionKey] : []),
+      // 2단계 중첩
+      data.body?.content?.sessionKey,
+      data.content?.body?.sessionKey,
+      data.data?.content?.sessionKey,
+    ];
+
+    for (const val of candidates) {
+      if (val && typeof val === "string") {
+        this.sessionKey = val;
+        console.log(`[CHAT_BRIDGE:${this.roomCode}] ★★★ sessionKey 확보! source="${source}", path에서 발견, value=${val.slice(0, 20)}...`);
+        return;
+      }
+    }
+
+    // 마지막 수단: 객체 전체를 재귀 탐색 (깊이 3까지)
+    const found = this._deepFindKey(data, "sessionKey", 3);
+    if (found) {
+      this.sessionKey = found;
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] ★★★ sessionKey 확보 (deep)! source="${source}", value=${found.slice(0, 20)}...`);
+    }
+  }
+
+  /** 객체 내부에서 특정 키를 재귀 탐색 */
+  _deepFindKey(obj, key, maxDepth) {
+    if (!obj || typeof obj !== "object" || maxDepth <= 0) return null;
+    if (obj[key] && typeof obj[key] === "string") return obj[key];
+    for (const k of Object.keys(obj)) {
+      if (typeof obj[k] === "object" && obj[k] !== null) {
+        const found = this._deepFindKey(obj[k], key, maxDepth - 1);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
   /** 1) Session API로 WebSocket URL 획득 → 연결 → CHAT 구독 */
   async connect() {
     this.status = "connecting";
@@ -6078,8 +6133,66 @@ class ChatBridge {
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error("WebSocket 연결 타임아웃")), 10000);
 
+        // ★★★ Engine.IO 레벨 raw 프레임 캡처 ★★★
+        // socket.io-client v2: socket.io = Manager, socket.io.engine = Engine.IO Socket
+        let _rawFrameCount = 0;
+        const _setupEngineLogging = () => {
+          const engine = this.socket.io?.engine;
+          if (!engine) {
+            console.warn(`[CHAT_BRIDGE:${this.roomCode}] ⚠ engine 객체 없음 — raw 프레임 로깅 불가`);
+            return;
+          }
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] ✅ Engine.IO 레벨 리스너 설정 (transport=${engine.transport?.name || "?"})`);
+
+          // Engine.IO message 이벤트 — Socket.IO 패킷 파싱 전의 raw 데이터
+          engine.on("message", (rawMsg) => {
+            _rawFrameCount++;
+            if (_rawFrameCount <= 20) {
+              const preview = typeof rawMsg === "string" ? rawMsg.slice(0, 600) : `[Buffer ${rawMsg?.length || 0}B]`;
+              console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ RAW FRAME #${_rawFrameCount}: ${preview}`);
+            }
+
+            // ★ Raw 프레임에서 sessionKey 직접 탐색
+            if (!this.sessionKey && typeof rawMsg === "string" && rawMsg.includes("sessionKey")) {
+              console.log(`[CHAT_BRIDGE:${this.roomCode}] ★★★ RAW에서 sessionKey 발견! 전체: ${rawMsg.slice(0, 800)}`);
+              try {
+                // Socket.IO v2 프레임 포맷: "42["eventName",{...}]" or "0{...}" etc
+                // 숫자 prefix 제거 후 JSON 파싱 시도
+                const jsonPart = rawMsg.replace(/^\d+/, "");
+                if (jsonPart.startsWith("[")) {
+                  const parsed = JSON.parse(jsonPart);
+                  // parsed = ["eventName", data] or ["eventName", data1, data2]
+                  const eventData = parsed[1] || parsed[0];
+                  this._extractSessionKey(eventData, "RAW_FRAME_ARRAY");
+                } else if (jsonPart.startsWith("{")) {
+                  const parsed = JSON.parse(jsonPart);
+                  this._extractSessionKey(parsed, "RAW_FRAME_OBJECT");
+                }
+              } catch (e) {
+                console.warn(`[CHAT_BRIDGE:${this.roomCode}]   RAW sessionKey JSON 파싱 실패: ${e.message}`);
+                // regex fallback
+                const m = rawMsg.match(/"sessionKey"\s*:\s*"([^"]+)"/);
+                if (m) {
+                  this.sessionKey = m[1];
+                  console.log(`[CHAT_BRIDGE:${this.roomCode}]   ★ REGEX fallback → sessionKey=${this.sessionKey.slice(0, 20)}...`);
+                }
+              }
+            }
+          });
+
+          engine.on("data", (rawData) => {
+            // 처음 3개만 로그 (message와 중복될 수 있음)
+            if (_rawFrameCount <= 3) {
+              const preview = typeof rawData === "string" ? rawData.slice(0, 200) : `[Binary ${rawData?.length || 0}B]`;
+              console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ RAW DATA: ${preview}`);
+            }
+          });
+        };
+
         this.socket.on("connect", () => {
-          console.log(`[CHAT_BRIDGE:${this.roomCode}] WebSocket 연결됨`);
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] WebSocket 연결됨 (Socket.IO connect 이벤트)`);
+          // Engine.IO 로깅 설정 — connect 이후에 engine이 확실히 존재
+          _setupEngineLogging();
           clearTimeout(timer);
           resolve();
         });
@@ -6095,41 +6208,37 @@ class ChatBridge {
           console.error(`[CHAT_BRIDGE:${this.roomCode}] socket error:`, err);
         });
 
-        // ★ "connected" 시스템 메시지에서 sessionKey 추출
-        this.socket.on("connected", (data) => {
-          console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ "connected" 이벤트 수신:`, JSON.stringify(data).slice(0, 500));
-          this.sessionKey = data?.sessionKey || data?.content?.sessionKey || null;
-          console.log(`[CHAT_BRIDGE:${this.roomCode}]   → sessionKey=${this.sessionKey ? this.sessionKey.slice(0, 16) + "..." : "null"}`);
-        });
+        // ★ 모든 가능한 이벤트명으로 sessionKey 탐색
+        const _sessionKeyEvents = ["connected", "SYSTEM", "system", "session", "SESSION", "auth", "AUTH", "welcome", "WELCOME", "init", "INIT"];
+        for (const evtName of _sessionKeyEvents) {
+          this.socket.on(evtName, (data) => {
+            console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ "${evtName}" 이벤트 수신:`, JSON.stringify(data).slice(0, 600));
+            this._extractSessionKey(data, evtName);
+          });
+        }
 
-        // ★ SYSTEM 이벤트 (일부 구현에서 connected 대신 사용)
-        this.socket.on("SYSTEM", (data) => {
-          console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ SYSTEM 이벤트:`, JSON.stringify(data).slice(0, 500));
-          if (data?.type === "connected" || data?.sessionKey) {
-            if (!this.sessionKey) {
-              this.sessionKey = data.sessionKey || data.content?.sessionKey || null;
-              console.log(`[CHAT_BRIDGE:${this.roomCode}]   SYSTEM → sessionKey=${this.sessionKey ? this.sessionKey.slice(0, 16) + "..." : "null"}`);
-            }
-          }
+        // ★ "message" 이벤트 — Socket.IO default message type
+        this.socket.on("message", (data) => {
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ "message" 이벤트:`, JSON.stringify(data).slice(0, 600));
+          this._extractSessionKey(data, "message");
         });
 
         // CHAT 이벤트 수신
         this.socket.on("CHAT", (data) => this._onChatEvent(data));
-        // ★ 소문자 "chat" 도 대비
         this.socket.on("chat", (data) => {
-          console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ 소문자 "chat" 이벤트 수신!`);
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ "chat" 이벤트 수신!`);
           this._onChatEvent(data);
         });
 
-        // DONATION / SUBSCRIPTION 등 다른 이벤트도 로깅
+        // DONATION / SUBSCRIPTION 로깅
         this.socket.on("DONATION", (data) => {
-          console.log(`[CHAT_BRIDGE:${this.roomCode}] DONATION 이벤트 수신 (무시):`, JSON.stringify(data).slice(0, 200));
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] DONATION:`, JSON.stringify(data).slice(0, 200));
         });
         this.socket.on("SUBSCRIPTION", (data) => {
-          console.log(`[CHAT_BRIDGE:${this.roomCode}] SUBSCRIPTION 이벤트 수신 (무시):`, JSON.stringify(data).slice(0, 200));
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] SUBSCRIPTION:`, JSON.stringify(data).slice(0, 200));
         });
 
-        // ★ catch-all: 모든 이벤트 로깅 (처음 20개 + 이후 새 이벤트명만)
+        // ★ catch-all: Socket.IO onevent — 모든 파싱된 이벤트
         let _totalEventCount = 0;
         const origOnEvent = this.socket.onevent?.bind(this.socket);
         if (origOnEvent) {
@@ -6138,17 +6247,18 @@ class ChatBridge {
             const eventName = packet.data?.[0];
             const isNew = eventName && !this._allEventNames.has(eventName);
             if (isNew) this._allEventNames.add(eventName);
-            // 처음 20개 이벤트는 무조건 로그, 이후 새 이벤트명만
-            if (_totalEventCount <= 20 || isNew) {
-              console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ EVENT #${_totalEventCount} name="${eventName}"`,
-                JSON.stringify(packet.data?.slice(1)).slice(0, 400));
+            if (_totalEventCount <= 30 || isNew) {
+              console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ SOEVENT #${_totalEventCount} name="${eventName}"`,
+                JSON.stringify(packet.data?.slice(1)).slice(0, 500));
             }
             origOnEvent(packet);
           };
+        } else {
+          console.warn(`[CHAT_BRIDGE:${this.roomCode}] ⚠ onevent 오버라이드 불가 — socket.onevent가 없음`);
         }
 
         this.socket.on("disconnect", (reason) => {
-          console.log(`[CHAT_BRIDGE:${this.roomCode}] WebSocket 끊김: ${reason}`);
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] WebSocket 끊김: ${reason}, rawFrames=${_rawFrameCount}, soEvents=${_totalEventCount}`);
           if (this.status === "connected") {
             this.status = "error";
             this.errorCode = "WS_DISCONNECTED";
@@ -6160,6 +6270,7 @@ class ChatBridge {
       // (C) sessionKey 대기 (이미 받았을 수 있음, 최대 8초 추가 대기)
       if (!this.sessionKey) {
         console.log(`[CHAT_BRIDGE:${this.roomCode}] sessionKey 아직 없음 — 최대 8초 대기...`);
+        console.log(`[CHAT_BRIDGE:${this.roomCode}]   socket.connected=${this.socket?.connected}, engine=${!!this.socket?.io?.engine}`);
         console.log(`[CHAT_BRIDGE:${this.roomCode}]   현재 수신된 이벤트: [${[...this._allEventNames].join(",")}]`);
         await new Promise((resolve) => {
           const timer = setTimeout(resolve, 8000);
