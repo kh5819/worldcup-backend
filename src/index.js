@@ -6637,15 +6637,20 @@ app.post("/chat-audience/start", requireAuth, async (req, res) => {
     console.log(`[CHAT_AUD] POST /start roomCode=${roomCode} userId=${req.user?.id}`);
     if (!roomCode) return res.status(400).json({ ok: false, error: "MISSING_ROOM_CODE" });
 
-    // 이미 연결 중이면 상태 반환
+    const forceNew = !!req.body.forceNew;
+
+    // 이미 연결 중이면 상태 반환 (forceNew 시에는 항상 새로 생성)
     const existing = chatBridges.get(roomCode);
-    if (existing && existing.status === "connected") {
+    if (!forceNew && existing && existing.status === "connected") {
       console.log(`[CHAT_AUD] /start — 이미 연결됨: ${roomCode}, subscribed=${existing.subscribed}, errorCode=${existing.errorCode || "없음"}`);
       return res.json({
         ok: true, status: "already_connected", channelId: existing.channelId,
         subscribed: existing.subscribed, errorCode: existing.errorCode || null,
         subscribeError: existing.subscribeError || null,
       });
+    }
+    if (forceNew) {
+      console.log(`[CHAT_AUD] /start — forceNew=true, 기존 브릿지 강제 정리 후 새로 생성`);
     }
 
     // chzzkSessions에서 토큰 조회 — roomCode로 먼저, 없으면 전체 스캔 (roomCode 변경 대응)
@@ -6815,10 +6820,10 @@ app.post("/chat-audience/stop", requireAuth, async (req, res) => {
       chatBridges.delete(roomCode);
     }
 
-    // chzzk 세션도 정리
-    chzzkSessions.delete(roomCode);
+    // ★ chzzkSessions는 삭제하지 않음 — OAuth 토큰은 "계정 연동" 상태이므로 유지
+    // chzzkSessions.delete(roomCode);  // REMOVED: 새 게임에서 토큰 재사용 가능하도록
 
-    console.log(`[CHAT_AUD] /stop OK — 세션+브릿지 정리 완료`);
+    console.log(`[CHAT_AUD] /stop OK — 브릿지 정리 완료 (chzzk 세션은 유지)`);
     return res.json({ ok: true });
   } catch (err) {
     console.error("[CHAT_AUD] /stop 예외:", err);
