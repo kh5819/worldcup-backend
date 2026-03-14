@@ -6001,6 +6001,7 @@ class ChatBridge {
     this._allEventNames = new Set(); // 수신된 모든 이벤트 타입
     this.subscribed = false;         // ★ subscribe/chat 실제 호출 + 성공 여부
     this.subscribeError = null;      // ★ subscribe 실패 시 상세
+    this.rawFrameCount = 0;          // ★ Engine.IO raw 프레임 수신 횟수
   }
 
   /** ★ 다양한 경로에서 sessionKey 추출 시도 */
@@ -6135,7 +6136,6 @@ class ChatBridge {
 
         // ★★★ Engine.IO 레벨 raw 프레임 캡처 ★★★
         // socket.io-client v2: socket.io = Manager, socket.io.engine = Engine.IO Socket
-        let _rawFrameCount = 0;
         const _setupEngineLogging = () => {
           const engine = this.socket.io?.engine;
           if (!engine) {
@@ -6146,43 +6146,58 @@ class ChatBridge {
 
           // Engine.IO message 이벤트 — Socket.IO 패킷 파싱 전의 raw 데이터
           engine.on("message", (rawMsg) => {
-            _rawFrameCount++;
-            if (_rawFrameCount <= 20) {
-              const preview = typeof rawMsg === "string" ? rawMsg.slice(0, 600) : `[Buffer ${rawMsg?.length || 0}B]`;
-              console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ RAW FRAME #${_rawFrameCount}: ${preview}`);
+            this.rawFrameCount++;
+            if (this.rawFrameCount <= 30) {
+              const preview = typeof rawMsg === "string" ? rawMsg.slice(0, 800) : `[Buffer ${rawMsg?.length || 0}B]`;
+              console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ RAW FRAME #${this.rawFrameCount}: ${preview}`);
             }
 
+            if (typeof rawMsg !== "string") return;
+
             // ★ Raw 프레임에서 sessionKey 직접 탐색
-            if (!this.sessionKey && typeof rawMsg === "string" && rawMsg.includes("sessionKey")) {
+            if (!this.sessionKey && rawMsg.includes("sessionKey")) {
               console.log(`[CHAT_BRIDGE:${this.roomCode}] ★★★ RAW에서 sessionKey 발견! 전체: ${rawMsg.slice(0, 800)}`);
               try {
-                // Socket.IO v2 프레임 포맷: "42["eventName",{...}]" or "0{...}" etc
-                // 숫자 prefix 제거 후 JSON 파싱 시도
                 const jsonPart = rawMsg.replace(/^\d+/, "");
                 if (jsonPart.startsWith("[")) {
                   const parsed = JSON.parse(jsonPart);
-                  // parsed = ["eventName", data] or ["eventName", data1, data2]
-                  const eventData = parsed[1] || parsed[0];
-                  this._extractSessionKey(eventData, "RAW_FRAME_ARRAY");
+                  this._extractSessionKey(parsed[1] || parsed[0], "RAW_FRAME_ARRAY");
                 } else if (jsonPart.startsWith("{")) {
-                  const parsed = JSON.parse(jsonPart);
-                  this._extractSessionKey(parsed, "RAW_FRAME_OBJECT");
+                  this._extractSessionKey(JSON.parse(jsonPart), "RAW_FRAME_OBJECT");
                 }
               } catch (e) {
-                console.warn(`[CHAT_BRIDGE:${this.roomCode}]   RAW sessionKey JSON 파싱 실패: ${e.message}`);
-                // regex fallback
                 const m = rawMsg.match(/"sessionKey"\s*:\s*"([^"]+)"/);
                 if (m) {
                   this.sessionKey = m[1];
-                  console.log(`[CHAT_BRIDGE:${this.roomCode}]   ★ REGEX fallback → sessionKey=${this.sessionKey.slice(0, 20)}...`);
+                  console.log(`[CHAT_BRIDGE:${this.roomCode}]   REGEX fallback → sessionKey=${this.sessionKey.slice(0, 20)}...`);
                 }
               }
             }
+
+            // ★★★ Raw 프레임에서 CHAT 이벤트 직접 라우팅 ★★★
+            // Socket.IO v2 이벤트 프레임: "42["CHAT",{...}]" or "42["SYSTEM",{...type:"chat"...}]"
+            try {
+              const jsonPart = rawMsg.replace(/^\d+/, "");
+              if (jsonPart.startsWith("[")) {
+                const parsed = JSON.parse(jsonPart);
+                const evtName = parsed[0];
+                const evtData = parsed[1];
+
+                if (this.rawFrameCount <= 30) {
+                  console.log(`[CHAT_BRIDGE:${this.roomCode}]   RAW parsed: event="${evtName}" dataKeys=[${evtData && typeof evtData === "object" ? Object.keys(evtData).join(",") : typeof evtData}]`);
+                }
+
+                // CHAT 이벤트를 raw에서 직접 감지
+                if (typeof evtName === "string" && /^chat$/i.test(evtName)) {
+                  console.log(`[CHAT_BRIDGE:${this.roomCode}] ★★★ RAW에서 CHAT 이벤트 감지!`);
+                  this._onChatEvent(evtData);
+                }
+              }
+            } catch (e) { /* 파싱 실패 무시 */ }
           });
 
           engine.on("data", (rawData) => {
-            // 처음 3개만 로그 (message와 중복될 수 있음)
-            if (_rawFrameCount <= 3) {
+            if (this.rawFrameCount <= 3) {
               const preview = typeof rawData === "string" ? rawData.slice(0, 200) : `[Binary ${rawData?.length || 0}B]`;
               console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ RAW DATA: ${preview}`);
             }
@@ -6210,20 +6225,50 @@ class ChatBridge {
 
         // ★ 모든 가능한 이벤트명으로 sessionKey 탐색
         const _sessionKeyEvents = ["connected", "SYSTEM", "system", "session", "SESSION", "auth", "AUTH", "welcome", "WELCOME", "init", "INIT"];
+        let _systemEvtCount = 0;
         for (const evtName of _sessionKeyEvents) {
           this.socket.on(evtName, (data) => {
-            console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ "${evtName}" 이벤트 수신:`, JSON.stringify(data).slice(0, 600));
+            _systemEvtCount++;
+            // ★ 처음 30개 SYSTEM 이벤트는 full payload 출력
+            if (_systemEvtCount <= 30) {
+              console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ "${evtName}" #${_systemEvtCount}:`,
+                JSON.stringify(data).slice(0, 1200));
+              if (data && typeof data === "object") {
+                console.log(`[CHAT_BRIDGE:${this.roomCode}]   keys: [${Object.keys(data).join(",")}], type=${data.type || "?"}`);
+              }
+            }
+
             this._extractSessionKey(data, evtName);
+
+            // ★★★ SYSTEM 이벤트 안에 CHAT 데이터가 포함될 수 있음 ★★★
+            // 치지직 Open API: SYSTEM 이벤트의 type 필드로 구분
+            if (data && typeof data === "object") {
+              const eventType = data.type || data.eventType || data.event || "";
+              if (/chat/i.test(eventType)) {
+                console.log(`[CHAT_BRIDGE:${this.roomCode}] ★★★ SYSTEM 내부 CHAT 발견! type="${eventType}"`);
+                this._onChatEvent(data.data || data.content || data.body || data);
+              }
+              if (/donation/i.test(eventType)) {
+                console.log(`[CHAT_BRIDGE:${this.roomCode}] SYSTEM 내부 DONATION: type="${eventType}"`);
+              }
+            }
           });
         }
 
         // ★ "message" 이벤트 — Socket.IO default message type
         this.socket.on("message", (data) => {
-          console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ "message" 이벤트:`, JSON.stringify(data).slice(0, 600));
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ "message" 이벤트:`, JSON.stringify(data).slice(0, 800));
           this._extractSessionKey(data, "message");
+          // message 이벤트에 chat 데이터가 올 수도 있음
+          if (data && typeof data === "object") {
+            const t = data.type || data.eventType || "";
+            if (/chat/i.test(t)) {
+              this._onChatEvent(data.data || data.content || data.body || data);
+            }
+          }
         });
 
-        // CHAT 이벤트 수신
+        // CHAT 이벤트 수신 (독립 이벤트로 오는 경우)
         this.socket.on("CHAT", (data) => this._onChatEvent(data));
         this.socket.on("chat", (data) => {
           console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ "chat" 이벤트 수신!`);
@@ -6258,7 +6303,7 @@ class ChatBridge {
         }
 
         this.socket.on("disconnect", (reason) => {
-          console.log(`[CHAT_BRIDGE:${this.roomCode}] WebSocket 끊김: ${reason}, rawFrames=${_rawFrameCount}, soEvents=${_totalEventCount}`);
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] WebSocket 끊김: ${reason}, rawFrames=${this.rawFrameCount}, soEvents=${_totalEventCount}`);
           if (this.status === "connected") {
             this.status = "error";
             this.errorCode = "WS_DISCONNECTED";
@@ -6650,7 +6695,8 @@ app.get("/chat-audience/votes", (req, res) => {
     connectedAt: bridge.connectedAt?.toISOString() || null,
     lastEventAt: bridge.lastEventAt?.toISOString() || null,
     allEventNames: [...bridge._allEventNames],  // ★ 디버깅: 수신된 모든 이벤트 타입
-    rawDumpCount: bridge._rawDumpCount,          // ★ RAW 이벤트 수신 횟수
+    rawDumpCount: bridge._rawDumpCount,          // ★ CHAT _onChatEvent 진입 횟수
+    rawFrameCount: bridge.rawFrameCount,         // ★ Engine.IO raw 프레임 수신 횟수
     subscribed: bridge.subscribed,               // ★ subscribe/chat 성공 여부
     sessionKeyReceived: !!bridge.sessionKey,     // ★ sessionKey 수신 여부
     subscribeError: bridge.subscribeError || null,
@@ -6660,7 +6706,7 @@ app.get("/chat-audience/votes", (req, res) => {
   _votesLogCount++;
   if (_votesLogCount <= 10 || _votesLogCount % 50 === 0) {
     console.log(`[CHAT_AUD] GET /votes #${_votesLogCount} room=${roomCode}:`,
-      `L=${agg.left} R=${agg.right} T=${agg.total} msgs=${bridge.totalMessagesProcessed} rawEvents=${bridge._rawDumpCount} events=[${[...bridge._allEventNames].join(",")}] lastEvent=${bridge.lastEventAt?.toISOString() || "없음"}`);
+      `L=${agg.left} R=${agg.right} T=${agg.total} msgs=${bridge.totalMessagesProcessed} rawCHAT=${bridge._rawDumpCount} rawFrames=${bridge.rawFrameCount} subscribed=${bridge.subscribed} events=[${[...bridge._allEventNames].join(",")}] lastEvent=${bridge.lastEventAt?.toISOString() || "없음"} socketOK=${bridge.socket?.connected}`);
   }
 
   return res.json(resp);
