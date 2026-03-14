@@ -5837,21 +5837,24 @@ app.post("/chzzk/token", async (req, res) => {
       state,
     };
 
-    // 치지직 토큰 엔드포인트 (공식 문서 상대경로 — chzzk.naver.com 기반)
-    const TOKEN_URLS = [
-      "https://chzzk.naver.com/auth/v1/token",
-      "https://openapi.chzzk.naver.com/auth/v1/token",
-    ];
+    // 치지직 토큰 엔드포인트 — 공식: openapi.chzzk.naver.com
+    const TOKEN_URL = "https://openapi.chzzk.naver.com/auth/v1/token";
 
     let tokenData = null;
     let tokenError = null;
 
-    for (const tokenUrl of TOKEN_URLS) {
+    // ★ 단일 URL (공식), Client-Id/Client-Secret 헤더 필수
+    {
+      const tokenUrl = TOKEN_URL;
       try {
         console.log(`[CHZZK] 토큰 교환 시도: ${tokenUrl}`);
         const tokenRes = await fetch(tokenUrl, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "Client-Id": CHZZK_CLIENT_ID,
+            "Client-Secret": CHZZK_CLIENT_SECRET,
+          },
           body: JSON.stringify(tokenBody),
         });
         const raw = await tokenRes.text();
@@ -5866,13 +5869,11 @@ app.post("/chzzk/token", async (req, res) => {
         // 치지직 API 응답: { code: 200, content: { accessToken, refreshToken, ... } }
         if (parsed.content?.accessToken) {
           tokenData = parsed.content;
-        } else if (parsed.accessToken) {
-          tokenData = parsed;
+        } else if (parsed.accessToken || parsed.access_token) {
+          tokenData = parsed.accessToken ? parsed : { accessToken: parsed.access_token, refreshToken: parsed.refresh_token, expiresIn: parsed.expires_in };
         } else {
           tokenError = `${tokenUrl} → 응답에 accessToken 없음: ${raw.slice(0, 200)}`;
-          continue;
         }
-        break; // 성공
       } catch (e) {
         tokenError = `${tokenUrl} → fetch 실패: ${e.message}`;
         console.warn("[CHZZK]", tokenError);
@@ -5880,7 +5881,7 @@ app.post("/chzzk/token", async (req, res) => {
     }
 
     if (!tokenData) {
-      console.error("[CHZZK] 모든 토큰 URL 실패:", tokenError);
+      console.error("[CHZZK] 토큰 교환 실패:", tokenError);
       return res.status(502).json({ ok: false, error: "TOKEN_EXCHANGE_FAILED", message: tokenError });
     }
 
@@ -5901,7 +5902,10 @@ app.post("/chzzk/token", async (req, res) => {
       try {
         console.log(`[CHZZK] 사용자 정보 조회: ${meUrl}`);
         const meRes = await fetch(meUrl, {
-          headers: { "Authorization": `Bearer ${accessToken}` },
+          headers: {
+            "Authorization": `Bearer ${accessToken}`,
+            "Client-Id": CHZZK_CLIENT_ID,
+          },
         });
         const meRaw = await meRes.text();
         console.log(`[CHZZK] 사용자 응답 (${meUrl}): status=${meRes.status} body=${meRaw.slice(0, 300)}`);
