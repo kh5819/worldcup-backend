@@ -5999,6 +5999,8 @@ class ChatBridge {
     this.connectedAt = null;         // 연결 시각
     this.lastEventAt = null;         // 마지막 이벤트 수신 시각
     this._allEventNames = new Set(); // 수신된 모든 이벤트 타입
+    this.subscribed = false;         // ★ subscribe/chat 실제 호출 + 성공 여부
+    this.subscribeError = null;      // ★ subscribe 실패 시 상세
   }
 
   /** 1) Session API로 WebSocket URL 획득 → 연결 → CHAT 구독 */
@@ -6067,6 +6069,7 @@ class ChatBridge {
       console.log(`[CHAT_BRIDGE:${this.roomCode}] WebSocket 연결: ${socketUrl.slice(0, 60)}...`);
       this.socket = ioClient(socketUrl, {
         reconnection: false,
+        "force new connection": true,
         timeout: 5000,
         transports: ["websocket"],
       });
@@ -6092,15 +6095,31 @@ class ChatBridge {
           console.error(`[CHAT_BRIDGE:${this.roomCode}] socket error:`, err);
         });
 
-        // 시스템 메시지에서 sessionKey 추출
+        // ★ "connected" 시스템 메시지에서 sessionKey 추출
         this.socket.on("connected", (data) => {
-          console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ "connected" 시스템 메시지 (full):`, JSON.stringify(data).slice(0, 500));
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ "connected" 이벤트 수신:`, JSON.stringify(data).slice(0, 500));
           this.sessionKey = data?.sessionKey || data?.content?.sessionKey || null;
           console.log(`[CHAT_BRIDGE:${this.roomCode}]   → sessionKey=${this.sessionKey ? this.sessionKey.slice(0, 16) + "..." : "null"}`);
         });
 
+        // ★ SYSTEM 이벤트 (일부 구현에서 connected 대신 사용)
+        this.socket.on("SYSTEM", (data) => {
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ SYSTEM 이벤트:`, JSON.stringify(data).slice(0, 500));
+          if (data?.type === "connected" || data?.sessionKey) {
+            if (!this.sessionKey) {
+              this.sessionKey = data.sessionKey || data.content?.sessionKey || null;
+              console.log(`[CHAT_BRIDGE:${this.roomCode}]   SYSTEM → sessionKey=${this.sessionKey ? this.sessionKey.slice(0, 16) + "..." : "null"}`);
+            }
+          }
+        });
+
         // CHAT 이벤트 수신
         this.socket.on("CHAT", (data) => this._onChatEvent(data));
+        // ★ 소문자 "chat" 도 대비
+        this.socket.on("chat", (data) => {
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ 소문자 "chat" 이벤트 수신!`);
+          this._onChatEvent(data);
+        });
 
         // DONATION / SUBSCRIPTION 등 다른 이벤트도 로깅
         this.socket.on("DONATION", (data) => {
@@ -6110,14 +6129,19 @@ class ChatBridge {
           console.log(`[CHAT_BRIDGE:${this.roomCode}] SUBSCRIPTION 이벤트 수신 (무시):`, JSON.stringify(data).slice(0, 200));
         });
 
-        // 알 수 없는 이벤트 catch-all
+        // ★ catch-all: 모든 이벤트 로깅 (처음 20개 + 이후 새 이벤트명만)
+        let _totalEventCount = 0;
         const origOnEvent = this.socket.onevent?.bind(this.socket);
         if (origOnEvent) {
           this.socket.onevent = (packet) => {
+            _totalEventCount++;
             const eventName = packet.data?.[0];
-            if (eventName && !this._allEventNames.has(eventName)) {
-              this._allEventNames.add(eventName);
-              console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ 새 이벤트 타입 발견: "${eventName}"`, JSON.stringify(packet.data?.slice(1)).slice(0, 300));
+            const isNew = eventName && !this._allEventNames.has(eventName);
+            if (isNew) this._allEventNames.add(eventName);
+            // 처음 20개 이벤트는 무조건 로그, 이후 새 이벤트명만
+            if (_totalEventCount <= 20 || isNew) {
+              console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ EVENT #${_totalEventCount} name="${eventName}"`,
+                JSON.stringify(packet.data?.slice(1)).slice(0, 400));
             }
             origOnEvent(packet);
           };
@@ -6133,10 +6157,12 @@ class ChatBridge {
         });
       });
 
-      // (C) sessionKey 대기 (이미 받았을 수 있음, 최대 5초 추가 대기)
+      // (C) sessionKey 대기 (이미 받았을 수 있음, 최대 8초 추가 대기)
       if (!this.sessionKey) {
+        console.log(`[CHAT_BRIDGE:${this.roomCode}] sessionKey 아직 없음 — 최대 8초 대기...`);
+        console.log(`[CHAT_BRIDGE:${this.roomCode}]   현재 수신된 이벤트: [${[...this._allEventNames].join(",")}]`);
         await new Promise((resolve) => {
-          const timer = setTimeout(resolve, 5000);
+          const timer = setTimeout(resolve, 8000);
           const check = setInterval(() => {
             if (this.sessionKey) { clearInterval(check); clearTimeout(timer); resolve(); }
           }, 200);
@@ -6144,13 +6170,30 @@ class ChatBridge {
       }
 
       if (!this.sessionKey) {
-        console.warn(`[CHAT_BRIDGE:${this.roomCode}] sessionKey를 받지 못함 — 구독 없이 진행`);
+        console.error(`[CHAT_BRIDGE:${this.roomCode}] ❌ sessionKey를 받지 못함! (8초 대기 초과)`);
+        console.error(`[CHAT_BRIDGE:${this.roomCode}]   수신된 이벤트 타입: [${[...this._allEventNames].join(",")}]`);
+        console.error(`[CHAT_BRIDGE:${this.roomCode}]   socket.connected=${this.socket?.connected}`);
+        console.error(`[CHAT_BRIDGE:${this.roomCode}]   → "connected" 또는 "SYSTEM" 이벤트가 오지 않음`);
+        console.error(`[CHAT_BRIDGE:${this.roomCode}]   → subscribe/chat 호출 불가 → 채팅 이벤트 수신 불가`);
+        this.errorCode = "NO_SESSION_KEY";
+        this.subscribeError = "sessionKey를 받지 못함 — connected/SYSTEM 이벤트 미수신";
+        // ★ status를 connected 대신 error로 (구독 불가 상태)
+        this.status = "connected";  // WS 자체는 연결됨
+        this.connectedAt = new Date();
+        // errorCode가 설정되어 있으므로 프론트에서 warning 표시됨
+        return;
       }
 
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] ✅ sessionKey 획득: ${this.sessionKey.slice(0, 20)}...`);
+
       // (D) CHAT 이벤트 구독
-      if (this.sessionKey && this.channelId) {
+      // ★ 치지직 API: sessionKey는 반드시 query parameter로 전달 (body에 넣으면 무시됨)
+      if (this.channelId) {
+        const subUrl = `${CHZZK_API_BASE}/open/v1/sessions/events/subscribe/chat?sessionKey=${encodeURIComponent(this.sessionKey)}`;
         console.log(`[CHAT_BRIDGE:${this.roomCode}] CHAT 구독 요청: channelId=${this.channelId}`);
-        const subRes = await fetch(`${CHZZK_API_BASE}/open/v1/sessions/events/subscribe/chat`, {
+        console.log(`[CHAT_BRIDGE:${this.roomCode}]   URL: ${subUrl.slice(0, 120)}...`);
+        console.log(`[CHAT_BRIDGE:${this.roomCode}]   Headers: Authorization=Bearer ${this.accessToken.slice(0, 16)}..., Client-Id=${CHZZK_CLIENT_ID}`);
+        const subRes = await fetch(subUrl, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -6158,32 +6201,62 @@ class ChatBridge {
             "Client-Id": CHZZK_CLIENT_ID,
           },
           body: JSON.stringify({
-            sessionKey: this.sessionKey,
             channelId: this.channelId,
           }),
         });
         const subRaw = await subRes.text();
-        console.log(`[CHAT_BRIDGE:${this.roomCode}] CHAT 구독 응답: ${subRes.status} ${subRaw.slice(0, 200)}`);
+        console.log(`[CHAT_BRIDGE:${this.roomCode}] CHAT 구독 응답:`);
+        console.log(`[CHAT_BRIDGE:${this.roomCode}]   status: ${subRes.status}`);
+        console.log(`[CHAT_BRIDGE:${this.roomCode}]   headers: ${JSON.stringify(Object.fromEntries(subRes.headers.entries())).slice(0, 300)}`);
+        console.log(`[CHAT_BRIDGE:${this.roomCode}]   body(raw): ${subRaw.slice(0, 500)}`);
 
-        if (!subRes.ok) {
+        // ★ HTTP 200이어도 body.code 확인 (치지직 패턴)
+        let subParsed = null;
+        try { subParsed = JSON.parse(subRaw); } catch (e) {
+          console.warn(`[CHAT_BRIDGE:${this.roomCode}]   body JSON 파싱 실패: ${e.message}`);
+        }
+
+        if (subParsed && subParsed.code && subParsed.code !== 200) {
+          this.errorCode = "CHAT_SUBSCRIBE_FAILED";
+          this.subscribeError = `body code=${subParsed.code}: ${subParsed.message || ""}`;
+          console.error(`[CHAT_BRIDGE:${this.roomCode}] ❌ CHAT 구독 실패 (body code=${subParsed.code}): ${subParsed.message || subRaw.slice(0, 200)}`);
+        } else if (!subRes.ok) {
           const subError = subRaw.slice(0, 300);
           if (subRes.status === 403) {
             this.errorCode = "CHAT_SUBSCRIBE_SCOPE";
+            this.subscribeError = `403 Forbidden: ${subError}`;
             console.error(`[CHAT_BRIDGE:${this.roomCode}] ❌ CHAT 구독 403 — scope 부족: ${subError}`);
-            console.error(`[CHAT_BRIDGE:${this.roomCode}]   → 치지직 앱 설정에서 "채팅" scope이 활성화되어 있는지 확인하세요`);
           } else {
             this.errorCode = "CHAT_SUBSCRIBE_FAILED";
+            this.subscribeError = `${subRes.status}: ${subError}`;
             console.error(`[CHAT_BRIDGE:${this.roomCode}] ❌ CHAT 구독 실패 (${subRes.status}): ${subError}`);
           }
-          // 구독 실패해도 연결은 유지 — 이벤트가 올 수도 있음
         } else {
-          console.log(`[CHAT_BRIDGE:${this.roomCode}] ✅ CHAT 구독 성공`);
+          this.subscribed = true;
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] ✅ CHAT 구독 성공 — 이벤트 수신 대기 중`);
+          if (subParsed) {
+            console.log(`[CHAT_BRIDGE:${this.roomCode}]   구독 응답 parsed:`, JSON.stringify(subParsed).slice(0, 300));
+          }
         }
       }
 
       this.status = "connected";
       this.connectedAt = new Date();
-      console.log(`[CHAT_BRIDGE:${this.roomCode}] 채팅 연결 완료 ✅ sessionKey=${this.sessionKey ? "있음" : "없음"}, channelId=${this.channelId}`);
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] 연결 완료 — sessionKey=${this.sessionKey ? "있음" : "없음"}, subscribed=${this.subscribed}, errorCode=${this.errorCode || "없음"}, channelId=${this.channelId}`);
+
+      // ★ 30초 후 진단 로그 — 이벤트 수신 여부 확인
+      setTimeout(() => {
+        if (this.status === "connected") {
+          console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ 30초 진단: subscribed=${this.subscribed}, sessionKey=${!!this.sessionKey}, rawEvents=${this._rawDumpCount}, totalMsgs=${this.totalMessagesProcessed}, votes=${this.votes.size}, allEvents=[${[...this._allEventNames].join(",")}], lastEvent=${this.lastEventAt?.toISOString() || "없음"}, socketConnected=${this.socket?.connected}`);
+          if (this._rawDumpCount === 0) {
+            if (!this.subscribed) {
+              console.error(`[CHAT_BRIDGE:${this.roomCode}] ⚠️ subscribe 미완료 + 이벤트 0개 — 구독이 호출되지 않았거나 실패함`);
+            } else {
+              console.warn(`[CHAT_BRIDGE:${this.roomCode}] ⚠️ subscribe 성공했지만 이벤트 0개 — 이벤트명이 다르거나 방송 중이 아닐 수 있음`);
+            }
+          }
+        }
+      }, 30000);
 
     } catch (err) {
       this.status = "error";
@@ -6198,38 +6271,46 @@ class ChatBridge {
   _onChatEvent(data) {
     this.lastEventAt = new Date();
     try {
-      // ★ 처음 5개 이벤트는 raw payload 전체 덤프 (구조 검증용)
-      if (this._rawDumpCount < 5) {
+      // ★ 처음 10개 이벤트는 raw payload 전체 덤프 (구조 검증용)
+      if (this._rawDumpCount < 10) {
         this._rawDumpCount++;
         console.log(`[CHAT_BRIDGE:${this.roomCode}] ★ RAW CHAT #${this._rawDumpCount}:`,
-          JSON.stringify(data).slice(0, 800));
+          JSON.stringify(data).slice(0, 1200));
         console.log(`[CHAT_BRIDGE:${this.roomCode}]   type=${typeof data}, isArray=${Array.isArray(data)}, keys=${data && typeof data === "object" ? Object.keys(data).join(",") : "N/A"}`);
+        if (typeof data === "string") {
+          console.log(`[CHAT_BRIDGE:${this.roomCode}]   ★ data는 문자열! 앞 200자: ${data.slice(0, 200)}`);
+        }
       }
 
       // 치지직 CHAT 이벤트 구조 — 공식 문서 기준:
-      //   { channelId, senderChannelId, profile: { nickname, badges, verifiedMark }, content, messageTime, userRoleCode, emojis }
-      // 실제 응답이 다를 수 있으므로 여러 경로 탐색
+      //   { profile: { nickname }, message: "텍스트", channelId, senderChannelId, emojis }
+      // 또는 배열로 여러 메시지가 올 수 있음
+      // content 필드를 사용하는 비공식 구현도 존재
       const events = Array.isArray(data) ? data : [data];
 
       for (const evt of events) {
-        // content 필드가 문자열(메시지)일 수도, 객체(래핑)일 수도 있음
-        const msg = (typeof evt.content === "object" && evt.content !== null) ? evt.content : evt;
+        // ★ message 필드 우선 탐색 (공식 문서 기준)
+        const senderChannelId = evt.senderChannelId || evt.channelId || null;
+        const nickname = evt.profile?.nickname || "익명";
+        const messageTime = evt.messageTime || Date.now();
 
-        const senderChannelId = msg.senderChannelId || evt.senderChannelId || null;
-        const nickname = msg.profile?.nickname || evt.profile?.nickname || "익명";
-        const messageTime = msg.messageTime || evt.messageTime || Date.now();
-
-        // content 추출: 문자열 직접 or msg.content 문자열
+        // ★ 메시지 텍스트 추출: message > content(string) > content.message > text
         let content = null;
-        if (typeof evt.content === "string") content = evt.content;
-        else if (typeof msg.content === "string") content = msg.content;
-        else if (typeof msg.message === "string") content = msg.message;  // 대체 필드명
-        else if (typeof msg.text === "string") content = msg.text;        // 대체 필드명
+        if (typeof evt.message === "string") content = evt.message;
+        else if (typeof evt.content === "string") content = evt.content;
+        else if (typeof evt.content === "object" && evt.content !== null) {
+          content = evt.content.message || evt.content.content || evt.content.text || null;
+        }
+        else if (typeof evt.text === "string") content = evt.text;
+
+        // ★ 파싱 실패 디버깅 (처음 10개)
+        if (this._rawDumpCount <= 10) {
+          console.log(`[CHAT_BRIDGE:${this.roomCode}]   파싱 결과: sender=${senderChannelId}, nick=${nickname}, content="${content}", evtKeys=[${Object.keys(evt).join(",")}]`);
+        }
 
         if (!content || !senderChannelId) {
-          // 파싱 실패 로그 (처음 3개만)
-          if (this._rawDumpCount <= 5) {
-            console.warn(`[CHAT_BRIDGE:${this.roomCode}] ⚠ 파싱 실패: content=${content}, sender=${senderChannelId}, keys=[${Object.keys(evt).join(",")}]`);
+          if (this._rawDumpCount <= 10) {
+            console.warn(`[CHAT_BRIDGE:${this.roomCode}] ⚠ 파싱 실패: content=${content}, sender=${senderChannelId}`);
           }
           continue;
         }
@@ -6325,8 +6406,12 @@ app.post("/chat-audience/start", requireAuth, async (req, res) => {
     // 이미 연결 중이면 상태 반환
     const existing = chatBridges.get(roomCode);
     if (existing && existing.status === "connected") {
-      console.log(`[CHAT_AUD] /start — 이미 연결됨: ${roomCode}`);
-      return res.json({ ok: true, status: "already_connected", channelId: existing.channelId, errorCode: null });
+      console.log(`[CHAT_AUD] /start — 이미 연결됨: ${roomCode}, subscribed=${existing.subscribed}, errorCode=${existing.errorCode || "없음"}`);
+      return res.json({
+        ok: true, status: "already_connected", channelId: existing.channelId,
+        subscribed: existing.subscribed, errorCode: existing.errorCode || null,
+        subscribeError: existing.subscribeError || null,
+      });
     }
 
     // chzzkSessions에서 토큰 조회 — roomCode로 먼저, 없으면 전체 스캔 (roomCode 변경 대응)
@@ -6387,12 +6472,15 @@ app.post("/chat-audience/start", requireAuth, async (req, res) => {
       });
     }
 
-    console.log(`[CHAT_AUD] /start — 성공 ✅ status=${bridge.status}, errorCode=${bridge.errorCode || "none"}`);
+    console.log(`[CHAT_AUD] /start — 완료: status=${bridge.status}, subscribed=${bridge.subscribed}, errorCode=${bridge.errorCode || "none"}, subscribeError=${bridge.subscribeError || "none"}`);
     return res.json({
       ok: true,
       status: bridge.status,
       channelId: sess.channelId,
+      subscribed: bridge.subscribed,
       errorCode: bridge.errorCode || null,
+      subscribeError: bridge.subscribeError || null,
+      sessionKeyReceived: !!bridge.sessionKey,
       connectedAt: bridge.connectedAt?.toISOString(),
     });
 
@@ -6429,6 +6517,7 @@ app.post("/chat-audience/round", requireAuth, async (req, res) => {
 });
 
 // --- GET /chat-audience/votes ---
+let _votesLogCount = 0;
 app.get("/chat-audience/votes", (req, res) => {
   const roomCode = req.query.room;
   if (!roomCode) return res.status(400).json({ ok: false, error: "MISSING_ROOM" });
@@ -6439,7 +6528,7 @@ app.get("/chat-audience/votes", (req, res) => {
   }
 
   const agg = bridge.getAggregates();
-  return res.json({
+  const resp = {
     ok: true,
     ...agg,
     status: bridge.status,
@@ -6449,7 +6538,21 @@ app.get("/chat-audience/votes", (req, res) => {
     messagesProcessed: bridge.totalMessagesProcessed,
     connectedAt: bridge.connectedAt?.toISOString() || null,
     lastEventAt: bridge.lastEventAt?.toISOString() || null,
-  });
+    allEventNames: [...bridge._allEventNames],  // ★ 디버깅: 수신된 모든 이벤트 타입
+    rawDumpCount: bridge._rawDumpCount,          // ★ RAW 이벤트 수신 횟수
+    subscribed: bridge.subscribed,               // ★ subscribe/chat 성공 여부
+    sessionKeyReceived: !!bridge.sessionKey,     // ★ sessionKey 수신 여부
+    subscribeError: bridge.subscribeError || null,
+  };
+
+  // ★ 처음 10회 + 이후 50회마다 서버 로그
+  _votesLogCount++;
+  if (_votesLogCount <= 10 || _votesLogCount % 50 === 0) {
+    console.log(`[CHAT_AUD] GET /votes #${_votesLogCount} room=${roomCode}:`,
+      `L=${agg.left} R=${agg.right} T=${agg.total} msgs=${bridge.totalMessagesProcessed} rawEvents=${bridge._rawDumpCount} events=[${[...bridge._allEventNames].join(",")}] lastEvent=${bridge.lastEventAt?.toISOString() || "없음"}`);
+  }
+
+  return res.json(resp);
 });
 
 // --- POST /chat-audience/stop ---
