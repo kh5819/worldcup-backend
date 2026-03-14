@@ -5814,8 +5814,12 @@ const CHZZK_CLIENT_ID     = process.env.CHZZK_CLIENT_ID;
 const CHZZK_CLIENT_SECRET = process.env.CHZZK_CLIENT_SECRET;
 const CHZZK_REDIRECT_URI  = process.env.CHZZK_REDIRECT_URI;
 
-// 연동된 세션 보관 (roomCode → { accessToken, refreshToken, expiresAt, channelId, nickname })
-const chzzkSessions = new Map();
+// 연동된 세션 보관
+// ★ 2중 인덱스: roomCode → session, userId → session (같은 객체 참조)
+//   OAuth 시 roomCode + userId 둘 다 저장
+//   /start 시 roomCode로 먼저 조회 → 없으면 userId로 조회 후 새 roomCode에 복사
+const chzzkSessions = new Map();      // roomCode → session
+const chzzkSessionsByUser = new Map(); // userId → session
 
 app.post("/chzzk/token", async (req, res) => {
   try {
@@ -5922,17 +5926,23 @@ app.post("/chzzk/token", async (req, res) => {
 
     console.log(`[CHZZK] 사용자: channelId=${channelId}, nickname=${nickname}`);
 
-    // 3) 서버 메모리에 세션 보관
+    // 3) 서버 메모리에 세션 보관 (roomCode + userId 이중 키)
+    const sessObj = {
+      accessToken,
+      refreshToken,
+      expiresAt: Date.now() + (Number(expiresIn) || 86400) * 1000,
+      channelId,
+      nickname,
+      userId: req.body.userId || null, // 프론트에서 보내면 저장
+    };
     if (roomCode) {
-      chzzkSessions.set(roomCode, {
-        accessToken,
-        refreshToken,
-        expiresAt: Date.now() + (Number(expiresIn) || 86400) * 1000,
-        channelId,
-        nickname,
-      });
-      console.log(`[CHZZK] 세션 저장: roomCode=${roomCode}`);
+      chzzkSessions.set(roomCode, sessObj);
+      console.log(`[CHZZK] 세션 저장 (roomCode): roomCode=${roomCode}`);
     }
+    // ★ userId 없이도 가능 — /chat-audience/start에서 req.user.id로 재매핑
+    // callback.html은 인증 없이 호출하므로 userId가 없을 수 있음
+    // 대신 roomCode → session을 저장하고, /start에서 userId 기반 fallback
+    console.log(`[CHZZK] 세션 저장 완료: roomCode=${roomCode}, channelId=${channelId}, keys=[${[...chzzkSessions.keys()]}]`);
 
     return res.json({
       ok: true,
@@ -6031,20 +6041,27 @@ class ChatBridge {
       console.log(`[CHAT_BRIDGE:${this.roomCode}] Session Auth parsed 키:`, Object.keys(sessionParsed));
       if (sessionParsed.content) {
         console.log(`[CHAT_BRIDGE:${this.roomCode}]   content 키:`, Object.keys(sessionParsed.content));
+        console.log(`[CHAT_BRIDGE:${this.roomCode}]   content 값:`, JSON.stringify(sessionParsed.content).slice(0, 300));
       }
 
-      // socketUrl 탐색 — 여러 가능한 경로 시도
+      // ★ CHZZK API는 HTTP 200이어도 body.code !== 200이면 에러
+      if (sessionParsed.code && sessionParsed.code !== 200) {
+        this.errorCode = "SESSION_AUTH_FAILED";
+        throw new Error(`Session Auth 실패 (body code=${sessionParsed.code}): ${sessionParsed.message || sessionRaw.slice(0, 300)}`);
+      }
+
+      // ★ 공식 필드명: content.url (chzzkpy SessionKey 모델 확인)
       const c = sessionParsed.content || {};
-      const socketUrl = c.socketUrl || c.socket_url || c.url || c.wsUrl || c.ws_url
-                      || sessionParsed.socketUrl || sessionParsed.socket_url || sessionParsed.url || null;
+      const socketUrl = c.url || c.socketUrl || c.socket_url || c.wsUrl
+                      || sessionParsed.url || sessionParsed.socketUrl || null;
 
       if (!socketUrl) {
         console.error(`[CHAT_BRIDGE:${this.roomCode}] ❌ socketUrl을 찾을 수 없음!`);
         console.error(`[CHAT_BRIDGE:${this.roomCode}]   전체 응답: ${sessionRaw.slice(0, 800)}`);
         this.errorCode = "CHAT_CONNECT_FAILED";
-        throw new Error(`socketUrl이 응답에 없음 — parsed keys: [${Object.keys(sessionParsed)}], content keys: [${Object.keys(c)}]`);
+        throw new Error(`socketUrl이 응답에 없음 — parsed keys: [${Object.keys(sessionParsed)}], content keys: [${Object.keys(c)}], raw: ${sessionRaw.slice(0, 200)}`);
       }
-      console.log(`[CHAT_BRIDGE:${this.roomCode}] ✅ socketUrl 발견: ${socketUrl.slice(0, 80)}...`);
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] ✅ socketUrl 발견: ${socketUrl}`);
 
       // (B) Socket.IO v1~2 프로토콜로 연결
       console.log(`[CHAT_BRIDGE:${this.roomCode}] WebSocket 연결: ${socketUrl.slice(0, 60)}...`);
@@ -6312,11 +6329,31 @@ app.post("/chat-audience/start", requireAuth, async (req, res) => {
       return res.json({ ok: true, status: "already_connected", channelId: existing.channelId, errorCode: null });
     }
 
-    // chzzkSessions에서 토큰 조회
-    const sess = chzzkSessions.get(roomCode);
+    // chzzkSessions에서 토큰 조회 — roomCode로 먼저, 없으면 전체 스캔 (roomCode 변경 대응)
+    let sess = chzzkSessions.get(roomCode);
     if (!sess || !sess.accessToken) {
-      console.warn(`[CHAT_AUD] /start — NO_CHZZK_SESSION: roomCode=${roomCode}, sessions=[${[...chzzkSessions.keys()].join(",")}]`);
-      return res.status(400).json({ ok: false, error: "NO_CHZZK_SESSION", message: "먼저 치지직 계정을 연동하세요" });
+      // ★ roomCode가 바뀌었을 수 있음 → 가장 최근 유효 세션 찾기
+      console.log(`[CHAT_AUD] /start — roomCode=${roomCode}에 세션 없음, 전체 스캔 시도 (keys=[${[...chzzkSessions.keys()]}])`);
+      let bestSess = null;
+      for (const [key, val] of chzzkSessions) {
+        if (val.accessToken && val.expiresAt > Date.now()) {
+          if (!bestSess || val.expiresAt > bestSess.expiresAt) {
+            bestSess = val;
+            console.log(`[CHAT_AUD] /start — 유효 세션 발견: key=${key}, channelId=${val.channelId}, expires=${new Date(val.expiresAt).toISOString()}`);
+          }
+        }
+      }
+      if (bestSess) {
+        sess = bestSess;
+        // ★ 새 roomCode에 세션 복사 (이후 조회 빠르게)
+        chzzkSessions.set(roomCode, sess);
+        console.log(`[CHAT_AUD] /start — 세션 재매핑: → roomCode=${roomCode}`);
+      }
+    }
+
+    if (!sess || !sess.accessToken) {
+      console.warn(`[CHAT_AUD] /start — NO_CHZZK_SESSION: roomCode=${roomCode}, 전체keys=[${[...chzzkSessions.keys()]}]`);
+      return res.status(400).json({ ok: false, error: "NO_CHZZK_SESSION", message: "먼저 치지직 계정을 연동하세요 (방을 새로 만든 경우 치지직 재연동 필요)" });
     }
 
     // 토큰 만료 확인
