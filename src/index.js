@@ -6072,22 +6072,37 @@ class ChatBridge {
     this.errorMsg = null;
 
     try {
-      // (A) Session Auth — WebSocket URL 획득
+      // (A) Session Auth — WebSocket URL 획득 (423 재시도 포함)
       const sessionApiUrl = `${CHZZK_API_BASE}/open/v1/sessions/auth`;
       console.log(`[CHAT_BRIDGE:${this.roomCode}] Session Auth 요청: ${sessionApiUrl}`);
 
-      const sessionRes = await fetch(sessionApiUrl, {
+      let sessionRes = await fetch(sessionApiUrl, {
         headers: {
           "Authorization": `Bearer ${this.accessToken}`,
           "Client-Id": CHZZK_CLIENT_ID,
         },
       });
-      const sessionRaw = await sessionRes.text();
+      let sessionRaw = await sessionRes.text();
       console.log(`[CHAT_BRIDGE:${this.roomCode}] Session Auth: status=${sessionRes.status} body=${sessionRaw.slice(0, 500)}`);
+
+      // ★ 423 = 이전 세션이 아직 정리 안 됨 → 2초 대기 후 1회 재시도
+      if (sessionRes.status === 423) {
+        console.warn(`[CHAT_BRIDGE:${this.roomCode}] Session Auth 423 (Locked) — 2초 후 재시도`);
+        await new Promise(r => setTimeout(r, 2000));
+        sessionRes = await fetch(sessionApiUrl, {
+          headers: {
+            "Authorization": `Bearer ${this.accessToken}`,
+            "Client-Id": CHZZK_CLIENT_ID,
+          },
+        });
+        sessionRaw = await sessionRes.text();
+        console.log(`[CHAT_BRIDGE:${this.roomCode}] Session Auth 재시도: status=${sessionRes.status} body=${sessionRaw.slice(0, 500)}`);
+      }
 
       if (!sessionRes.ok) {
         if (sessionRes.status === 401) { this.errorCode = "TOKEN_INVALID"; throw new Error("Session Auth 401"); }
         if (sessionRes.status === 403) { this.errorCode = "SCOPE_INSUFFICIENT"; throw new Error("Session Auth 403"); }
+        if (sessionRes.status === 423) { this.errorCode = "SESSION_LOCKED"; throw new Error("Session Auth 423 — 이전 세션 정리 필요"); }
         this.errorCode = "SESSION_AUTH_FAILED";
         throw new Error(`Session Auth ${sessionRes.status}`);
       }
@@ -6673,8 +6688,14 @@ app.post("/chat-audience/start", requireAuth, async (req, res) => {
 
     console.log(`[CHAT_AUD] /start — 연결 시도: channelId=${sess.channelId}, tokenExpires=${new Date(sess.expiresAt).toISOString()}`);
 
-    // 기존 브릿지 정리
-    if (existing) existing.disconnect();
+    // ★ 기존 브릿지 전체 정리 — 같은 channelId의 모든 브릿지 disconnect (솔로에서 roomCode 변경 대응)
+    for (const [key, b] of chatBridges) {
+      if (b.channelId === sess.channelId || key === roomCode) {
+        console.log(`[CHAT_AUD] /start — 기존 브릿지 정리: key=${key}, status=${b.status}`);
+        b.disconnect();
+        chatBridges.delete(key);
+      }
+    }
 
     const bridge = new ChatBridge(roomCode, sess.accessToken, sess.channelId);
     chatBridges.set(roomCode, bridge);
