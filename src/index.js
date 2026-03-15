@@ -5128,10 +5128,11 @@ async function handleTierGameStart(room, payload, me, socket, cb) {
       return cb?.({ ok: false, error: "NO_CARDS" });
     }
 
-    // 카드 수 제한: payload.cardLimit (0=전체, 20, 30, 50)
+    // 카드 수 제한: payload.cardLimit (0=전체, 10단위 양수)
     let cardLimit = parseInt(payload?.cardLimit, 10) || 0;
-    if (cardLimit > 0 && !TIER_CARD_LIMIT_OPTIONS.includes(cardLimit)) {
-      cardLimit = TIER_DEFAULT_CARD_LIMIT;
+    // 10의 배수만 허용, 그 외 0(전체) 처리
+    if (cardLimit > 0 && (cardLimit % 10 !== 0 || cardLimit < 10)) {
+      cardLimit = 0;
     }
 
     const selectedCards = prepareTierCards(template.cards, cardLimit);
