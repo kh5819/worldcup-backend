@@ -4039,7 +4039,7 @@ function publicRoom(room) {
     } else {
       status = room.committed.has(userId) ? "선택 완료" : "선택 중…";
     }
-    return { userId, name: p.name, status, isGuest: !!p.isGuest };
+    return { userId, name: p.name, status, isGuest: !!p.isGuest, avatar_url: p.avatar_url || null };
   });
 
   // ── 멀티 티어: 전용 payload ──
@@ -4150,7 +4150,8 @@ async function loadCandidates(contentId, userId, isAdmin) {
     mediaType: c.media_type || "image",
     mediaUrl: c.media_url || "",
     startSec: c.start_sec || 0,
-    durationSec: c.duration_sec || 0
+    durationSec: c.duration_sec || 0,
+    thumbnail_url: c.thumbnail_url || ""
   }));
   // ✅ 디버그: 첫 3개 후보의 미디어 정보 출력
   console.log(`[loadCandidates] contentId=${contentId} total=${mapped.length}`);
@@ -4269,16 +4270,18 @@ function nextMatch(room) {
       name: candA.name,
       media_url: candA.mediaUrl || "",
       media_type: candA.mediaType || "image",
-      start_sec: candA.startSec || 0
+      start_sec: candA.startSec || 0,
+      thumbnail_url: candA.thumbnail_url || ""
     },
     B: {
       name: candB.name,
       media_url: candB.mediaUrl || "",
       media_type: candB.mediaType || "image",
-      start_sec: candB.startSec || 0
+      start_sec: candB.startSec || 0,
+      thumbnail_url: candB.thumbnail_url || ""
     },
-    mediaA: { type: candA.mediaType || "image", url: candA.mediaUrl || "", startSec: candA.startSec || 0 },
-    mediaB: { type: candB.mediaType || "image", url: candB.mediaUrl || "", startSec: candB.startSec || 0 }
+    mediaA: { type: candA.mediaType || "image", url: candA.mediaUrl || "", startSec: candA.startSec || 0, thumbnail_url: candA.thumbnail_url || "" },
+    mediaB: { type: candB.mediaType || "image", url: candB.mediaUrl || "", startSec: candB.startSec || 0, thumbnail_url: candB.thumbnail_url || "" }
   };
   console.log(`[nextMatch] ▶ A.media_url=${(room.currentMatch.A.media_url || "EMPTY").slice(0, 80)}`);
   console.log(`[nextMatch] ▶ B.media_url=${(room.currentMatch.B.media_url || "EMPTY").slice(0, 80)}`);
@@ -5645,7 +5648,18 @@ io.on("connection", (socket) => {
     inviteCodeMap.set(inviteCode, roomId);
 
     const hostNick = pickNick(socket, payload);
-    room.players.set(me.id, { name: hostNick, isGuest: false, joinedAt: Date.now() });
+    const hostPlayer = { name: hostNick, isGuest: false, joinedAt: Date.now(), avatar_url: null };
+    // 프로필 아바타 조회 (비차단)
+    if (me.id && !me.isGuest) {
+      supabaseAdmin.from("profiles").select("avatar_url").eq("id", me.id).single()
+        .then(({ data }) => {
+          if (data?.avatar_url) {
+            hostPlayer.avatar_url = data.avatar_url;
+            io.to(roomId).emit("room:state", publicRoom(room));
+          }
+        }).catch(() => {});
+    }
+    room.players.set(me.id, hostPlayer);
     socket.join(roomId);
     userRoomMap.set(me.id, roomId);
 
@@ -5688,7 +5702,18 @@ io.on("connection", (socket) => {
         return cb?.({ ok: false, error: "ROOM_FULL" });
       }
       // 신규 입장
-      room.players.set(me.id, { name: pickNick(socket, payload), isGuest: !!me.isGuest, joinedAt: Date.now() });
+      const newPlayer = { name: pickNick(socket, payload), isGuest: !!me.isGuest, joinedAt: Date.now(), avatar_url: null };
+      // 프로필 아바타 조회 (비차단)
+      if (me.id && !me.isGuest) {
+        supabaseAdmin.from("profiles").select("avatar_url").eq("id", me.id).single()
+          .then(({ data }) => {
+            if (data?.avatar_url) {
+              newPlayer.avatar_url = data.avatar_url;
+              io.to(roomId).emit("room:state", publicRoom(room));
+            }
+          }).catch(() => {});
+      }
+      room.players.set(me.id, newPlayer);
     }
     socket.join(roomId);
     userRoomMap.set(me.id, roomId);
