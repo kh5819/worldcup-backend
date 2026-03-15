@@ -3223,8 +3223,11 @@ app.post("/plays/complete", requireAuth, async (req, res) => {
     }
     const type = gameType === "worldcup" ? "worldcup" : "quiz";
 
-    // fire-and-forget 방식이지만 응답은 즉시 반환
-    recordPlayOnce({ contentId, userId: req.user.id, mode: "solo", gameType: type }).catch(() => {});
+    // 퀴즈: play_count는 quiz_attempts INSERT 트리거가 처리 → recordPlayOnce 불필요
+    // 월드컵: 기존 recordPlayOnce 유지
+    if (type === "worldcup") {
+      recordPlayOnce({ contentId, userId: req.user.id, mode: "solo", gameType: type }).catch(() => {});
+    }
 
     return res.json({ ok: true });
   } catch (err) {
@@ -5543,11 +5546,8 @@ io.on("connection", (socket) => {
         });
         io.to(room.id).emit("room:state", publicRoom(room));
 
-        // play_count +1 (멀티 퀴즈 완주, 호스트 기준 1회, fire-and-forget)
-        if (!room.alreadyCounted && room.contentId && room.hostUserId) {
-          room.alreadyCounted = true;
-          recordPlayOnce({ contentId: room.contentId, userId: room.hostUserId, mode: "multi", gameType: "quiz" }).catch(() => {});
-        }
+        // 퀴즈 play_count: quiz_attempts INSERT 트리거가 처리 → recordPlayOnce 불필요
+        // (각 참가자가 /quiz/finish 호출 시 quiz_attempts INSERT → 트리거 +1)
 
         cb?.({ ok: true, finished: true });
         return;
