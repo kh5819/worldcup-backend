@@ -5128,8 +5128,8 @@ async function handleTierGameStart(room, payload, me, socket, cb) {
       return cb?.({ ok: false, error: "NO_CARDS" });
     }
 
-    // 카드 수 제한: payload.cardLimit (0=전체, 10단위 양수)
-    let cardLimit = parseInt(payload?.cardLimit, 10) || 0;
+    // 카드 수 제한: payload.cardLimit 우선, 없으면 room.cardLimit (room:create에서 저장)
+    let cardLimit = parseInt(payload?.cardLimit, 10) || room.cardLimit || 0;
     // 10의 배수만 허용, 그 외 0(전체) 처리
     if (cardLimit > 0 && (cardLimit % 10 !== 0 || cardLimit < 10)) {
       cardLimit = 0;
@@ -5614,6 +5614,8 @@ io.on("connection", (socket) => {
       revoteCount: 0,  // 현재 매치에서 재투표 횟수
       // ✅ 퀴즈 스피드 모드
       quizMode: payload?.quizMode === "speed" ? "speed" : "normal",
+      // ✅ 티어 카드 수 제한
+      cardLimit: parseInt(payload?.cardLimit, 10) || 0,
     };
     rooms.set(roomId, room);
     inviteCodeMap.set(inviteCode, roomId);
