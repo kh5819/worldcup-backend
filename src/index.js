@@ -6691,8 +6691,8 @@ async function _resolveAutoThumbFromUrl(mediaUrl) {
  * 모든 대상 월드컵 콘텐츠의 auto_thumbnail_url을 갱신
  * 우승수(champion_count) 기준 1위 후보에서 실제 이미지 URL 해석 후 저장
  */
-async function refreshAutoThumbnails() {
-  console.log("[AUTO_THUMB] Starting auto-thumbnail refresh...");
+async function refreshAutoThumbnails({ force = false } = {}) {
+  console.log(`[AUTO_THUMB] Starting auto-thumbnail refresh... (force=${force})`);
 
   try {
     // 수동 썸네일이 없는 월드컵 콘텐츠 조회
@@ -6711,21 +6711,26 @@ async function refreshAutoThumbnails() {
       return;
     }
 
-    // 24시간 미경과 → 건너뛰기 (단, 기존 URL이 404면 쿨다운 무시)
+    // force 모드: 전량 갱신 (쿨다운 무시)
+    // 일반 모드: 24시간 미경과 → 건너뛰기 (단, 기존 URL이 404면 쿨다운 무시)
     const cutoff = Date.now() - AUTO_THUMB_INTERVAL;
     const needRefresh = [];
     const maybeStale = []; // 쿨다운 내지만 URL 검증 필요
 
-    for (const t of targets) {
-      if (!t.auto_thumb_updated_at || new Date(t.auto_thumb_updated_at).getTime() < cutoff) {
-        needRefresh.push(t);
-      } else if (["mp4", "video", "url", "youtube"].includes(t.auto_thumb_media_type)) {
-        // mp4/video: 플레이 아이콘 SVG만 보임 → 이미지 후보로 교체 시도
-        // url: CHZZK/SOOP 등 → 실제 이미지 URL로 해석 시도
-        // youtube: ytimg URL로 직접 변환 시도
-        needRefresh.push(t);
-      } else if (t.auto_thumbnail_url && /^https?:\/\//.test(t.auto_thumbnail_url)) {
-        maybeStale.push(t);
+    if (force) {
+      needRefresh.push(...targets);
+    } else {
+      for (const t of targets) {
+        if (!t.auto_thumb_updated_at || new Date(t.auto_thumb_updated_at).getTime() < cutoff) {
+          needRefresh.push(t);
+        } else if (["mp4", "video", "url", "youtube"].includes(t.auto_thumb_media_type)) {
+          // mp4/video: 플레이 아이콘 SVG만 보임 → 이미지 후보로 교체 시도
+          // url: CHZZK/SOOP 등 → 실제 이미지 URL로 해석 시도
+          // youtube: ytimg URL로 직접 변환 시도
+          needRefresh.push(t);
+        } else if (t.auto_thumbnail_url && /^https?:\/\//.test(t.auto_thumbnail_url)) {
+          maybeStale.push(t);
+        }
       }
     }
 
@@ -6799,6 +6804,16 @@ async function refreshAutoThumbnails() {
             }
             // 해석 실패 시 원본 URL 유지 (프론트에서 프록시 fallback)
           }
+          // mp4/video: URL 자체가 YouTube/CHZZK일 수 있음 → 해석 시도
+          else if (thumbType === "mp4" || thumbType === "video") {
+            const resolvedThumb = await _resolveAutoThumbFromUrl(thumbUrl);
+            if (resolvedThumb) {
+              console.log(`[AUTO_THUMB] Resolved ${thumbType} → image: ${resolvedThumb.slice(0, 80)}`);
+              thumbUrl = resolvedThumb;
+              thumbType = "image";
+            }
+            // 순수 mp4 파일은 해석 불가 → 원본 유지 (프론트에서 SVG fallback)
+          }
         }
 
         const updateData = {
@@ -6834,6 +6849,18 @@ setTimeout(() => {
   refreshAutoThumbnails();
   setInterval(refreshAutoThumbnails, AUTO_THUMB_INTERVAL);
 }, 30_000);
+
+// 관리자 수동 자동썸네일 갱신 트리거
+app.post("/admin/refresh-thumbnails", requireAdmin, async (_req, res) => {
+  try {
+    console.log("[AUTO_THUMB] Manual refresh triggered by admin (force mode)");
+    // 비동기로 실행 (응답은 즉시 반환), force=true로 쿨다운 무시
+    refreshAutoThumbnails({ force: true }).catch(e => console.error("[AUTO_THUMB] Manual refresh error:", e.message));
+    return res.json({ ok: true, message: "Refresh started in background" });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 // ===================================================
 // 치지직 OAuth 토큰 교환
