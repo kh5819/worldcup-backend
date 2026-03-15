@@ -1337,29 +1337,30 @@ app.post("/tier-multi/publish", requireAuth, async (req, res) => {
       return res.status(403).json({ ok: false, error: "ONLY_HOST" });
     }
 
+    // ✅ 중복 발행 방지: published_at이 이미 설정되어 있으면 거부
+    if (result.published_at) {
+      console.log(`[tier-multi/publish] DUPLICATE — resultId=${resultId} already published at ${result.published_at}`);
+      return res.status(409).json({ ok: false, error: "ALREADY_PUBLISHED" });
+    }
+
     const board = result.board;
     if (!board?.tierMeta || !board?.tiers) {
       return res.status(400).json({ ok: false, error: "INVALID_BOARD" });
     }
 
     // 2) 멀티 보드 → 솔로 instance 형식 변환
-    // tiers: [{id, name, color}]
     const tiers = board.tierMeta.map((m, i) => ({
       id: m.id,
       name: m.name,
       color: MULTI_TIER_DEFAULT_COLORS[i % MULTI_TIER_DEFAULT_COLORS.length],
     }));
 
-    // placements: {tierId: [cardId, ...]}
     const placements = {};
     for (const m of board.tierMeta) {
       placements[m.id] = board.tiers[m.id] || [];
     }
 
-    // pool: [] (모든 카드 배치 완료)
     const pool = [];
-
-    // added_cards: [] (멀티에서는 카드 추가 없음)
     const addedCards = [];
 
     // 3) tier_instances에 INSERT (published 상태)
@@ -1380,6 +1381,29 @@ app.post("/tier-multi/publish", requireAuth, async (req, res) => {
     if (insertErr) {
       console.error("POST /tier-multi/publish insert error:", insertErr);
       return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    // 4) ✅ 중복 방지 마킹: tier_multi_results.published_at 기록
+    await supabaseAdmin
+      .from("tier_multi_results")
+      .update({ published_at: new Date().toISOString() })
+      .eq("id", resultId);
+
+    // 5) ✅ play_count 증가: service_role로 직접 UPDATE (atomic increment)
+    try {
+      // service_role은 RLS를 무시하므로 직접 UPDATE 가능
+      // 현재 값을 먼저 읽고 +1 하는 대신, RPC를 사용하여 atomic increment
+      const { data: bumpData, error: bumpErr } = await supabaseAdmin.rpc("increment_tier_play_count", {
+        p_template_id: result.template_id,
+      });
+      if (bumpErr) {
+        console.error("[tier-multi/publish] play_count RPC error:", bumpErr.message);
+      } else {
+        console.log(`[tier-multi/publish] play_count bumped for template=${result.template_id}`, bumpData);
+      }
+    } catch (pcErr) {
+      // play_count 실패해도 발행 자체는 성공으로 처리
+      console.error("[tier-multi/publish] play_count bump failed:", pcErr?.message || pcErr);
     }
 
     console.log(`[tier-multi/publish] resultId=${resultId} → instanceId=${instance.id}`);
