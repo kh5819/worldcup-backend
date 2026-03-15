@@ -6920,7 +6920,7 @@ app.post("/admin/refresh-thumbnails", requireAdmin, async (_req, res) => {
 
 // POST /admin/backfill-candidate-thumbs — 모든 candidate thumbnail_url 일괄 채우기
 // refreshAutoThumbnails와 달리 contents.thumbnail_url 유무와 무관하게 모든 candidate 처리
-app.post("/admin/backfill-candidate-thumbs", requireAdmin, async (req, res) => {
+const _backfillHandler = async (req, res) => {
   try {
     const limit = Number(req.query.limit) || 200;
     console.log(`[BACKFILL] Starting candidate thumbnail backfill (limit=${limit})`);
@@ -6993,7 +6993,9 @@ app.post("/admin/backfill-candidate-thumbs", requireAdmin, async (req, res) => {
   } catch (e) {
     return res.status(500).json({ ok: false, error: e.message });
   }
-});
+};
+app.post("/admin/backfill-candidate-thumbs", requireAdmin, _backfillHandler);
+app.get("/admin/backfill-candidate-thumbs", requireAdmin, _backfillHandler);
 
 // ===================================================
 // 치지직 OAuth 토큰 교환
