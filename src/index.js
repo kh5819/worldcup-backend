@@ -6691,6 +6691,59 @@ async function _resolveAutoThumbFromUrl(mediaUrl) {
  * 모든 대상 월드컵 콘텐츠의 auto_thumbnail_url을 갱신
  * 우승수(champion_count) 기준 1위 후보에서 실제 이미지 URL 해석 후 저장
  */
+/**
+ * 후보별 thumbnail_url 일괄 해석/저장
+ * thumbnail_url이 NULL인 youtube/url/mp4 후보에 대해 실제 이미지 URL 해석 후 저장
+ * 한번 저장되면 이후 렌더링/템플릿 생성 시 프록시 호출 없이 직접 사용
+ */
+async function _resolveAndSaveCandidateThumbnails(contentId) {
+  try {
+    const { data: candidates } = await supabaseAdmin
+      .from("worldcup_candidates")
+      .select("id, media_type, media_url, thumbnail_url")
+      .eq("content_id", contentId)
+      .is("thumbnail_url", null);
+
+    if (!candidates || !candidates.length) return;
+
+    // thumbnail_url 해석이 필요한 타입만 필터
+    const NEED_RESOLVE = new Set(["youtube", "url", "mp4"]);
+    const toResolve = candidates.filter(c =>
+      c.media_url && NEED_RESOLVE.has(c.media_type)
+    );
+
+    if (!toResolve.length) return;
+    console.log(`[AUTO_THUMB] Resolving ${toResolve.length} candidate thumbnail(s) for content ${contentId}`);
+
+    for (const c of toResolve) {
+      try {
+        const url = String(c.media_url).trim();
+        let resolved = null;
+
+        if (c.media_type === "youtube") {
+          const ytId = _extractYoutubeVideoId(url);
+          if (ytId) resolved = `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`;
+        } else {
+          // url(chzzk/soop/naver) 또는 mp4 → _resolveAutoThumbFromUrl
+          resolved = await _resolveAutoThumbFromUrl(url);
+        }
+
+        if (resolved) {
+          await supabaseAdmin
+            .from("worldcup_candidates")
+            .update({ thumbnail_url: resolved })
+            .eq("id", c.id);
+          console.log(`[AUTO_THUMB] Candidate ${c.id} (${c.media_type}) → ${resolved.slice(0, 80)}`);
+        }
+      } catch (e) {
+        console.log(`[AUTO_THUMB] Candidate ${c.id} resolve failed: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    console.log(`[AUTO_THUMB] _resolveAndSaveCandidateThumbnails error: ${e.message}`);
+  }
+}
+
 async function refreshAutoThumbnails({ force = false } = {}) {
   console.log(`[AUTO_THUMB] Starting auto-thumbnail refresh... (force=${force})`);
 
@@ -6832,6 +6885,9 @@ async function refreshAutoThumbnails({ force = false } = {}) {
         } else {
           console.log(`[AUTO_THUMB] ${t.id} → no candidate with media_url`);
         }
+
+        // ── 후보별 thumbnail_url 일괄 해석/저장 (치지직/mp4 등) ──
+        await _resolveAndSaveCandidateThumbnails(t.id);
 
       } catch (e) {
         console.error(`[AUTO_THUMB] Failed for ${t.id}:`, e.message);
