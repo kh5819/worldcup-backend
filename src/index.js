@@ -5672,7 +5672,7 @@ io.on("connection", (socket) => {
     }
 
     io.to(roomId).emit("room:state", publicRoom(room));
-    cb?.({ ok: true, roomId, inviteCode: room.inviteCode || null });
+    cb?.({ ok: true, roomId, inviteCode: room.inviteCode || null, mode: room.mode || "worldcup" });
   });
 
   safeOn(socket, "room:leave", (payload, cb) => {
