@@ -6626,9 +6626,70 @@ io.on("connection", (socket) => {
 // =============================================
 const AUTO_THUMB_INTERVAL = 24 * 60 * 60 * 1000; // 24시간
 
+/** YouTube URL에서 videoId 추출 (backend용) */
+function _extractYoutubeVideoId(url) {
+  if (!url) return null;
+  const s = String(url).trim();
+  // bare 11-char ID
+  if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s;
+  // full URL patterns
+  const patterns = [
+    /(?:youtube\.com\/(?:watch\?.*v=|embed\/|v\/|shorts\/))([A-Za-z0-9_-]{11})/,
+    /youtu\.be\/([A-Za-z0-9_-]{11})/,
+  ];
+  for (const p of patterns) {
+    const m = s.match(p);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+/** URL(type='url') → 실제 이미지 썸네일 URL 해석 (CHZZK/SOOP/Naver/YouTube) */
+async function _resolveAutoThumbFromUrl(mediaUrl) {
+  if (!mediaUrl) return null;
+  const url = String(mediaUrl).trim();
+
+  // YouTube URL → ytimg
+  const ytId = _extractYoutubeVideoId(url);
+  if (ytId) return `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`;
+
+  // CHZZK clips → _fetchChzzkThumb
+  const chzzkId = _extractChzzkClipId(url);
+  if (chzzkId) {
+    try {
+      const thumb = await _fetchChzzkThumb(chzzkId);
+      if (thumb) return thumb;
+    } catch (e) {
+      console.log(`[AUTO_THUMB] CHZZK resolve failed: ${e.message}`);
+    }
+  }
+
+  // SOOP / Naver Video → og:image
+  const ALLOWED_OG = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.co\.kr|serviceapi\.nmv\.naver\.com|nmv\.naver\.com)\//i;
+  if (ALLOWED_OG.test(url)) {
+    try {
+      const resp = await fetch(url, {
+        headers: _BROWSER_HEADERS,
+        redirect: "follow",
+        signal: AbortSignal.timeout(8000),
+      });
+      const ogImage = _extractOgImage(await resp.text());
+      if (ogImage) return ogImage;
+    } catch (e) {
+      console.log(`[AUTO_THUMB] OG resolve failed: ${e.message}`);
+    }
+  }
+
+  // Imgur → direct image
+  const imgurMatch = url.match(/imgur\.com\/(?:a\/)?([A-Za-z0-9]+)/);
+  if (imgurMatch) return `https://i.imgur.com/${imgurMatch[1]}.jpg`;
+
+  return null;
+}
+
 /**
- * 모든 대상 월드컵 콘텐츠의 auto_thumbnail_url(=후보 media_url)을 갱신
- * 우승수(champion_count) 기준 1위 후보의 원본 media_url + media_type 저장
+ * 모든 대상 월드컵 콘텐츠의 auto_thumbnail_url을 갱신
+ * 우승수(champion_count) 기준 1위 후보에서 실제 이미지 URL 해석 후 저장
  */
 async function refreshAutoThumbnails() {
   console.log("[AUTO_THUMB] Starting auto-thumbnail refresh...");
@@ -6658,8 +6719,10 @@ async function refreshAutoThumbnails() {
     for (const t of targets) {
       if (!t.auto_thumb_updated_at || new Date(t.auto_thumb_updated_at).getTime() < cutoff) {
         needRefresh.push(t);
-      } else if (t.auto_thumb_media_type === "mp4" || t.auto_thumb_media_type === "video") {
-        // mp4/video 썸네일은 플레이 아이콘 SVG만 보이므로, 이미지 후보가 있을 수 있으니 재갱신
+      } else if (["mp4", "video", "url", "youtube"].includes(t.auto_thumb_media_type)) {
+        // mp4/video: 플레이 아이콘 SVG만 보임 → 이미지 후보로 교체 시도
+        // url: CHZZK/SOOP 등 → 실제 이미지 URL로 해석 시도
+        // youtube: ytimg URL로 직접 변환 시도
         needRefresh.push(t);
       } else if (t.auto_thumbnail_url && /^https?:\/\//.test(t.auto_thumbnail_url)) {
         maybeStale.push(t);
@@ -6713,11 +6776,30 @@ async function refreshAutoThumbnails() {
         // 2차: 비디오라도 없는 것보다 나음
         if (!chosen) chosen = allWithUrl[0] || null;
 
-        // DB 업데이트: 후보의 원본 media_url + media_type을 그대로 저장
-        // 프론트 getThumbUrl()이 랭킹 UI와 동일한 방식으로 렌더 처리
-        // (외부 CDN URL로 해석하면 만료 시 404 → 원본 저장이 안전)
-        const thumbUrl = chosen ? String(chosen.media_url).trim() : null;
-        const thumbType = chosen ? chosen.media_type : null;
+        // DB 업데이트: 가능하면 실제 이미지 URL로 해석하여 저장
+        let thumbUrl = chosen ? String(chosen.media_url).trim() : null;
+        let thumbType = chosen ? chosen.media_type : null;
+
+        if (chosen && thumbUrl) {
+          // YouTube: 직접 썸네일 URL로 변환
+          if (thumbType === "youtube") {
+            const ytId = _extractYoutubeVideoId(thumbUrl);
+            if (ytId) {
+              thumbUrl = `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`;
+              thumbType = "image";
+            }
+          }
+          // CHZZK/SOOP/Naver(type='url'): og:image 미리 추출
+          else if (thumbType === "url") {
+            const resolvedThumb = await _resolveAutoThumbFromUrl(thumbUrl);
+            if (resolvedThumb) {
+              console.log(`[AUTO_THUMB] Resolved URL → image: ${resolvedThumb.slice(0, 80)}`);
+              thumbUrl = resolvedThumb;
+              thumbType = "image";
+            }
+            // 해석 실패 시 원본 URL 유지 (프론트에서 프록시 fallback)
+          }
+        }
 
         const updateData = {
           auto_thumbnail_url: thumbUrl,
@@ -6731,7 +6813,7 @@ async function refreshAutoThumbnails() {
           .eq("id", t.id);
 
         if (chosen) {
-          console.log(`[AUTO_THUMB] ${t.id} → "${chosen.name}" (${chosen.media_type}, champ=${chosen.champion_count}): ${String(chosen.media_url).slice(0, 80)}`);
+          console.log(`[AUTO_THUMB] ${t.id} → "${chosen.name}" (${thumbType}, champ=${chosen.champion_count}): ${String(thumbUrl).slice(0, 80)}`);
         } else {
           console.log(`[AUTO_THUMB] ${t.id} → no candidate with media_url`);
         }
