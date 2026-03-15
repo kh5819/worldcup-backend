@@ -5741,62 +5741,11 @@ async function refreshAutoThumbnails() {
           }
         }
 
-        // DB 업데이트: 가능하면 실제 썸네일 이미지 URL로 해석하여 저장
-        // CHZZK/SOOP 등 외부 영상은 런타임 프록시 의존 제거 → CDN 직접 URL 저장
-        let thumbUrl = chosen ? String(chosen.media_url).trim() : null;
-        let thumbType = chosen ? chosen.media_type : null;
-
-        if (chosen && thumbUrl) {
-          // YouTube → ytimg 직접 URL
-          const ytMatch = thumbUrl.match(/(?:youtube\.com\/watch\?.*v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([A-Za-z0-9_-]{11})/)
-                       || (/^[A-Za-z0-9_-]{11}$/.test(thumbUrl) ? [null, thumbUrl] : null);
-          if (ytMatch && ytMatch[1]) {
-            thumbUrl = `https://i.ytimg.com/vi/${ytMatch[1]}/hqdefault.jpg`;
-            thumbType = "image";
-          }
-          // CHZZK 클립 → 봇 UA로 실제 썸네일 해석
-          else if (/chzzk\.naver\.com/i.test(thumbUrl)) {
-            const clipId = _extractChzzkClipId(thumbUrl);
-            if (clipId) {
-              try {
-                const resolved = await _fetchChzzkThumb(clipId);
-                if (resolved) {
-                  console.log(`[AUTO_THUMB] CHZZK resolved: ${resolved.slice(0, 80)}`);
-                  thumbUrl = resolved;
-                  thumbType = "image";
-                }
-              } catch (e) { console.log(`[AUTO_THUMB] CHZZK resolve failed:`, e.message); }
-            }
-          }
-          // 네이버 비디오 → og:image 해석 (서버 렌더 HTML, 봇 UA 불필요)
-          else if (/serviceapi\.nmv\.naver\.com|nmv\.naver\.com/i.test(thumbUrl)) {
-            try {
-              const resp = await fetch(thumbUrl, { headers: _BROWSER_HEADERS, redirect: "follow", signal: AbortSignal.timeout(8000) });
-              if (resp.ok) {
-                const ogImg = _extractOgImage(await resp.text());
-                if (ogImg) {
-                  console.log(`[AUTO_THUMB] Naver video resolved: ${ogImg.slice(0, 80)}`);
-                  thumbUrl = ogImg;
-                  thumbType = "image";
-                }
-              }
-            } catch (e) { console.log(`[AUTO_THUMB] Naver video resolve failed:`, e.message); }
-          }
-          // SOOP VOD → og:image 해석
-          else if (/vod\.sooplive\.co\.kr/i.test(thumbUrl)) {
-            try {
-              const resp = await fetch(thumbUrl, { headers: _BROWSER_HEADERS, redirect: "follow", signal: AbortSignal.timeout(8000) });
-              if (resp.ok) {
-                const ogImg = _extractOgImage(await resp.text());
-                if (ogImg) {
-                  console.log(`[AUTO_THUMB] SOOP resolved: ${ogImg.slice(0, 80)}`);
-                  thumbUrl = ogImg;
-                  thumbType = "image";
-                }
-              }
-            } catch (e) { console.log(`[AUTO_THUMB] SOOP resolve failed:`, e.message); }
-          }
-        }
+        // DB 업데이트: 후보의 원본 media_url + media_type을 그대로 저장
+        // 프론트 getThumbUrl()이 랭킹 UI와 동일한 방식으로 렌더 처리
+        // (외부 CDN URL로 해석하면 만료 시 404 → 원본 저장이 안전)
+        const thumbUrl = chosen ? String(chosen.media_url).trim() : null;
+        const thumbType = chosen ? chosen.media_type : null;
 
         const updateData = {
           auto_thumbnail_url: thumbUrl,
