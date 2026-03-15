@@ -6918,6 +6918,83 @@ app.post("/admin/refresh-thumbnails", requireAdmin, async (_req, res) => {
   }
 });
 
+// POST /admin/backfill-candidate-thumbs — 모든 candidate thumbnail_url 일괄 채우기
+// refreshAutoThumbnails와 달리 contents.thumbnail_url 유무와 무관하게 모든 candidate 처리
+app.post("/admin/backfill-candidate-thumbs", requireAdmin, async (req, res) => {
+  try {
+    const limit = Number(req.query.limit) || 200;
+    console.log(`[BACKFILL] Starting candidate thumbnail backfill (limit=${limit})`);
+
+    // thumbnail_url이 NULL인 candidate 중 url/mp4 타입만 (youtube는 이미 SQL로 채워짐)
+    const { data: candidates, error } = await supabaseAdmin
+      .from("worldcup_candidates")
+      .select("id, media_type, media_url")
+      .is("thumbnail_url", null)
+      .in("media_type", ["url", "mp4"])
+      .limit(limit);
+
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    if (!candidates || !candidates.length) {
+      return res.json({ ok: true, message: "No candidates need backfill", processed: 0 });
+    }
+
+    console.log(`[BACKFILL] Found ${candidates.length} candidates to process`);
+
+    let resolved = 0;
+    let failed = 0;
+    const results = [];
+
+    for (const c of candidates) {
+      try {
+        const url = String(c.media_url).trim();
+        let thumb = null;
+
+        // provider별 분기
+        if (/chzzk\.naver\.com/i.test(url)) {
+          // CHZZK — 기존 _resolveAutoThumbFromUrl 사용
+          thumb = await _resolveAutoThumbFromUrl(url);
+          if (thumb) results.push({ id: c.id, provider: "chzzk", thumb: thumb.slice(0, 80) });
+        } else if (/vod\.sooplive\.co\.kr/i.test(url)) {
+          // SOOP — 기존 _resolveAutoThumbFromUrl 사용
+          thumb = await _resolveAutoThumbFromUrl(url);
+          if (thumb) results.push({ id: c.id, provider: "soop", thumb: thumb.slice(0, 80) });
+        } else if (/serviceapi\.nmv\.naver\.com|nmv\.naver\.com/i.test(url)) {
+          // Naver Video
+          thumb = await _resolveAutoThumbFromUrl(url);
+          if (thumb) results.push({ id: c.id, provider: "naver", thumb: thumb.slice(0, 80) });
+        } else if (c.media_type === "mp4") {
+          // MP4 — 서버에서 first-frame 추출 불가, skip (클라이언트에서 처리)
+          results.push({ id: c.id, provider: "mp4", thumb: null, reason: "skip_server" });
+          continue;
+        } else {
+          // 기타 URL — og:image 시도
+          thumb = await _resolveAutoThumbFromUrl(url);
+          if (thumb) results.push({ id: c.id, provider: "other", thumb: thumb.slice(0, 80) });
+        }
+
+        if (thumb) {
+          await supabaseAdmin
+            .from("worldcup_candidates")
+            .update({ thumbnail_url: thumb })
+            .eq("id", c.id);
+          resolved++;
+        } else {
+          failed++;
+          results.push({ id: c.id, provider: "unknown", thumb: null, reason: "resolve_failed" });
+        }
+      } catch (e) {
+        failed++;
+        console.log(`[BACKFILL] Candidate ${c.id} error: ${e.message}`);
+      }
+    }
+
+    console.log(`[BACKFILL] Done: ${resolved} resolved, ${failed} failed out of ${candidates.length}`);
+    return res.json({ ok: true, total: candidates.length, resolved, failed, samples: results.slice(0, 20) });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ===================================================
 // 치지직 OAuth 토큰 교환
 // ===================================================
