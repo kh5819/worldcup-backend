@@ -6637,7 +6637,7 @@ async function refreshAutoThumbnails() {
     // 수동 썸네일이 없는 월드컵 콘텐츠 조회
     const { data: targets, error } = await supabaseAdmin
       .from("contents")
-      .select("id, auto_thumb_updated_at, auto_thumbnail_url")
+      .select("id, auto_thumb_updated_at, auto_thumbnail_url, auto_thumb_media_type")
       .eq("mode", "worldcup")
       .or("thumbnail_url.is.null,thumbnail_url.eq.");
 
@@ -6657,6 +6657,9 @@ async function refreshAutoThumbnails() {
 
     for (const t of targets) {
       if (!t.auto_thumb_updated_at || new Date(t.auto_thumb_updated_at).getTime() < cutoff) {
+        needRefresh.push(t);
+      } else if (t.auto_thumb_media_type === "mp4" || t.auto_thumb_media_type === "video") {
+        // mp4/video 썸네일은 플레이 아이콘 SVG만 보이므로, 이미지 후보가 있을 수 있으니 재갱신
         needRefresh.push(t);
       } else if (t.auto_thumbnail_url && /^https?:\/\//.test(t.auto_thumbnail_url)) {
         maybeStale.push(t);
@@ -6700,14 +6703,15 @@ async function refreshAutoThumbnails() {
           .order("games", { ascending: false })
           .limit(3);
 
-        // media_url이 있는 첫 번째 후보 선택
+        // 이미지 타입 후보 우선 선택 (mp4/video는 썸네일로 쓸 수 없으므로)
+        // 우선순위: image/gif > youtube > url(auto-detect) > mp4/video
         let chosen = null;
-        for (const cand of candidates || []) {
-          if (cand.media_url && String(cand.media_url).trim()) {
-            chosen = cand;
-            break;
-          }
-        }
+        const VIDEO_TYPES = new Set(["mp4", "video"]);
+        const allWithUrl = (candidates || []).filter(c => c.media_url && String(c.media_url).trim());
+        // 1차: 비-비디오 타입 (image, gif, youtube, url 등)
+        chosen = allWithUrl.find(c => !VIDEO_TYPES.has(c.media_type));
+        // 2차: 비디오라도 없는 것보다 나음
+        if (!chosen) chosen = allWithUrl[0] || null;
 
         // DB 업데이트: 후보의 원본 media_url + media_type을 그대로 저장
         // 프론트 getThumbUrl()이 랭킹 UI와 동일한 방식으로 렌더 처리
