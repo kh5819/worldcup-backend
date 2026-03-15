@@ -5669,7 +5669,7 @@ async function refreshAutoThumbnails() {
     // 수동 썸네일이 없는 월드컵 콘텐츠 조회
     const { data: targets, error } = await supabaseAdmin
       .from("contents")
-      .select("id, auto_thumb_updated_at")
+      .select("id, auto_thumb_updated_at, auto_thumbnail_url")
       .eq("mode", "worldcup")
       .or("thumbnail_url.is.null,thumbnail_url.eq.");
 
@@ -5682,12 +5682,36 @@ async function refreshAutoThumbnails() {
       return;
     }
 
-    // 24시간 미경과 → 건너뛰기
+    // 24시간 미경과 → 건너뛰기 (단, 기존 URL이 404면 쿨다운 무시)
     const cutoff = Date.now() - AUTO_THUMB_INTERVAL;
-    const needRefresh = targets.filter(t =>
-      !t.auto_thumb_updated_at ||
-      new Date(t.auto_thumb_updated_at).getTime() < cutoff
-    );
+    const needRefresh = [];
+    const maybeStale = []; // 쿨다운 내지만 URL 검증 필요
+
+    for (const t of targets) {
+      if (!t.auto_thumb_updated_at || new Date(t.auto_thumb_updated_at).getTime() < cutoff) {
+        needRefresh.push(t);
+      } else if (t.auto_thumbnail_url && /^https?:\/\//.test(t.auto_thumbnail_url)) {
+        maybeStale.push(t);
+      }
+    }
+
+    // 쿨다운 내 항목: HEAD 요청으로 404 여부 확인 → 404면 재갱신 대상에 추가
+    for (const t of maybeStale) {
+      try {
+        const resp = await fetch(t.auto_thumbnail_url, {
+          method: "HEAD",
+          signal: AbortSignal.timeout(5000),
+          redirect: "follow",
+        });
+        if (!resp.ok) {
+          console.log(`[AUTO_THUMB] Stale URL detected (${resp.status}): ${t.auto_thumbnail_url.slice(0, 80)}`);
+          needRefresh.push(t);
+        }
+      } catch (e) {
+        console.log(`[AUTO_THUMB] URL check failed (${e.message}): ${t.auto_thumbnail_url.slice(0, 60)}`);
+        needRefresh.push(t);
+      }
+    }
 
     if (!needRefresh.length) {
       console.log(`[AUTO_THUMB] ${targets.length} target(s) all up-to-date, skipping.`);
