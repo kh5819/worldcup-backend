@@ -1308,6 +1308,89 @@ app.post("/tier-reports", requireAuth, async (req, res) => {
 });
 
 // =========================
+// 멀티 티어 결과 → 싸움터 발행
+// =========================
+const MULTI_TIER_DEFAULT_COLORS = [
+  "#ff7f7f", "#ffbf7f", "#ffdf7f", "#ffff7f", "#bfff7f", "#7fbfff", "#bf7fff", "#ff7fbf"
+];
+
+app.post("/tier-multi/publish", requireAuth, async (req, res) => {
+  try {
+    const { resultId } = req.body;
+    if (!resultId) {
+      return res.status(400).json({ ok: false, error: "MISSING_RESULT_ID" });
+    }
+
+    // 1) tier_multi_results에서 결과 조회
+    const { data: result, error: fetchErr } = await supabaseAdmin
+      .from("tier_multi_results")
+      .select("*")
+      .eq("id", resultId)
+      .single();
+
+    if (fetchErr || !result) {
+      return res.status(404).json({ ok: false, error: "RESULT_NOT_FOUND" });
+    }
+
+    // 호스트만 발행 가능
+    if (result.host_user_id !== req.user.id) {
+      return res.status(403).json({ ok: false, error: "ONLY_HOST" });
+    }
+
+    const board = result.board;
+    if (!board?.tierMeta || !board?.tiers) {
+      return res.status(400).json({ ok: false, error: "INVALID_BOARD" });
+    }
+
+    // 2) 멀티 보드 → 솔로 instance 형식 변환
+    // tiers: [{id, name, color}]
+    const tiers = board.tierMeta.map((m, i) => ({
+      id: m.id,
+      name: m.name,
+      color: MULTI_TIER_DEFAULT_COLORS[i % MULTI_TIER_DEFAULT_COLORS.length],
+    }));
+
+    // placements: {tierId: [cardId, ...]}
+    const placements = {};
+    for (const m of board.tierMeta) {
+      placements[m.id] = board.tiers[m.id] || [];
+    }
+
+    // pool: [] (모든 카드 배치 완료)
+    const pool = [];
+
+    // added_cards: [] (멀티에서는 카드 추가 없음)
+    const addedCards = [];
+
+    // 3) tier_instances에 INSERT (published 상태)
+    const { data: instance, error: insertErr } = await supabaseAdmin
+      .from("tier_instances")
+      .insert({
+        template_id: result.template_id,
+        user_id: req.user.id,
+        tiers,
+        placements,
+        pool,
+        added_cards: addedCards,
+        status: "published",
+      })
+      .select()
+      .single();
+
+    if (insertErr) {
+      console.error("POST /tier-multi/publish insert error:", insertErr);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    console.log(`[tier-multi/publish] resultId=${resultId} → instanceId=${instance.id}`);
+    return res.json({ ok: true, instanceId: instance.id });
+  } catch (err) {
+    console.error("POST /tier-multi/publish internal:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 댓글 신고 API
 // =========================
 app.post("/comment-reports", requireAuth, async (req, res) => {
@@ -3661,6 +3744,13 @@ const MAX_PLAYERS = 6;
 const userRoomMap = new Map();
 const inviteCodeMap = new Map(); // inviteCode → roomId
 
+// ── 멀티 티어 공용 상수 ──
+const TIER_SLOT_LAST = "__LAST__";
+const TIER_MAX_REVOTES = 2;
+const TIER_DEFAULT_CARD_LIMIT = 30;
+const TIER_CARD_LIMIT_OPTIONS = [0, 20, 30, 50]; // 0 = 전체
+const TIER_REVIEW_PER_ROUND = 1; // 라운드당 재검토 허용 횟수
+
 function generateInviteCode() {
   for (let attempt = 0; attempt < 50; attempt++) {
     const code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0");
@@ -3823,6 +3913,45 @@ function buildSyncPayload(room, userId) {
     };
   }
 
+  // ── 멀티 티어 모드 ──
+  if (room.mode === "tier" && room.tier) {
+    const t = room.tier;
+    const remainingSec = room.roundEndsAt
+      ? Math.max(0, Math.ceil((room.roundEndsAt - Date.now()) / 1000))
+      : 0;
+    const currentCard = t.cardOrder[t.currentCardIdx] != null
+      ? t.cardMap[t.cardOrder[t.currentCardIdx]]
+      : null;
+    return {
+      roomId: room.id,
+      mode: "tier",
+      tierPhase: t.tierPhase || "lobby",
+      content: room.content || null,
+      isHost: room.hostUserId === userId,
+      timer: { enabled: !!room.timerEnabled, sec: room.timerSec || 0, remainingSec },
+      tier: {
+        board: t.board,
+        tierMeta: t.tierMeta,
+        cardMap: t.cardMap,
+        currentCard,
+        currentCardIdx: t.currentCardIdx,
+        totalCards: t.cardOrder.length,
+        myVote: t.votes.get(userId) || null,
+        committed: room.committed.has(userId),
+        revoteCount: t.revoteCount || 0,
+        maxRevotes: TIER_MAX_REVOTES,
+        tiedOptions: t.tiedOptions || [],
+        history: t.history || [],
+        reviewUsedThisRound: !!t.reviewUsedThisRound,
+        currentReview: t.currentReview ? {
+          cardId: t.currentReview.cardId,
+          card: t.cardMap?.[t.currentReview.cardId] || null,
+          currentTierName: t.tierMeta?.find(m => m.id === t.currentReview.currentTierId)?.name || "",
+        } : null,
+      }
+    };
+  }
+
   // ── 월드컵 모드 (기존) ──
   const player = room.players.get(userId);
   const remainingSec = room.roundEndsAt
@@ -3850,6 +3979,19 @@ function publicRoom(room) {
     let status;
     if (room.disconnected?.has(userId)) {
       status = "재접속 대기…";
+    } else if (room.mode === "tier" && room.tier) {
+      const tp = room.tier.tierPhase;
+      if (tp === "collecting_votes" || tp === "resolving_tie") {
+        status = room.committed.has(userId) ? "투표 완료" : "투표 중…";
+      } else if (tp === "review_voting") {
+        status = room.committed.has(userId) ? "투표 완료" : "재검토 투표 중…";
+      } else if (tp === "host_deciding") {
+        status = room.hostUserId === userId ? "결정 중…" : "대기 중…";
+      } else if (tp === "completed") {
+        status = "완료";
+      } else {
+        status = "대기 중…";
+      }
     } else if (room.mode === "quiz" && room.quiz) {
       const q = room.quiz;
       if (q.phase === "answering") {
@@ -3875,6 +4017,46 @@ function publicRoom(room) {
     }
     return { userId, name: p.name, status, isGuest: !!p.isGuest };
   });
+
+  // ── 멀티 티어: 전용 payload ──
+  if (room.mode === "tier") {
+    const t = room.tier || {};
+    const currentCard = t.cardOrder?.[t.currentCardIdx] != null
+      ? t.cardMap?.[t.cardOrder[t.currentCardIdx]] || null
+      : null;
+    return {
+      id: room.id,
+      inviteCode: room.inviteCode || null,
+      hostUserId: room.hostUserId,
+      mode: "tier",
+      phase: "lobby", // 기존 클라이언트 호환용 (무시됨)
+      tierPhase: t.tierPhase || "lobby",
+      content: room.content || null,
+      players: playersList,
+      timerEnabled: !!room.timerEnabled,
+      timerSec: room.timerSec || 45,
+      tier: {
+        currentCard,
+        currentCardIdx: t.currentCardIdx ?? -1,
+        totalCards: t.cardOrder?.length || 0,
+        board: t.board || {},
+        tierMeta: t.tierMeta || [],
+        revoteCount: t.revoteCount || 0,
+        maxRevotes: TIER_MAX_REVOTES,
+        tiedOptions: t.tiedOptions || [],
+        votedCount: room.committed.size,
+        totalPlayers: room.players.size,
+        reviewUsedThisRound: !!t.reviewUsedThisRound,
+        currentReview: t.currentReview ? {
+          cardId: t.currentReview.cardId,
+          card: t.cardMap?.[t.currentReview.cardId] || null,
+          currentTierName: t.tierMeta?.find(m => m.id === t.currentReview.currentTierId)?.name || "",
+          approveCount: t.currentReview.approvals?.size || 0,
+          rejectCount: t.currentReview.rejections?.size || 0,
+        } : null,
+      }
+    };
+  }
 
   return {
     id: room.id,
@@ -4868,6 +5050,483 @@ function safeOn(socket, event, handler) {
   });
 }
 
+// =============================================================
+// 멀티 티어 헬퍼 함수
+// =============================================================
+
+/** Supabase에서 tier_templates 데이터 로드 */
+async function loadTierTemplate(templateId) {
+  const { data, error } = await supabaseAdmin
+    .from("tier_templates")
+    .select("id, title, description, cards, base_tiers, thumbnail_url, creator_id")
+    .eq("id", templateId)
+    .single();
+  if (error || !data) return { error: error?.message || "TEMPLATE_NOT_FOUND" };
+  return { template: data };
+}
+
+/** 카드 셔플 + 제한 적용 */
+function prepareTierCards(cards, cardLimit) {
+  const shuffled = cards.slice();
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  if (cardLimit > 0 && cardLimit < shuffled.length) {
+    return shuffled.slice(0, cardLimit);
+  }
+  return shuffled;
+}
+
+/** room.tier 초기화 */
+function initTierState(room, template, selectedCards) {
+  const cardMap = {};
+  const cardOrder = [];
+  for (const c of selectedCards) {
+    cardMap[c.id] = { id: c.id, label: c.label, image_url: c.image_url };
+    cardOrder.push(c.id);
+  }
+  const board = {};
+  const tierMeta = [];
+  for (const t of template.base_tiers) {
+    board[t.id] = [];
+    tierMeta.push({ id: t.id, name: t.name });
+  }
+  room.tier = {
+    templateId: template.id,
+    template,
+    cardMap,
+    cardOrder,
+    currentCardIdx: 0,
+    board,
+    tierMeta,
+    votes: new Map(),
+    revoteCount: 0,
+    tiedOptions: [],
+    currentReview: null,
+    reviewUsedThisRound: false,
+    history: [],
+    tierPhase: "card_revealed",
+    startedAt: Date.now(),
+  };
+}
+
+/** game:start에서 호출되는 tier 전용 시작 로직 */
+async function handleTierGameStart(room, payload, me, socket, cb) {
+  try {
+    const templateId = room.contentId;
+    if (!templateId) return cb?.({ ok: false, error: "NO_TEMPLATE_ID" });
+
+    const loaded = await loadTierTemplate(templateId);
+    if (loaded.error) {
+      console.log(`[game:start:tier] template load FAILED: ${loaded.error}`);
+      return cb?.({ ok: false, error: loaded.error });
+    }
+
+    const template = loaded.template;
+    if (!template.cards || template.cards.length === 0) {
+      return cb?.({ ok: false, error: "NO_CARDS" });
+    }
+
+    // 카드 수 제한: payload.cardLimit (0=전체, 20, 30, 50)
+    let cardLimit = parseInt(payload?.cardLimit, 10) || 0;
+    if (cardLimit > 0 && !TIER_CARD_LIMIT_OPTIONS.includes(cardLimit)) {
+      cardLimit = TIER_DEFAULT_CARD_LIMIT;
+    }
+
+    const selectedCards = prepareTierCards(template.cards, cardLimit);
+    console.log(`[game:start:tier] template="${template.title}" cards=${template.cards.length} selected=${selectedCards.length} limit=${cardLimit}`);
+
+    room.content = { id: template.id, title: template.title, thumbnail_url: template.thumbnail_url };
+    clearRoomTimers(room);
+    room.committed.clear();
+
+    initTierState(room, template, selectedCards);
+
+    // 첫 카드 공개
+    const firstCard = room.tier.cardMap[room.tier.cardOrder[0]];
+    io.to(room.id).emit("tier:card", {
+      roomId: room.id,
+      card: firstCard,
+      cardIndex: 0,
+      totalCards: room.tier.cardOrder.length,
+      board: room.tier.board,
+      tierMeta: room.tier.tierMeta,
+    });
+
+    io.to(room.id).emit("room:state", publicRoom(room));
+
+    // 짧은 딜레이 후 투표 수집 시작
+    setTimeout(() => {
+      if (!room.tier || room.tier.tierPhase !== "card_revealed") return;
+      room.tier.tierPhase = "collecting_votes";
+      if (room.timerEnabled) startTierVoteTimer(room);
+      io.to(room.id).emit("room:state", publicRoom(room));
+    }, 1500);
+    console.log(`[game:start:tier] started — cards=${selectedCards.length} → tier:card broadcast`);
+    return cb?.({ ok: true, totalCards: selectedCards.length });
+  } catch (err) {
+    console.error("[game:start:tier] error:", err);
+    return cb?.({ ok: false, error: "INTERNAL_ERROR" });
+  }
+}
+
+/** 투표 타이머 시작 */
+function startTierVoteTimer(room) {
+  if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
+  const sec = room.timerSec || 45;
+  room.roundEndsAt = Date.now() + sec * 1000;
+  room.roundTimer = setTimeout(() => {
+    room.roundTimer = null;
+    room.roundEndsAt = null;
+    if (!room.tier) return;
+    const tp = room.tier.tierPhase;
+    if (tp !== "collecting_votes" && tp !== "resolving_tie") return;
+    // 타이머 만료: 미제출자는 그대로 (제출자만 집계)
+    console.log(`[tier:timer] expired — phase=${tp} committed=${room.committed.size}/${room.players.size}`);
+    doTierVoteResult(room);
+  }, sec * 1000);
+}
+
+/** 투표 검증: afterCardId 유효성 */
+function validateTierVote(room, tierId, afterCardId) {
+  const t = room.tier;
+  // tierId 검증
+  if (!t.board.hasOwnProperty(tierId)) return "INVALID_TIER";
+  // 현재 투표 대상 카드
+  const currentCardId = t.cardOrder[t.currentCardIdx];
+
+  if (afterCardId === null || afterCardId === TIER_SLOT_LAST) {
+    return null; // 유효
+  }
+  // afterCardId가 해당 tier에 존재하는지
+  const tierCards = t.board[tierId];
+  if (!tierCards.includes(afterCardId)) return "CARD_NOT_IN_TIER";
+  // 자기 자신 참조 금지
+  if (afterCardId === currentCardId) return "SELF_REFERENCE";
+  return null; // 유효
+}
+
+/** 투표 집계 + 결과 broadcast */
+function doTierVoteResult(room) {
+  if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
+  room.roundEndsAt = null;
+
+  const t = room.tier;
+  const votes = t.votes;
+  const currentCardId = t.cardOrder[t.currentCardIdx];
+
+  // 투표 집계: slot key → count
+  const slotCounts = new Map(); // "tierId|afterCardId" → { tierId, afterCardId, count, voters }
+  for (const [userId, vote] of votes) {
+    const key = `${vote.tierId}|${vote.afterCardId ?? "null"}`;
+    if (!slotCounts.has(key)) {
+      slotCounts.set(key, { tierId: vote.tierId, afterCardId: vote.afterCardId, count: 0, voters: [] });
+    }
+    const entry = slotCounts.get(key);
+    entry.count++;
+    entry.voters.push(userId);
+  }
+
+  // 투표자가 0명이면 (전원 미제출) → 호스트 결정으로 넘어감
+  if (slotCounts.size === 0) {
+    t.tierPhase = "host_deciding";
+    t.tiedOptions = t.tierMeta.map(tm => ({ tierId: tm.id, afterCardId: null }));
+    io.to(room.id).emit("tier:host-decide", {
+      roomId: room.id,
+      cardId: currentCardId,
+      card: t.cardMap[currentCardId],
+      reason: "no_votes",
+      options: t.tiedOptions,
+    });
+    io.to(room.id).emit("room:state", publicRoom(room));
+    return;
+  }
+
+  // 최다 득표 찾기
+  const sorted = Array.from(slotCounts.values()).sort((a, b) => b.count - a.count);
+  const maxCount = sorted[0].count;
+  const winners = sorted.filter(s => s.count === maxCount);
+
+  const results = sorted.map(s => ({
+    tierId: s.tierId,
+    afterCardId: s.afterCardId,
+    count: s.count,
+    voters: s.voters,
+  }));
+
+  if (winners.length === 1) {
+    // 단독 최다 → 확정
+    const winner = winners[0];
+    const isUnanimous = votes.size === room.players.size && winners[0].count === room.players.size;
+    const method = isUnanimous ? "unanimous" : "majority";
+
+    t.tierPhase = "card_finalized";
+    io.to(room.id).emit("tier:vote-result", {
+      roomId: room.id,
+      cardId: currentCardId,
+      results,
+      winner: { tierId: winner.tierId, afterCardId: winner.afterCardId },
+      isTie: false,
+      isUnanimous,
+      method,
+    });
+
+    // 보드 반영
+    applyTierPlacement(room, currentCardId, winner.tierId, winner.afterCardId, method);
+  } else {
+    // 동점
+    if (t.revoteCount < TIER_MAX_REVOTES) {
+      // 재투표
+      t.revoteCount++;
+      t.tiedOptions = winners.map(w => ({ tierId: w.tierId, afterCardId: w.afterCardId }));
+      t.tierPhase = "resolving_tie";
+      t.votes.clear();
+      room.committed.clear();
+
+      io.to(room.id).emit("tier:vote-result", {
+        roomId: room.id,
+        cardId: currentCardId,
+        results,
+        winner: null,
+        isTie: true,
+        isUnanimous: false,
+        method: "tie",
+      });
+
+      // 짧은 딜레이 후 재투표 시작
+      setTimeout(() => {
+        if (!room.tier || room.tier.tierPhase !== "resolving_tie") return;
+        io.to(room.id).emit("tier:revote", {
+          roomId: room.id,
+          cardId: currentCardId,
+          card: t.cardMap[currentCardId],
+          tiedOptions: t.tiedOptions,
+          revoteCount: t.revoteCount,
+          maxRevotes: TIER_MAX_REVOTES,
+        });
+        if (room.timerEnabled) startTierVoteTimer(room);
+        io.to(room.id).emit("room:state", publicRoom(room));
+      }, 2000);
+    } else {
+      // 재투표 소진 → 호스트 결정
+      t.tierPhase = "host_deciding";
+      t.tiedOptions = winners.map(w => ({ tierId: w.tierId, afterCardId: w.afterCardId }));
+
+      io.to(room.id).emit("tier:vote-result", {
+        roomId: room.id,
+        cardId: currentCardId,
+        results,
+        winner: null,
+        isTie: true,
+        isUnanimous: false,
+        method: "tie_exhausted",
+      });
+
+      io.to(room.id).emit("tier:host-decide", {
+        roomId: room.id,
+        cardId: currentCardId,
+        card: t.cardMap[currentCardId],
+        reason: "revote_exhausted",
+        options: t.tiedOptions,
+      });
+    }
+  }
+  io.to(room.id).emit("room:state", publicRoom(room));
+}
+
+/** 보드에 카드 배치 반영 + 히스토리 기록 + 다음 카드 or 종료 */
+function applyTierPlacement(room, cardId, tierId, afterCardId, method) {
+  const t = room.tier;
+  const tierCards = t.board[tierId];
+
+  // 삽입 위치 결정
+  if (afterCardId === null) {
+    tierCards.unshift(cardId); // 맨 앞
+  } else if (afterCardId === TIER_SLOT_LAST) {
+    tierCards.push(cardId); // 맨 뒤
+  } else {
+    const idx = tierCards.indexOf(afterCardId);
+    if (idx >= 0) {
+      tierCards.splice(idx + 1, 0, cardId); // afterCard 뒤
+    } else {
+      tierCards.push(cardId); // fallback: 맨 뒤
+    }
+  }
+
+  // 히스토리 기록
+  const voteSnapshot = {};
+  for (const [uid, v] of t.votes) {
+    voteSnapshot[uid] = { tierId: v.tierId, afterCardId: v.afterCardId };
+  }
+  t.history.push({
+    round: t.currentCardIdx + 1,
+    cardId,
+    cardLabel: t.cardMap[cardId]?.label || cardId,
+    votes: voteSnapshot,
+    result: { tierId, afterCardId },
+    method,
+  });
+
+  // 참가자별 동의 카운트 (나중에 결과 저장용)
+  // (history에 기록되므로 나중에 계산 가능)
+
+  // broadcast 보드 업데이트
+  io.to(room.id).emit("tier:board-update", {
+    roomId: room.id,
+    cardId,
+    card: t.cardMap[cardId],
+    placement: { tierId, afterCardId },
+    method,
+    board: t.board,
+  });
+
+  // 다음 카드로 진행 준비
+  t.votes.clear();
+  t.revoteCount = 0;
+  t.tiedOptions = [];
+  t.reviewUsedThisRound = false;
+  t.currentReview = null;
+  room.committed.clear();
+  t.currentCardIdx++;
+
+  if (t.currentCardIdx >= t.cardOrder.length) {
+    // 모든 카드 배치 완료
+    finishTierGame(room);
+  } else {
+    // board_updated 상태로 잠시 대기 (호스트가 tier:next로 진행)
+    t.tierPhase = "board_updated";
+    io.to(room.id).emit("room:state", publicRoom(room));
+  }
+}
+
+/** 재검토 투표 집계 */
+function resolveReviewVote(room) {
+  const t = room.tier;
+  if (!t || t.tierPhase !== "review_voting" || !t.currentReview) return;
+
+  if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
+  room.roundEndsAt = null;
+
+  const review = t.currentReview;
+  const approveCount = review.approvals.size;
+  const rejectCount = review.rejections.size;
+  const total = room.players.size;
+  const approved = approveCount > total / 2; // 과반수 찬성
+
+  io.to(room.id).emit("tier:review-result", {
+    roomId: room.id,
+    cardId: review.cardId,
+    card: t.cardMap[review.cardId],
+    approved,
+    approveCount,
+    rejectCount,
+    total,
+  });
+
+  if (approved) {
+    // 보드에서 해당 카드 제거
+    const tierCards = t.board[review.currentTierId];
+    if (tierCards) {
+      const idx = tierCards.indexOf(review.cardId);
+      if (idx >= 0) tierCards.splice(idx, 1);
+    }
+
+    // 현재 카드 위치에 삽입 (다음 투표 대상이 됨)
+    // currentCardIdx는 이미 증가된 상태이므로, 현재 위치에 삽입하면 다음 tier:next에서 이 카드가 나온다
+    t.cardOrder.splice(t.currentCardIdx, 0, review.cardId);
+
+    io.to(room.id).emit("tier:board-update", {
+      roomId: room.id,
+      cardId: review.cardId,
+      card: t.cardMap[review.cardId],
+      placement: null, // 제거됨
+      method: "review_approved",
+      board: t.board,
+    });
+
+    console.log(`[tier:review] approved — cardId=${review.cardId} re-enters at idx=${t.currentCardIdx}`);
+  } else {
+    console.log(`[tier:review] rejected — cardId=${review.cardId}`);
+  }
+
+  // 상태 복원
+  t.currentReview = null;
+  t.tierPhase = "board_updated";
+  room.committed.clear();
+  io.to(room.id).emit("room:state", publicRoom(room));
+}
+
+/** 게임 종료 + DB 저장 */
+async function finishTierGame(room) {
+  const t = room.tier;
+  t.tierPhase = "completed";
+
+  const durationMs = Date.now() - (t.startedAt || Date.now());
+
+  // players JSON 생성
+  const playersJson = Array.from(room.players.entries()).map(([userId, p]) => {
+    // 참가자별 voteCount/agreeCount 계산
+    let voteCount = 0, agreeCount = 0;
+    for (const h of t.history) {
+      if (h.votes[userId]) {
+        voteCount++;
+        if (h.votes[userId].tierId === h.result.tierId
+            && h.votes[userId].afterCardId === h.result.afterCardId) {
+          agreeCount++;
+        }
+      }
+    }
+    return {
+      participantId: userId,
+      nickname: p.name,
+      isHost: room.hostUserId === userId,
+      isGuest: !!p.isGuest,
+      voteCount,
+      agreeCount,
+    };
+  });
+
+  // board JSON (contract 준수)
+  const boardJson = {
+    tiers: { ...t.board },
+    cardMap: { ...t.cardMap },
+    tierMeta: [...t.tierMeta],
+  };
+
+  // DB 저장
+  let resultId = null;
+  try {
+    const { data: inserted, error } = await supabaseAdmin.from("tier_multi_results").insert({
+      template_id: t.templateId,
+      host_user_id: room.hostUserId,
+      board: boardJson,
+      history: t.history,
+      players: playersJson,
+      card_count: t.cardOrder.length,
+      player_count: room.players.size,
+      duration_ms: durationMs,
+    }).select("id").single();
+    if (error) console.error("[tier:finished] DB save error:", error.message);
+    else { resultId = inserted?.id || null; console.log("[tier:finished] result saved:", resultId); }
+  } catch (err) {
+    console.error("[tier:finished] DB save exception:", err);
+  }
+
+  io.to(room.id).emit("tier:finished", {
+    roomId: room.id,
+    resultId,
+    board: boardJson,
+    history: t.history,
+    players: playersJson,
+    durationMs,
+    templateId: t.templateId,
+    templateTitle: t.template?.title || "",
+  });
+  io.to(room.id).emit("room:state", publicRoom(room));
+  console.log(`[tier:finished] roomId=${room.id} cards=${t.cardOrder.length} duration=${durationMs}ms`);
+}
+
 // =========================
 // Socket 연결 핸들러
 // =========================
@@ -4929,7 +5588,7 @@ io.on("connection", (socket) => {
       id: roomId,
       inviteCode,
       hostUserId: me.id,
-      mode: payload?.mode === "quiz" ? "quiz" : "worldcup",
+      mode: payload?.mode === "quiz" ? "quiz" : payload?.mode === "tier" ? "tier" : "worldcup",
       contentId: payload?.contentId || null,
       players: new Map(),
       committed: new Set(),
@@ -5032,6 +5691,13 @@ io.on("connection", (socket) => {
         room.quiz.readyPlayers.delete(me.id);
         room.quiz.skipVotes.delete(me.id);
       }
+      if (room.tier) {
+        room.tier.votes.delete(me.id);
+        if (room.tier.currentReview) {
+          room.tier.currentReview.approvals.delete(me.id);
+          room.tier.currentReview.rejections.delete(me.id);
+        }
+      }
       userRoomMap.delete(me.id);
 
       // 호스트 퇴장 정책
@@ -5075,6 +5741,13 @@ io.on("connection", (socket) => {
       room.quiz.readyPlayers.delete(targetUserId);
       room.quiz.skipVotes.delete(targetUserId);
     }
+    if (room.tier) {
+      room.tier.votes.delete(targetUserId);
+      if (room.tier.currentReview) {
+        room.tier.currentReview.approvals.delete(targetUserId);
+        room.tier.currentReview.rejections.delete(targetUserId);
+      }
+    }
     const disc = room.disconnected?.get(targetUserId);
     if (disc) { clearTimeout(disc.timeoutId); room.disconnected.delete(targetUserId); }
     userRoomMap.delete(targetUserId);
@@ -5089,9 +5762,21 @@ io.on("connection", (socket) => {
     cb?.({ ok: true });
 
     // 전원 제출/committed 체크 (강퇴 후 자동 진행)
-    if (room.mode !== "quiz" && room.phase === "playing" && room.players.size > 0
+    // 월드컵: 남은 전원 committed → 자동 reveal (tier는 별도 처리)
+    if (room.mode === "worldcup" && room.phase === "playing" && room.players.size > 0
         && room.committed.size === room.players.size) {
       doReveal(room);
+    }
+    // 멀티 티어: 남은 전원 committed → 자동 집계
+    if (room.mode === "tier" && room.tier
+        && (room.tier.tierPhase === "collecting_votes" || room.tier.tierPhase === "resolving_tie")
+        && room.players.size > 0 && room.committed.size === room.players.size) {
+      doTierVoteResult(room);
+    }
+    if (room.mode === "tier" && room.tier
+        && room.tier.tierPhase === "review_voting"
+        && room.players.size > 0 && room.committed.size === room.players.size) {
+      resolveReviewVote(room);
     }
     if (room.mode === "quiz" && room.quiz?.phase === "answering" && room.players.size > 0) {
       const allSubmitted = Array.from(room.players.keys()).every(uid => room.quiz.answers.has(uid));
@@ -5132,6 +5817,11 @@ io.on("connection", (socket) => {
       if (!contentId) return cb?.({ ok: false, error: "NO_CONTENT_ID" });
 
       console.log(`[game:start] received — roomId=${room.id} host=${me.id} mode=${room.mode} contentId=${contentId}`);
+
+      // ── 멀티 티어 모드 → 별도 함수로 위임 (early return) ──
+      if (room.mode === "tier") {
+        return await handleTierGameStart(room, payload, me, socket, cb);
+      }
 
       // ── 퀴즈 모드 → 퀴즈 시작 로직 ──
       if (room.mode === "quiz") {
@@ -5571,6 +6261,239 @@ io.on("connection", (socket) => {
     }
   });
 
+  // =============================================================
+  // 멀티 티어 소켓 이벤트
+  // =============================================================
+
+  /** tier:vote — 플레이어 슬롯 선택 제출 */
+  safeOn(socket, "tier:vote", (payload, cb) => {
+    const room = rooms.get(payload?.roomId);
+    if (!room || room.mode !== "tier" || !room.tier) return cb?.({ ok: false, error: "NOT_TIER_ROOM" });
+    if (!room.players.has(me.id)) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+
+    const t = room.tier;
+    if (t.tierPhase !== "collecting_votes" && t.tierPhase !== "resolving_tie") {
+      return cb?.({ ok: false, error: "WRONG_PHASE" });
+    }
+
+    const tierId = payload?.tierId;
+    const afterCardId = payload?.afterCardId === undefined ? null : payload.afterCardId;
+
+    // 재투표 중이면 tiedOptions 검증
+    if (t.tierPhase === "resolving_tie") {
+      const valid = t.tiedOptions.some(
+        opt => opt.tierId === tierId && (opt.afterCardId ?? null) === (afterCardId ?? null)
+      );
+      if (!valid) return cb?.({ ok: false, error: "NOT_IN_TIED_OPTIONS" });
+    }
+
+    // afterCardId 검증
+    const err = validateTierVote(room, tierId, afterCardId);
+    if (err) return cb?.({ ok: false, error: err });
+
+    // 투표 저장 (변심 허용: 덮어쓰기)
+    t.votes.set(me.id, { tierId, afterCardId });
+    room.committed.add(me.id);
+
+    // broadcast 투표 현황
+    io.to(room.id).emit("tier:vote-status", {
+      roomId: room.id,
+      submitted: room.committed.size,
+      total: room.players.size,
+    });
+    io.to(room.id).emit("room:state", publicRoom(room));
+
+    cb?.({ ok: true });
+
+    // 전원 제출 시 자동 집계
+    if (room.committed.size === room.players.size) {
+      doTierVoteResult(room);
+    }
+  });
+
+  /** tier:next — 호스트가 다음 카드 진행 */
+  safeOn(socket, "tier:next", (payload, cb) => {
+    const room = rooms.get(payload?.roomId);
+    if (!room || room.mode !== "tier" || !room.tier) return cb?.({ ok: false, error: "NOT_TIER_ROOM" });
+    if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+
+    const t = room.tier;
+    if (t.tierPhase !== "board_updated" && t.tierPhase !== "card_finalized") {
+      return cb?.({ ok: false, error: "WRONG_PHASE" });
+    }
+
+    if (t.currentCardIdx >= t.cardOrder.length) {
+      // 이미 모든 카드 배치 완료
+      return cb?.({ ok: false, error: "ALREADY_FINISHED" });
+    }
+
+    // 다음 카드 공개
+    t.tierPhase = "card_revealed";
+    const nextCardId = t.cardOrder[t.currentCardIdx];
+    const nextCard = t.cardMap[nextCardId];
+
+    io.to(room.id).emit("tier:card", {
+      roomId: room.id,
+      card: nextCard,
+      cardIndex: t.currentCardIdx,
+      totalCards: t.cardOrder.length,
+      board: t.board,
+      tierMeta: t.tierMeta,
+    });
+
+    // 짧은 딜레이 후 투표 수집 시작
+    setTimeout(() => {
+      if (!room.tier || room.tier.tierPhase !== "card_revealed") return;
+      t.tierPhase = "collecting_votes";
+      if (room.timerEnabled) startTierVoteTimer(room);
+      io.to(room.id).emit("room:state", publicRoom(room));
+    }, 1500);
+
+    io.to(room.id).emit("room:state", publicRoom(room));
+    cb?.({ ok: true });
+  });
+
+  /** tier:host-decision — 호스트 최종 결정 (동점 해소) */
+  safeOn(socket, "tier:host-decision", (payload, cb) => {
+    const room = rooms.get(payload?.roomId);
+    if (!room || room.mode !== "tier" || !room.tier) return cb?.({ ok: false, error: "NOT_TIER_ROOM" });
+    if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+
+    const t = room.tier;
+    if (t.tierPhase !== "host_deciding") return cb?.({ ok: false, error: "WRONG_PHASE" });
+
+    const tierId = payload?.tierId;
+    const afterCardId = payload?.afterCardId === undefined ? null : payload.afterCardId;
+
+    // tiedOptions에 있는 선택지인지 검증
+    const valid = t.tiedOptions.some(
+      opt => opt.tierId === tierId && (opt.afterCardId ?? null) === (afterCardId ?? null)
+    );
+    if (!valid) return cb?.({ ok: false, error: "NOT_IN_TIED_OPTIONS" });
+
+    const currentCardId = t.cardOrder[t.currentCardIdx];
+    t.tierPhase = "card_finalized";
+
+    io.to(room.id).emit("tier:vote-result", {
+      roomId: room.id,
+      cardId: currentCardId,
+      results: [],
+      winner: { tierId, afterCardId },
+      isTie: false,
+      isUnanimous: false,
+      method: "host_decision",
+    });
+
+    applyTierPlacement(room, currentCardId, tierId, afterCardId, "host_decision");
+    cb?.({ ok: true });
+  });
+
+  // =========================
+  // 재검토(Review) — board_updated 단계에서 기존 카드 재투표 요청
+  // =========================
+
+  /** tier:review-request — 보드에 배치된 카드의 재검토 요청 */
+  safeOn(socket, "tier:review-request", (payload, cb) => {
+    const room = rooms.get(payload?.roomId);
+    if (!room || room.mode !== "tier" || !room.tier) return cb?.({ ok: false, error: "NOT_TIER_ROOM" });
+    if (!room.players.has(me.id)) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+
+    const t = room.tier;
+    if (t.tierPhase !== "board_updated") {
+      return cb?.({ ok: false, error: "WRONG_PHASE" });
+    }
+    if (t.reviewUsedThisRound) {
+      return cb?.({ ok: false, error: "REVIEW_ALREADY_USED" });
+    }
+
+    const cardId = payload?.cardId;
+    if (!cardId || !t.cardMap[cardId]) {
+      return cb?.({ ok: false, error: "INVALID_CARD" });
+    }
+
+    // 보드에 있는 카드인지 확인
+    let foundInTier = null;
+    for (const [tid, cards] of Object.entries(t.board)) {
+      if (cards.includes(cardId)) { foundInTier = tid; break; }
+    }
+    if (!foundInTier) {
+      return cb?.({ ok: false, error: "CARD_NOT_ON_BOARD" });
+    }
+
+    // 재검토 투표 시작
+    t.tierPhase = "review_voting";
+    t.reviewUsedThisRound = true;
+    t.currentReview = {
+      cardId,
+      currentTierId: foundInTier,
+      requestedBy: me.id,
+      approvals: new Set(),
+      rejections: new Set(),
+    };
+    room.committed.clear();
+
+    io.to(room.id).emit("tier:review-start", {
+      roomId: room.id,
+      cardId,
+      card: t.cardMap[cardId],
+      currentTierName: t.tierMeta.find(m => m.id === foundInTier)?.name || foundInTier,
+      requestedBy: room.players.get(me.id)?.name || "?",
+    });
+    io.to(room.id).emit("room:state", publicRoom(room));
+
+    // 타이머 (재검토 투표에도 적용)
+    if (room.timerEnabled) {
+      if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
+      room.roundTimer = setTimeout(() => {
+        room.roundTimer = null;
+        room.roundEndsAt = null;
+        if (!room.tier || t.tierPhase !== "review_voting") return;
+        resolveReviewVote(room);
+      }, (room.timerSec || 30) * 1000);
+      room.roundEndsAt = Date.now() + (room.timerSec || 30) * 1000;
+    }
+
+    cb?.({ ok: true });
+    console.log(`[tier:review-request] cardId=${cardId} by=${me.id}`);
+  });
+
+  /** tier:review-vote — 재검토 찬반 투표 */
+  safeOn(socket, "tier:review-vote", (payload, cb) => {
+    const room = rooms.get(payload?.roomId);
+    if (!room || room.mode !== "tier" || !room.tier) return cb?.({ ok: false, error: "NOT_TIER_ROOM" });
+    if (!room.players.has(me.id)) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+
+    const t = room.tier;
+    if (t.tierPhase !== "review_voting" || !t.currentReview) {
+      return cb?.({ ok: false, error: "WRONG_PHASE" });
+    }
+    if (room.committed.has(me.id)) {
+      return cb?.({ ok: false, error: "ALREADY_VOTED" });
+    }
+
+    const approve = !!payload?.approve;
+    room.committed.add(me.id);
+    if (approve) {
+      t.currentReview.approvals.add(me.id);
+    } else {
+      t.currentReview.rejections.add(me.id);
+    }
+
+    // broadcast 투표 현황
+    io.to(room.id).emit("tier:vote-status", {
+      roomId: room.id,
+      submitted: room.committed.size,
+      total: room.players.size,
+    });
+
+    cb?.({ ok: true });
+
+    // 전원 투표 시 자동 집계
+    if (room.committed.size === room.players.size) {
+      resolveReviewVote(room);
+    }
+  });
+
   // =========================
   // 재접속 유예 (disconnect)
   // =========================
@@ -5599,6 +6522,13 @@ io.on("connection", (socket) => {
         room.quiz.readyPlayers.delete(me.id);
         room.quiz.skipVotes.delete(me.id);
       }
+      if (room.tier) {
+        room.tier.votes.delete(me.id);
+        if (room.tier.currentReview) {
+          room.tier.currentReview.approvals.delete(me.id);
+          room.tier.currentReview.rejections.delete(me.id);
+        }
+      }
       userRoomMap.delete(me.id);
 
       // 호스트 유예 만료 → 호스트 정책 적용
@@ -5610,10 +6540,21 @@ io.on("connection", (socket) => {
 
       io.to(roomId).emit("room:state", publicRoom(room));
 
-      // 월드컵: 남은 전원 committed → 자동 reveal
-      if (room.mode !== "quiz" && room.phase === "playing" && room.players.size > 0
+      // 월드컵: 남은 전원 committed → 자동 reveal (tier는 별도 처리)
+      if (room.mode === "worldcup" && room.phase === "playing" && room.players.size > 0
           && room.committed.size === room.players.size) {
         doReveal(room);
+      }
+      // 멀티 티어: 남은 전원 committed → 자동 집계
+      if (room.mode === "tier" && room.tier
+          && (room.tier.tierPhase === "collecting_votes" || room.tier.tierPhase === "resolving_tie")
+          && room.players.size > 0 && room.committed.size === room.players.size) {
+        doTierVoteResult(room);
+      }
+      if (room.mode === "tier" && room.tier
+          && room.tier.tierPhase === "review_voting"
+          && room.players.size > 0 && room.committed.size === room.players.size) {
+        resolveReviewVote(room);
       }
 
       // 퀴즈: 남은 전원 제출 → 자동 reveal
