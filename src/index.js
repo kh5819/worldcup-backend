@@ -3721,6 +3721,352 @@ app.get("/ranking/me", requireAuth, async (req, res) => {
 
 
 // =========================
+// 탐색(Explore) API
+// =========================
+
+// GET /explore/popular — 지금 인기 (7일 플레이 기준, 유형 필터)
+app.get("/explore/popular", async (req, res) => {
+  try {
+    const type = String(req.query.type || "all");
+    const limitRaw = parseInt(req.query.limit) || 12;
+    const limit = Math.min(30, Math.max(1, limitRaw));
+
+    // 1) worldcup/quiz from contents + content_metrics_v
+    let contentItems = [];
+    if (type === "all" || type === "worldcup" || type === "quiz") {
+      let q = supabaseAdmin
+        .from("public_contents_list")
+        .select("id, type, title, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, creator_name, play_count, complete_count, like_count, item_count, created_at");
+      if (type === "worldcup" || type === "quiz") {
+        q = q.eq("type", type);
+      }
+      q = q.order("complete_count", { ascending: false }).order("created_at", { ascending: false }).limit(limit);
+      const { data } = await q;
+      contentItems = (data || []).map(c => ({ ...c, _source: "contents" }));
+    }
+
+    // 2) tier from tier_templates
+    let tierItems = [];
+    if (type === "all" || type === "tier") {
+      const { data } = await supabaseAdmin
+        .from("tier_templates")
+        .select("id, title, cards, play_count, complete_count, like_count, created_at, creator_id")
+        .eq("is_public", true)
+        .is("deleted_at", null)
+        .order("complete_count", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      // fetch creator names
+      const tiers = data || [];
+      if (tiers.length > 0) {
+        const creatorIds = [...new Set(tiers.map(t => t.creator_id).filter(Boolean))];
+        let profileMap = {};
+        if (creatorIds.length > 0) {
+          const { data: profiles } = await supabaseAdmin
+            .from("profiles")
+            .select("id, nickname")
+            .in("id", creatorIds);
+          for (const p of (profiles || [])) profileMap[p.id] = p.nickname;
+        }
+        tierItems = tiers.map(t => ({
+          id: t.id,
+          type: "tier",
+          title: t.title,
+          thumbnail_url: t.cards?.[0]?.image_url || null,
+          auto_thumbnail_url: null,
+          auto_thumb_media_type: null,
+          creator_name: profileMap[t.creator_id] || null,
+          play_count: t.play_count || 0,
+          complete_count: t.complete_count || 0,
+          like_count: t.like_count || 0,
+          item_count: t.cards?.length || 0,
+          created_at: t.created_at,
+          _source: "tier",
+        }));
+      }
+    }
+
+    // 3) Merge + enrich with 7d metrics
+    let items = [...contentItems, ...tierItems];
+    if (items.length > 0) {
+      const ids = items.map(i => i.id);
+      const { data: metrics } = await supabaseAdmin
+        .from("content_metrics_v")
+        .select("content_id, plays_last_7d, finishes_total")
+        .in("content_id", ids);
+      const metricsMap = {};
+      for (const m of (metrics || [])) metricsMap[m.content_id] = m;
+      items = items.map(i => ({
+        ...i,
+        plays_last_7d: metricsMap[i.id]?.plays_last_7d || 0,
+        finishes_total: metricsMap[i.id]?.finishes_total || 0,
+      }));
+      // sort by 7d plays, then complete_count
+      items.sort((a, b) => (b.plays_last_7d - a.plays_last_7d) || (b.complete_count - a.complete_count));
+    }
+    items = items.slice(0, limit);
+    items.forEach(i => delete i._source);
+
+    return res.json({ ok: true, items });
+  } catch (err) {
+    console.error("[GET /explore/popular]", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// GET /explore/trending — 급상승 (48h 비교)
+app.get("/explore/trending", async (req, res) => {
+  try {
+    const limitRaw = parseInt(req.query.limit) || 10;
+    const limit = Math.min(20, Math.max(1, limitRaw));
+
+    const { data: trending, error } = await supabaseAdmin.rpc("get_trending_contents", { p_limit: limit });
+    if (error) {
+      console.error("[GET /explore/trending] rpc error:", error.message);
+      return res.status(500).json({ ok: false, error: "RPC_FAIL" });
+    }
+    if (!trending || trending.length === 0) {
+      return res.json({ ok: true, items: [] });
+    }
+
+    // enrich with content metadata
+    const wcqIds = trending.filter(t => t.content_type !== "tier").map(t => t.content_id);
+    const tierIds = trending.filter(t => t.content_type === "tier").map(t => t.content_id);
+
+    let contentMap = {};
+    if (wcqIds.length > 0) {
+      const { data } = await supabaseAdmin
+        .from("public_contents_list")
+        .select("id, type, title, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, creator_name, play_count, complete_count, like_count, item_count, created_at")
+        .in("id", wcqIds);
+      for (const c of (data || [])) contentMap[c.id] = c;
+    }
+    let tierMap = {};
+    if (tierIds.length > 0) {
+      const { data } = await supabaseAdmin
+        .from("tier_templates")
+        .select("id, title, cards, play_count, complete_count, like_count, created_at, creator_id")
+        .in("id", tierIds)
+        .eq("is_public", true)
+        .is("deleted_at", null);
+      const tiers = data || [];
+      if (tiers.length > 0) {
+        const creatorIds = [...new Set(tiers.map(t => t.creator_id).filter(Boolean))];
+        let profileMap = {};
+        if (creatorIds.length > 0) {
+          const { data: profiles } = await supabaseAdmin.from("profiles").select("id, nickname").in("id", creatorIds);
+          for (const p of (profiles || [])) profileMap[p.id] = p.nickname;
+        }
+        for (const t of tiers) {
+          tierMap[t.id] = {
+            id: t.id, type: "tier", title: t.title,
+            thumbnail_url: t.cards?.[0]?.image_url || null,
+            auto_thumbnail_url: null, auto_thumb_media_type: null,
+            creator_name: profileMap[t.creator_id] || null,
+            play_count: t.play_count || 0, complete_count: t.complete_count || 0,
+            like_count: t.like_count || 0, item_count: t.cards?.length || 0,
+            created_at: t.created_at,
+          };
+        }
+      }
+    }
+
+    const items = trending.map(t => {
+      const meta = contentMap[t.content_id] || tierMap[t.content_id];
+      if (!meta) return null;
+      return {
+        ...meta,
+        recent_count: Number(t.recent_count),
+        prev_count: Number(t.prev_count),
+        growth: Number(t.growth),
+      };
+    }).filter(Boolean);
+
+    return res.json({ ok: true, items });
+  } catch (err) {
+    console.error("[GET /explore/trending]", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// GET /explore/rising — 새로 뜨는 (7일 이내 생성 + 반응 있음)
+app.get("/explore/rising", async (req, res) => {
+  try {
+    const limitRaw = parseInt(req.query.limit) || 10;
+    const limit = Math.min(20, Math.max(1, limitRaw));
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    // 1) Recent worldcup/quiz
+    const { data: cData } = await supabaseAdmin
+      .from("public_contents_list")
+      .select("id, type, title, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, creator_name, play_count, complete_count, like_count, item_count, created_at")
+      .gte("created_at", since)
+      .order("complete_count", { ascending: false })
+      .limit(limit);
+
+    // 2) Recent tier
+    const { data: tData } = await supabaseAdmin
+      .from("tier_templates")
+      .select("id, title, cards, play_count, complete_count, like_count, created_at, creator_id")
+      .eq("is_public", true)
+      .is("deleted_at", null)
+      .gte("created_at", since)
+      .order("complete_count", { ascending: false })
+      .limit(limit);
+
+    const tiers = tData || [];
+    let tierItems = [];
+    if (tiers.length > 0) {
+      const creatorIds = [...new Set(tiers.map(t => t.creator_id).filter(Boolean))];
+      let profileMap = {};
+      if (creatorIds.length > 0) {
+        const { data: profiles } = await supabaseAdmin.from("profiles").select("id, nickname").in("id", creatorIds);
+        for (const p of (profiles || [])) profileMap[p.id] = p.nickname;
+      }
+      tierItems = tiers.map(t => ({
+        id: t.id, type: "tier", title: t.title,
+        thumbnail_url: t.cards?.[0]?.image_url || null,
+        auto_thumbnail_url: null, auto_thumb_media_type: null,
+        creator_name: profileMap[t.creator_id] || null,
+        play_count: t.play_count || 0, complete_count: t.complete_count || 0,
+        like_count: t.like_count || 0, item_count: t.cards?.length || 0,
+        created_at: t.created_at,
+      }));
+    }
+
+    let items = [...(cData || []), ...tierItems];
+    // filter: must have at least 1 complete
+    items = items.filter(i => (i.complete_count || 0) >= 1);
+    items.sort((a, b) => (b.complete_count - a.complete_count) || (new Date(b.created_at) - new Date(a.created_at)));
+    items = items.slice(0, limit);
+
+    return res.json({ ok: true, items });
+  } catch (err) {
+    console.error("[GET /explore/rising]", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// GET /explore/featured — 추천 콘텐츠 (운영자 선정)
+app.get("/explore/featured", async (req, res) => {
+  try {
+    const limitRaw = parseInt(req.query.limit) || 10;
+    const limit = Math.min(20, Math.max(1, limitRaw));
+
+    const { data: featured, error } = await supabaseAdmin
+      .from("featured_contents")
+      .select("content_id, content_type, sort_order")
+      .eq("is_active", true)
+      .order("sort_order", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error("[GET /explore/featured] db error:", error.message);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+    if (!featured || featured.length === 0) {
+      return res.json({ ok: true, items: [] });
+    }
+
+    const wcqIds = featured.filter(f => f.content_type !== "tier").map(f => f.content_id);
+    const tierIds = featured.filter(f => f.content_type === "tier").map(f => f.content_id);
+
+    let contentMap = {};
+    if (wcqIds.length > 0) {
+      const { data } = await supabaseAdmin
+        .from("public_contents_list")
+        .select("id, type, title, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, creator_name, play_count, complete_count, like_count, item_count, created_at")
+        .in("id", wcqIds);
+      for (const c of (data || [])) contentMap[c.id] = c;
+    }
+    let tierMap = {};
+    if (tierIds.length > 0) {
+      const { data } = await supabaseAdmin
+        .from("tier_templates")
+        .select("id, title, cards, play_count, complete_count, like_count, created_at, creator_id")
+        .in("id", tierIds)
+        .eq("is_public", true)
+        .is("deleted_at", null);
+      const tiers = data || [];
+      if (tiers.length > 0) {
+        const creatorIds = [...new Set(tiers.map(t => t.creator_id).filter(Boolean))];
+        let profileMap = {};
+        if (creatorIds.length > 0) {
+          const { data: profiles } = await supabaseAdmin.from("profiles").select("id, nickname").in("id", creatorIds);
+          for (const p of (profiles || [])) profileMap[p.id] = p.nickname;
+        }
+        for (const t of tiers) {
+          tierMap[t.id] = {
+            id: t.id, type: "tier", title: t.title,
+            thumbnail_url: t.cards?.[0]?.image_url || null,
+            auto_thumbnail_url: null, auto_thumb_media_type: null,
+            creator_name: profileMap[t.creator_id] || null,
+            play_count: t.play_count || 0, complete_count: t.complete_count || 0,
+            like_count: t.like_count || 0, item_count: t.cards?.length || 0,
+            created_at: t.created_at,
+          };
+        }
+      }
+    }
+
+    // preserve featured sort_order
+    const items = featured.map(f => {
+      const meta = contentMap[f.content_id] || tierMap[f.content_id];
+      if (!meta) return null;
+      return { ...meta, featured_order: f.sort_order };
+    }).filter(Boolean);
+
+    return res.json({ ok: true, items });
+  } catch (err) {
+    console.error("[GET /explore/featured]", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// POST /admin/featured — 추천 콘텐츠 추가 (admin)
+app.post("/admin/featured", requireAdmin, async (req, res) => {
+  try {
+    const { content_id, content_type, sort_order = 0, memo } = req.body;
+    if (!content_id || !content_type) {
+      return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+    }
+    const { data, error } = await supabaseAdmin
+      .from("featured_contents")
+      .upsert({ content_id, content_type, sort_order: sort_order || 0, memo: memo || null, is_active: true }, { onConflict: "content_id,content_type" })
+      .select();
+    if (error) {
+      console.error("[POST /admin/featured] db error:", error.message);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+    return res.json({ ok: true, item: data?.[0] || null });
+  } catch (err) {
+    console.error("[POST /admin/featured]", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// DELETE /admin/featured/:contentId — 추천 해제 (admin)
+app.delete("/admin/featured/:contentId", requireAdmin, async (req, res) => {
+  try {
+    const { contentId } = req.params;
+    const { error } = await supabaseAdmin
+      .from("featured_contents")
+      .delete()
+      .eq("content_id", contentId);
+    if (error) {
+      console.error("[DELETE /admin/featured] db error:", error.message);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[DELETE /admin/featured]", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+
+// =========================
 // 월드컵 매치/판 기록 헬퍼
 // =========================
 async function recordWorldcupMatch(room, candA, candB, winner, loser, isTie, meta) {
