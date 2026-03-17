@@ -6202,6 +6202,28 @@ io.on("connection", (socket) => {
   });
 
   // =========================
+  // 이모지 리액션 (멀티 공통)
+  // =========================
+  safeOn(socket, "react:send", (payload, cb) => {
+    const roomId = userRoomMap.get(me.id);
+    if (!roomId) return cb?.({ ok: false });
+    const room = rooms.get(roomId);
+    if (!room) return cb?.({ ok: false });
+    const ALLOWED = ["😂","🔥","😱","💀","❤️","👏"];
+    const emoji = payload?.emoji;
+    if (!ALLOWED.includes(emoji)) return cb?.({ ok: false });
+    // Rate limit: 1 per second per user
+    const now = Date.now();
+    if (!room._reactLastMap) room._reactLastMap = new Map();
+    const last = room._reactLastMap.get(me.id) || 0;
+    if (now - last < 1000) return cb?.({ ok: false, error: "COOLDOWN" });
+    room._reactLastMap.set(me.id, now);
+    const playerName = room.players.get(me.id)?.name || "?";
+    socket.to(roomId).emit("react:broadcast", { emoji, name: playerName, userId: me.id });
+    cb?.({ ok: true });
+  });
+
+  // =========================
   // 월드컵 이벤트 (기존 그대로)
   // =========================
 
