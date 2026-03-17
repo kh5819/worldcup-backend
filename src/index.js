@@ -5032,6 +5032,7 @@ function safeQuestion(q, index, total) {
     total,
     type: q.type,
     prompt: q.prompt,
+    questionId: q.id || null,
   };
   if (q.type === "mcq") {
     payload.choices = q.choices;
