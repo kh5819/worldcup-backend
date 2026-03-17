@@ -3390,7 +3390,7 @@ app.post("/quiz/finish", async (req, res) => {
         mode: mode === "multi" ? "multi" : "solo",
         correct_count: Math.max(0, Number(correctCount) || 0),
         total_count: Math.max(1, Number(totalCount) || 1),
-        duration_ms: durationMs ? Number(durationMs) : null,
+        duration_ms: durationMs ? Math.round(Number(durationMs)) : null,
       })
       .select("id")
       .single();
