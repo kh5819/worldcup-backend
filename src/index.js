@@ -3255,7 +3255,7 @@ async function recordPlayOnce({ contentId, userId, mode, gameType }) {
 }
 
 // =========================
-// 솔로 월드컵 결과 기록 API
+// 솔로 월드컵 결과 기록 API (로그인 유저)
 // =========================
 app.post("/worldcup/finish", requireAuth, async (req, res) => {
   try {
@@ -3265,11 +3265,13 @@ app.post("/worldcup/finish", requireAuth, async (req, res) => {
       totalPlayers, total_players,
       championCandidateId, champion_candidate_id,
       matches,
+      sessionId,
     } = req.body;
 
     const cId = contentId || content_id;
     const champId = championCandidateId || champion_candidate_id;
     const players = totalPlayers || total_players || 1;
+    const sid = sessionId || null;
 
     if (!cId || !champId) {
       return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
@@ -3281,6 +3283,8 @@ app.post("/worldcup/finish", requireAuth, async (req, res) => {
       room_id: null,
       total_players: players,
       champion_candidate_id: champId,
+      session_id: sid,
+      is_logged_in: true,
       meta: { mode: mode || "solo", user_id: req.user.id, inserted_matches: (matches || []).length },
     });
     if (runErr) {
@@ -3299,6 +3303,8 @@ app.post("/worldcup/finish", requireAuth, async (req, res) => {
         winner_candidate_id: m.winner_candidate_id || null,
         loser_candidate_id: m.loser_candidate_id || null,
         is_tie: !!m.is_tie,
+        session_id: sid,
+        is_logged_in: true,
         meta: m.meta || {},
       }));
 
@@ -3315,6 +3321,83 @@ app.post("/worldcup/finish", requireAuth, async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     console.error("[POST /worldcup/finish] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
+// 솔로 월드컵 결과 기록 API (비로그인 — session_id 기반)
+// =========================
+app.post("/worldcup/finish-anon", async (req, res) => {
+  try {
+    const {
+      contentId, content_id,
+      mode,
+      championCandidateId, champion_candidate_id,
+      matches,
+      sessionId,
+    } = req.body;
+
+    const cId = contentId || content_id;
+    const champId = championCandidateId || champion_candidate_id;
+    const sid = sessionId;
+
+    if (!cId || !champId || !sid) {
+      return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
+    }
+
+    // 중복 방지: 같은 session_id + content_id 조합이 이미 있으면 스킵
+    const { data: existing } = await supabaseAdmin
+      .from("worldcup_runs")
+      .select("id")
+      .eq("session_id", sid)
+      .eq("content_id", cId)
+      .limit(1);
+    if (existing && existing.length > 0) {
+      return res.json({ ok: true, skipped: true });
+    }
+
+    // 1) worldcup_runs insert
+    const { error: runErr } = await supabaseAdmin.from("worldcup_runs").insert({
+      content_id: cId,
+      room_id: null,
+      total_players: 1,
+      champion_candidate_id: champId,
+      session_id: sid,
+      is_logged_in: false,
+      meta: { mode: mode || "solo", anon: true, inserted_matches: (matches || []).length },
+    });
+    if (runErr) {
+      console.warn("[POST /worldcup/finish-anon] worldcup_runs insert error:", runErr.message);
+      return res.status(500).json({ ok: false, error: "RUN_INSERT_FAILED" });
+    }
+
+    // 2) worldcup_matches bulk insert
+    if (Array.isArray(matches) && matches.length > 0) {
+      const rows = matches.map((m) => ({
+        content_id: cId,
+        room_id: null,
+        match_round: m.match_round || null,
+        candidate_a_id: m.candidate_a_id || null,
+        candidate_b_id: m.candidate_b_id || null,
+        winner_candidate_id: m.winner_candidate_id || null,
+        loser_candidate_id: m.loser_candidate_id || null,
+        is_tie: !!m.is_tie,
+        session_id: sid,
+        is_logged_in: false,
+        meta: m.meta || {},
+      }));
+
+      const { error: matchErr } = await supabaseAdmin.from("worldcup_matches").insert(rows);
+      if (matchErr) {
+        console.warn("[POST /worldcup/finish-anon] worldcup_matches insert error:", matchErr.message);
+      }
+    }
+
+    console.log(`[POST /worldcup/finish-anon] OK — sid=${sid} contentId=${cId} champion=${champId} matches=${(matches || []).length}`);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[POST /worldcup/finish-anon] error:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
 });
