@@ -4119,7 +4119,7 @@ const TIER_SLOT_LAST = "__LAST__";
 const TIER_MAX_REVOTES = 2;
 const TIER_DEFAULT_CARD_LIMIT = 30;
 const TIER_CARD_LIMIT_OPTIONS = [0, 20, 30, 50]; // 0 = 전체
-const TIER_REVIEW_PER_ROUND = 1; // 라운드당 재검토 허용 횟수
+const TIER_REVIEW_COOLDOWN_MS = 2000; // 재검토 요청 쿨다운(ms)
 
 function generateInviteCode() {
   for (let attempt = 0; attempt < 50; attempt++) {
@@ -4312,7 +4312,6 @@ function buildSyncPayload(room, userId) {
         maxRevotes: TIER_MAX_REVOTES,
         tiedOptions: t.tiedOptions || [],
         history: t.history || [],
-        reviewUsedThisRound: !!t.reviewUsedThisRound,
         currentReview: t.currentReview ? {
           cardId: t.currentReview.cardId,
           card: t.cardMap?.[t.currentReview.cardId] || null,
@@ -4357,6 +4356,8 @@ function publicRoom(room) {
         status = room.committed.has(userId) ? "투표 완료" : "재검토 투표 중…";
       } else if (tp === "host_deciding") {
         status = room.hostUserId === userId ? "결정 중…" : "대기 중…";
+      } else if (tp === "final_review") {
+        status = "최종 검토 중…";
       } else if (tp === "completed") {
         status = "완료";
       } else {
@@ -4416,7 +4417,6 @@ function publicRoom(room) {
         tiedOptions: t.tiedOptions || [],
         votedCount: room.committed.size,
         totalPlayers: room.players.size,
-        reviewUsedThisRound: !!t.reviewUsedThisRound,
         currentReview: t.currentReview ? {
           cardId: t.currentReview.cardId,
           card: t.cardMap?.[t.currentReview.cardId] || null,
@@ -5478,7 +5478,7 @@ function initTierState(room, template, selectedCards) {
     revoteCount: 0,
     tiedOptions: [],
     currentReview: null,
-    reviewUsedThisRound: false,
+    lastReviewAt: 0,
     history: [],
     tierPhase: "card_revealed",
     startedAt: Date.now(),
@@ -5760,14 +5760,21 @@ function applyTierPlacement(room, cardId, tierId, afterCardId, method) {
   t.votes.clear();
   t.revoteCount = 0;
   t.tiedOptions = [];
-  t.reviewUsedThisRound = false;
   t.currentReview = null;
   room.committed.clear();
   t.currentCardIdx++;
 
   if (t.currentCardIdx >= t.cardOrder.length) {
-    // 모든 카드 배치 완료
-    finishTierGame(room);
+    // 모든 카드 배치 완료 → 최종 검토 단계
+    t.tierPhase = "final_review";
+    io.to(room.id).emit("tier:final-review", {
+      roomId: room.id,
+      board: t.board,
+      tierMeta: t.tierMeta,
+      cardMap: t.cardMap,
+    });
+    io.to(room.id).emit("room:state", publicRoom(room));
+    console.log(`[tier] all cards placed → final_review phase`);
   } else {
     // board_updated 상태로 잠시 대기 (호스트가 tier:next로 진행)
     t.tierPhase = "board_updated";
@@ -5827,8 +5834,14 @@ function resolveReviewVote(room) {
 
   // 상태 복원
   t.currentReview = null;
-  t.tierPhase = "board_updated";
   room.committed.clear();
+
+  // 모든 카드가 배치된 상태면 final_review로 복귀, 아니면 board_updated
+  if (t.currentCardIdx >= t.cardOrder.length) {
+    t.tierPhase = "final_review";
+  } else {
+    t.tierPhase = "board_updated";
+  }
   io.to(room.id).emit("room:state", publicRoom(room));
 }
 
@@ -6820,11 +6833,13 @@ io.on("connection", (socket) => {
     if (!room.players.has(me.id)) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
 
     const t = room.tier;
-    if (t.tierPhase !== "board_updated") {
+    if (t.tierPhase !== "board_updated" && t.tierPhase !== "final_review") {
       return cb?.({ ok: false, error: "WRONG_PHASE" });
     }
-    if (t.reviewUsedThisRound) {
-      return cb?.({ ok: false, error: "REVIEW_ALREADY_USED" });
+    // 쿨다운 체크 (스팸 방지)
+    const now = Date.now();
+    if (now - (t.lastReviewAt || 0) < TIER_REVIEW_COOLDOWN_MS) {
+      return cb?.({ ok: false, error: "REVIEW_COOLDOWN" });
     }
 
     const cardId = payload?.cardId;
@@ -6843,7 +6858,7 @@ io.on("connection", (socket) => {
 
     // 재검토 투표 시작
     t.tierPhase = "review_voting";
-    t.reviewUsedThisRound = true;
+    t.lastReviewAt = now;
     t.currentReview = {
       cardId,
       currentTierId: foundInTier,
@@ -6913,6 +6928,22 @@ io.on("connection", (socket) => {
     if (room.committed.size === room.players.size) {
       resolveReviewVote(room);
     }
+  });
+
+  /** tier:finalize — 호스트가 최종 검토 후 확정 (게임 종료) */
+  safeOn(socket, "tier:finalize", (payload, cb) => {
+    const room = rooms.get(payload?.roomId);
+    if (!room || room.mode !== "tier" || !room.tier) return cb?.({ ok: false, error: "NOT_TIER_ROOM" });
+    if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+
+    const t = room.tier;
+    if (t.tierPhase !== "final_review") {
+      return cb?.({ ok: false, error: "WRONG_PHASE" });
+    }
+
+    console.log(`[tier:finalize] host confirmed — roomId=${room.id}`);
+    finishTierGame(room);
+    cb?.({ ok: true });
   });
 
   // =========================
