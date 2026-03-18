@@ -3320,6 +3320,48 @@ app.post("/worldcup/finish", requireAuth, async (req, res) => {
 });
 
 // =========================
+// 월드컵 페어 통계 API (선택 피드백용)
+// =========================
+app.get("/worldcup/pair-stats", async (req, res) => {
+  try {
+    const { contentId, a, b } = req.query;
+    if (!contentId || !a || !b) {
+      return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
+    }
+
+    // 정렬된 페어 기준으로 양방향 조회
+    const { data, error } = await supabaseAdmin
+      .from("worldcup_matches")
+      .select("winner_candidate_id")
+      .eq("content_id", contentId)
+      .or(
+        `and(candidate_a_id.eq.${a},candidate_b_id.eq.${b}),and(candidate_a_id.eq.${b},candidate_b_id.eq.${a})`
+      );
+
+    if (error) {
+      console.warn("[GET /worldcup/pair-stats] query error:", error.message);
+      return res.status(500).json({ ok: false, error: "QUERY_FAILED" });
+    }
+
+    const total = (data || []).length;
+    if (total === 0) {
+      return res.json({ ok: true, total: 0, aWins: 0, bWins: 0 });
+    }
+
+    let aWins = 0, bWins = 0;
+    for (const row of data) {
+      if (row.winner_candidate_id === a) aWins++;
+      else if (row.winner_candidate_id === b) bWins++;
+    }
+
+    return res.json({ ok: true, total, aWins, bWins });
+  } catch (err) {
+    console.error("[GET /worldcup/pair-stats] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 솔로 퀴즈 완주 기록 API
 // =========================
 app.post("/plays/complete", requireAuth, async (req, res) => {
