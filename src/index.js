@@ -2658,13 +2658,19 @@ app.delete("/admin/tier-instances/:id", requireAdmin, async (req, res) => {
       return res.status(500).json({ ok: false, error: "DB_ERROR" });
     }
 
-    await supabaseAdmin.from("admin_actions").insert({
-      admin_user_id: req.user.id,
-      action_type: "tier_instance_delete",
-      target_type: "tier_instance",
-      target_id: req.params.id,
-    });
+    // admin_actions 로깅 (실패해도 삭제 자체는 성공 처리)
+    try {
+      await supabaseAdmin.from("admin_actions").insert({
+        admin_user_id: req.user.id,
+        action_type: "tier_instance_delete",
+        target_type: "tier_instance",
+        target_id: req.params.id,
+      });
+    } catch (logErr) {
+      console.warn("admin_actions insert failed (non-critical):", logErr);
+    }
 
+    console.log("[ADMIN] tier_instance soft-deleted:", req.params.id, "by:", req.user.id);
     return res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /admin/tier-instances/:id:", err);
