@@ -3400,7 +3400,10 @@ app.post("/worldcup/finish-anon", async (req, res) => {
       }
     }
 
-    console.log(`[POST /worldcup/finish-anon] OK — sid=${sid} contentId=${cId} champion=${champId} matches=${(matches || []).length}`);
+    // 3) play_count +1 (비로그인 월드컵 완주 — dedup은 위 worldcup_runs 중복체크로 보장)
+    await incrementPlayCount(cId);
+
+    console.log(`[POST /worldcup/finish-anon] OK — sid=${sid} contentId=${cId} champion=${champId} matches=${(matches || []).length} play_count+1`);
     return res.json({ ok: true });
   } catch (err) {
     console.error("[POST /worldcup/finish-anon] error:", err);
