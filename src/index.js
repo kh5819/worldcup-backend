@@ -3598,8 +3598,9 @@ const CE_DEDUP_SEC = 600; // 10분 dedup (play/share)
 const CE_FINISH_DEDUP_SEC = 180; // 3분 dedup (finish — 완주)
 
 // POST /events — 이벤트 기록 (play/finish/share)
-// ★ finish 이벤트는 로그인 유저만 허용 (complete_count 집계 정책)
-// ★ play/share 이벤트는 익명도 허용 (카운트에 반영되지 않는 로그)
+// ★ finish 이벤트: 로그인/비로그인 모두 허용 (complete_count 반영)
+// ★ 비로그인 finish: session_id + 시간 기반 dedup으로 스팸 방지
+// ★ 유저 랭킹 포인트는 DB 트리거에서 user_id IS NOT NULL 체크로 로그인만 반영
 app.post("/events", async (req, res) => {
   try {
     // ── 1) 인증 (토큰이 있으면 검증) ──
@@ -3631,11 +3632,8 @@ app.post("/events", async (req, res) => {
       return res.status(400).json({ ok: false, error: "INVALID_TYPE" });
     }
 
-    // ── 3) finish 이벤트는 로그인 필수 ──
+    // ── 3) finish 이벤트: 로그인/비로그인 모두 허용 (complete_count 반영) ──
     const isFinish = eventType === "finish";
-    if (isFinish && !userId) {
-      return res.status(401).json({ ok: false, error: "LOGIN_REQUIRED_FOR_FINISH" });
-    }
 
     // ── 4) dedup (중복 방지) ──
     const dedupSec = isFinish ? CE_FINISH_DEDUP_SEC : CE_DEDUP_SEC;
@@ -3654,6 +3652,23 @@ app.post("/events", async (req, res) => {
 
       if (dedupErr) {
         console.error("[POST /events] dedup query error:", dedupErr.message);
+      } else if (recent && recent.length > 0) {
+        return res.json({ ok: true, dedup: true });
+      }
+    } else if (isFinish && !userId && sessionId) {
+      // 비로그인 finish: session_id + 시간 기반 dedup (같은 세션에서 3분 내 중복 차단)
+      const { data: recent, error: dedupErr } = await supabaseAdmin
+        .from("content_events")
+        .select("id")
+        .eq("content_id", contentId)
+        .eq("event_type", "finish")
+        .is("user_id", null)
+        .eq("session_id", sessionId)
+        .gte("created_at", threshold)
+        .limit(1);
+
+      if (dedupErr) {
+        console.error("[POST /events] anon finish dedup query error:", dedupErr.message);
       } else if (recent && recent.length > 0) {
         return res.json({ ok: true, dedup: true });
       }
