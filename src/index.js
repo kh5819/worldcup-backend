@@ -3123,10 +3123,26 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
     }
 
     if (existing.mode === "quiz" && questions && Array.isArray(questions)) {
-      await supabaseAdmin.from("quiz_questions").delete().eq("content_id", req.params.id);
-      const rows = questions.map((q, i) => {
+      // ── 기존 question id 보존하여 신규문제 오판 방지 ──
+      // 기존: DELETE ALL → INSERT ALL (모든 id 새로 생성 → 통계 매칭 불가 → 전부 "신규")
+      // 변경: 기존 id가 있으면 UPDATE, 없으면 INSERT, 사라진 것만 DELETE
+      const contentId = req.params.id;
+
+      // 1) 현재 DB에 있는 question id 목록 조회
+      const { data: existingQs } = await supabaseAdmin
+        .from("quiz_questions")
+        .select("id")
+        .eq("content_id", contentId);
+      const existingQIds = new Set((existingQs || []).map(q => q.id));
+
+      // 2) payload 분리: update 대상 vs insert 대상
+      const toUpdate = [];
+      const toInsert = [];
+      const incomingIds = new Set();
+
+      questions.forEach((q, i) => {
         const row = {
-          content_id: req.params.id,
+          content_id: contentId,
           sort_order: i + 1,
           type: q.type || "mcq",
           prompt: q.prompt,
@@ -3142,13 +3158,47 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
         if (row.reveal_media_url) {
           console.log(`[REVEAL-MEDIA] PUT q${i}: reveal_media_url=${row.reveal_media_url}, reveal_media_type=${row.reveal_media_type}`);
         }
-        return row;
+
+        if (q.id && existingQIds.has(q.id)) {
+          // 기존 문제 → UPDATE (id 유지, 통계 보존)
+          row.id = q.id;
+          incomingIds.add(q.id);
+          toUpdate.push(row);
+        } else {
+          // 새 문제 → INSERT (새 id 생성 → 자연스럽게 "신규")
+          toInsert.push(row);
+        }
       });
-      if (rows.length > 0) {
-        const { error: iErr } = await supabaseAdmin.from("quiz_questions").insert(rows);
-        if (iErr) console.error("문제 재삽입 실패:", iErr);
-        else console.log(`[REVEAL-MEDIA] PUT ${req.params.id}: ${rows.length} questions re-inserted, reveal count=${rows.filter(r => r.reveal_media_url).length}`);
+
+      // 3) 삭제된 문제만 DELETE
+      const toDeleteIds = [...existingQIds].filter(id => !incomingIds.has(id));
+      if (toDeleteIds.length > 0) {
+        const { error: dErr } = await supabaseAdmin
+          .from("quiz_questions")
+          .delete()
+          .in("id", toDeleteIds);
+        if (dErr) console.error("문제 삭제 실패:", dErr);
       }
+
+      // 4) 기존 문제 UPDATE
+      for (const row of toUpdate) {
+        const qId = row.id;
+        delete row.id; // id는 WHERE 조건, SET 대상 아님
+        delete row.content_id; // content_id 변경 불가
+        const { error: uErr } = await supabaseAdmin
+          .from("quiz_questions")
+          .update(row)
+          .eq("id", qId);
+        if (uErr) console.error(`문제 업데이트 실패 (${qId}):`, uErr);
+      }
+
+      // 5) 새 문제 INSERT
+      if (toInsert.length > 0) {
+        const { error: iErr } = await supabaseAdmin.from("quiz_questions").insert(toInsert);
+        if (iErr) console.error("문제 삽입 실패:", iErr);
+      }
+
+      console.log(`[QUIZ-UPDATE] ${contentId}: updated=${toUpdate.length}, inserted=${toInsert.length}, deleted=${toDeleteIds.length}`);
     }
 
     return res.json({ ok: true });
