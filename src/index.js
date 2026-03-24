@@ -2298,8 +2298,11 @@ app.patch("/admin/users/:userId/avatar", requireAdmin, async (req, res) => {
         return res.status(400).json({ ok: false, error: "MISSING_IMAGE", reason: "이미지 데이터가 없습니다." });
       }
 
-      // mime → ext
-      const MIME_EXT = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" };
+      // mime → ext (HEIC/HEIF는 모바일 브라우저가 JPEG으로 변환하므로 jpeg 취급)
+      const MIME_EXT = {
+        "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif",
+        "image/heic": "jpg", "image/heif": "jpg"
+      };
       const ext = MIME_EXT[mimeType];
       if (!ext) {
         return res.status(400).json({ ok: false, error: "INVALID_TYPE", reason: "PNG, JPG, WebP, GIF만 지원합니다." });
