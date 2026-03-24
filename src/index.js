@@ -1557,7 +1557,7 @@ app.get("/admin/comment-reports", requireAdmin, async (req, res) => {
     if (tierCommentIds.length > 0) {
       const { data: tcRows } = await supabaseAdmin
         .from("tier_instance_comments")
-        .select("id, instance_id, user_id, author_name, body, created_at")
+        .select("id, instance_id, user_id, author_name, body, created_at, parent_id")
         .in("id", tierCommentIds);
       if (tcRows) {
         for (const c of tcRows) {
@@ -1629,6 +1629,22 @@ app.get("/admin/comment-reports", requireAdmin, async (req, res) => {
       }
     }
 
+    // 대댓글의 부모 댓글 body 일괄 조회
+    const parentIdsToFetch = new Set();
+    for (const c of commentMap.values()) {
+      if (c._table === "tier_instance_comments" && c.parent_id) parentIdsToFetch.add(c.parent_id);
+    }
+    const parentCommentMap = new Map();
+    if (parentIdsToFetch.size > 0) {
+      const { data: parentRows } = await supabaseAdmin
+        .from("tier_instance_comments")
+        .select("id, body, author_name")
+        .in("id", [...parentIdsToFetch]);
+      if (parentRows) {
+        for (const p of parentRows) parentCommentMap.set(p.id, p);
+      }
+    }
+
     // 최종 응답 조립
     const items = [];
     for (const g of groupMap.values()) {
@@ -1645,6 +1661,9 @@ app.get("/admin/comment-reports", requireAdmin, async (req, res) => {
         contentLink = { type: "tier", id: comment.instance_id };
       }
 
+      // 대댓글인 경우 부모 정보 첨부
+      const parentComment = comment?.parent_id ? parentCommentMap.get(comment.parent_id) : null;
+
       items.push({
         ...g,
         comment: comment ? {
@@ -1654,6 +1673,9 @@ app.get("/admin/comment-reports", requireAdmin, async (req, res) => {
           author_avatar: authorProfile?.avatar_url || null,
           user_id: comment.user_id,
           created_at: comment.created_at,
+          parent_id: comment.parent_id || null,
+          parent_comment_body: parentComment?.body || null,
+          parent_comment_author: parentComment?.author_name || null,
         } : null,
         content_title: contentTitle,
         content_link: contentLink,
