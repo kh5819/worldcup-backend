@@ -4816,6 +4816,7 @@ function nextMatch(room) {
       media_url: candA.mediaUrl || "",
       media_type: candA.mediaType || "image",
       start_sec: candA.startSec || 0,
+      duration_sec: candA.durationSec || 0,
       thumbnail_url: candA.thumbnail_url || ""
     },
     B: {
@@ -4823,10 +4824,11 @@ function nextMatch(room) {
       media_url: candB.mediaUrl || "",
       media_type: candB.mediaType || "image",
       start_sec: candB.startSec || 0,
+      duration_sec: candB.durationSec || 0,
       thumbnail_url: candB.thumbnail_url || ""
     },
-    mediaA: { type: candA.mediaType || "image", url: candA.mediaUrl || "", startSec: candA.startSec || 0, thumbnail_url: candA.thumbnail_url || "" },
-    mediaB: { type: candB.mediaType || "image", url: candB.mediaUrl || "", startSec: candB.startSec || 0, thumbnail_url: candB.thumbnail_url || "" }
+    mediaA: { type: candA.mediaType || "image", url: candA.mediaUrl || "", startSec: candA.startSec || 0, durationSec: candA.durationSec || 0, thumbnail_url: candA.thumbnail_url || "" },
+    mediaB: { type: candB.mediaType || "image", url: candB.mediaUrl || "", startSec: candB.startSec || 0, durationSec: candB.durationSec || 0, thumbnail_url: candB.thumbnail_url || "" }
   };
   console.log(`[nextMatch] ▶ A.media_url=${(room.currentMatch.A.media_url || "EMPTY").slice(0, 80)}`);
   console.log(`[nextMatch] ▶ B.media_url=${(room.currentMatch.B.media_url || "EMPTY").slice(0, 80)}`);
