@@ -2110,6 +2110,136 @@ app.get("/admin/bans", requireAdmin, async (req, res) => {
 });
 
 // =========================
+// 유저 관리 (관리자)
+// =========================
+
+// 유저 목록 조회
+app.get("/admin/users", requireAdmin, async (req, res) => {
+  try {
+    const { q, page = 1, limit = 30 } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 30));
+    const offset = (pageNum - 1) * limitNum;
+
+    let query = supabaseAdmin
+      .from("profiles")
+      .select("id, nickname, avatar_url, role, created_at, updated_at", { count: "exact" });
+
+    if (q && q.trim()) {
+      query = query.ilike("nickname", `%${q.trim()}%`);
+    }
+
+    query = query.order("created_at", { ascending: false }).range(offset, offset + limitNum - 1);
+
+    const { data, error, count } = await query;
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR", detail: error.message });
+
+    // 밴 상태 일괄 조회
+    const userIds = (data || []).map(u => u.id);
+    let bansMap = {};
+    if (userIds.length > 0) {
+      const { data: bans } = await supabaseAdmin
+        .from("bans")
+        .select("user_id, reason, expires_at")
+        .in("user_id", userIds);
+      if (bans) {
+        for (const b of bans) bansMap[b.user_id] = b;
+      }
+    }
+
+    const items = (data || []).map(u => ({
+      ...u,
+      is_banned: !!bansMap[u.id],
+      ban_reason: bansMap[u.id]?.reason || null,
+    }));
+
+    return res.json({
+      ok: true,
+      items,
+      total: count || 0,
+      page: pageNum,
+      totalPages: Math.ceil((count || 0) / limitNum),
+    });
+  } catch (err) {
+    console.error("GET /admin/users:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 관리자 닉네임 강제변경
+app.patch("/admin/users/:userId/nickname", requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { nickname } = req.body;
+
+    // 유효성 검사
+    if (!nickname || typeof nickname !== "string") {
+      return res.status(400).json({ ok: false, error: "INVALID_NICKNAME", reason: "닉네임을 입력해주세요." });
+    }
+
+    const trimmed = nickname.trim();
+    if (trimmed.length < 2 || trimmed.length > 20) {
+      return res.status(400).json({ ok: false, error: "INVALID_NICKNAME", reason: "닉네임은 2~20자여야 합니다." });
+    }
+
+    const NICK_RE = /^[\w가-힣][\w가-힣.\- ]*[\w가-힣]$/;
+    if (!NICK_RE.test(trimmed)) {
+      return res.status(400).json({ ok: false, error: "INVALID_NICKNAME", reason: "한글/영문/숫자, 공백(1칸), _, -, . 만 사용 가능 (맨앞·맨뒤 특수문자/공백 불가)" });
+    }
+    if (/  /.test(trimmed)) {
+      return res.status(400).json({ ok: false, error: "INVALID_NICKNAME", reason: "연속 공백은 사용할 수 없습니다." });
+    }
+
+    // 중복 체크 (본인 제외)
+    const { data: existing } = await supabaseAdmin
+      .from("profiles")
+      .select("id")
+      .ilike("nickname", trimmed)
+      .neq("id", userId)
+      .limit(1);
+
+    if (existing && existing.length > 0) {
+      return res.status(409).json({ ok: false, error: "DUPLICATE_NICKNAME", reason: "이미 사용 중인 닉네임입니다." });
+    }
+
+    // 기존 닉네임 조회 (로그용)
+    const { data: oldProfile } = await supabaseAdmin
+      .from("profiles")
+      .select("nickname")
+      .eq("id", userId)
+      .maybeSingle();
+
+    const oldNickname = oldProfile?.nickname || "(없음)";
+
+    // 닉네임 업데이트
+    const { error: updateErr } = await supabaseAdmin
+      .from("profiles")
+      .update({ nickname: trimmed, updated_at: new Date().toISOString() })
+      .eq("id", userId);
+
+    if (updateErr) {
+      return res.status(500).json({ ok: false, error: "DB_ERROR", detail: updateErr.message });
+    }
+
+    // 변경 로그 기록
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: "nickname_change",
+      target_type: "user",
+      target_id: userId,
+      detail: JSON.stringify({ old: oldNickname, new: trimmed }),
+    });
+
+    console.log(`[ADMIN] nickname_change: user=${userId} "${oldNickname}" → "${trimmed}" by admin=${req.user.id}`);
+
+    return res.json({ ok: true, old_nickname: oldNickname, new_nickname: trimmed });
+  } catch (err) {
+    console.error("PATCH /admin/users/:userId/nickname:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 티어메이커 관리자 API
 // =========================
 
