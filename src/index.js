@@ -2239,6 +2239,115 @@ app.patch("/admin/users/:userId/nickname", requireAdmin, async (req, res) => {
   }
 });
 
+// 관리자 아바타 강제변경 (업로드 또는 초기화)
+app.patch("/admin/users/:userId/avatar", requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { action, imageBase64, mimeType } = req.body;
+    // action: "upload" | "reset"
+
+    // 기존 avatar_url 조회 (로그용)
+    const { data: oldProfile } = await supabaseAdmin
+      .from("profiles")
+      .select("avatar_url")
+      .eq("id", userId)
+      .maybeSingle();
+    const oldAvatarUrl = oldProfile?.avatar_url || null;
+
+    let newAvatarUrl = null;
+
+    if (action === "reset") {
+      // 프로필 이미지 초기화 (null로)
+      const { error } = await supabaseAdmin
+        .from("profiles")
+        .update({ avatar_url: null, updated_at: new Date().toISOString() })
+        .eq("id", userId);
+      if (error) return res.status(500).json({ ok: false, error: "DB_ERROR", detail: error.message });
+
+      // Storage에서 기존 파일 삭제 시도 (실패해도 무시)
+      try {
+        const exts = ["jpg", "jpeg", "png", "webp", "gif"];
+        const paths = exts.map(ext => `${userId}/avatar.${ext}`);
+        await supabaseAdmin.storage.from("avatars").remove(paths);
+      } catch (_) { /* ignore */ }
+
+    } else if (action === "upload") {
+      if (!imageBase64 || !mimeType) {
+        return res.status(400).json({ ok: false, error: "MISSING_IMAGE", reason: "이미지 데이터가 없습니다." });
+      }
+
+      // mime → ext
+      const MIME_EXT = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" };
+      const ext = MIME_EXT[mimeType];
+      if (!ext) {
+        return res.status(400).json({ ok: false, error: "INVALID_TYPE", reason: "PNG, JPG, WebP, GIF만 지원합니다." });
+      }
+
+      // base64 → Buffer
+      const buffer = Buffer.from(imageBase64, "base64");
+      if (buffer.length > 2 * 1024 * 1024) {
+        return res.status(400).json({ ok: false, error: "TOO_LARGE", reason: "이미지는 2MB 이하여야 합니다." });
+      }
+
+      const path = `${userId}/avatar.${ext}`;
+
+      // supabaseAdmin (service_role) 으로 업로드 — RLS 우회
+      const { error: upErr } = await supabaseAdmin.storage
+        .from("avatars")
+        .upload(path, buffer, {
+          cacheControl: "3600",
+          contentType: mimeType,
+          upsert: true,
+        });
+      if (upErr) {
+        return res.status(500).json({ ok: false, error: "UPLOAD_ERROR", detail: upErr.message });
+      }
+
+      // public URL
+      const { data: urlData } = supabaseAdmin.storage
+        .from("avatars")
+        .getPublicUrl(path);
+      newAvatarUrl = urlData?.publicUrl ? `${urlData.publicUrl}?t=${Date.now()}` : null;
+
+      if (!newAvatarUrl) {
+        return res.status(500).json({ ok: false, error: "URL_ERROR", reason: "public URL 생성 실패" });
+      }
+
+      // DB 업데이트
+      const { error: dbErr } = await supabaseAdmin
+        .from("profiles")
+        .update({ avatar_url: newAvatarUrl, updated_at: new Date().toISOString() })
+        .eq("id", userId);
+      if (dbErr) {
+        return res.status(500).json({ ok: false, error: "DB_ERROR", detail: dbErr.message });
+      }
+
+    } else {
+      return res.status(400).json({ ok: false, error: "INVALID_ACTION", reason: "action은 'upload' 또는 'reset'이어야 합니다." });
+    }
+
+    // admin_actions 로그
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: "avatar_change",
+      target_type: "user",
+      target_id: userId,
+      detail: JSON.stringify({
+        action,
+        old_avatar_url: oldAvatarUrl,
+        new_avatar_url: newAvatarUrl,
+      }),
+    });
+
+    console.log(`[ADMIN] avatar_change: user=${userId} action=${action} by admin=${req.user.id}`);
+
+    return res.json({ ok: true, action, new_avatar_url: newAvatarUrl });
+  } catch (err) {
+    console.error("PATCH /admin/users/:userId/avatar:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
 // =========================
 // 티어메이커 관리자 API
 // =========================
