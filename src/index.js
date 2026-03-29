@@ -2374,6 +2374,94 @@ app.patch("/admin/users/:userId/avatar", requireAdmin, async (req, res) => {
 });
 
 // =========================
+// 관리자 운영 알림 발송
+// =========================
+app.post("/admin/users/:userId/notify", requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { title, message, type, related_url } = req.body;
+
+    // 유효성 검사: 제목
+    if (!title || typeof title !== "string" || title.trim().length < 1 || title.trim().length > 200) {
+      return res.status(400).json({ ok: false, error: "INVALID_TITLE", reason: "제목은 1~200자여야 합니다." });
+    }
+    // 유효성 검사: 내용
+    if (!message || typeof message !== "string" || message.trim().length < 1 || message.trim().length > 2000) {
+      return res.status(400).json({ ok: false, error: "INVALID_MESSAGE", reason: "내용은 1~2000자여야 합니다." });
+    }
+    // 유효성 검사: 유형
+    const VALID_TYPES = ["warning", "report", "request", "notice"];
+    if (!VALID_TYPES.includes(type)) {
+      return res.status(400).json({ ok: false, error: "INVALID_TYPE", reason: "유효하지 않은 알림 유형입니다." });
+    }
+    // 유효성 검사: related_url (선택값, 있으면 같은 사이트 링크만 허용)
+    if (related_url) {
+      if (typeof related_url !== "string" || related_url.trim().length > 500) {
+        return res.status(400).json({ ok: false, error: "INVALID_URL", reason: "링크는 500자 이하여야 합니다." });
+      }
+      const trimmedUrl = related_url.trim();
+      // 상대경로(/xxx) 또는 playduo.kr 도메인만 허용
+      const isRelative = trimmedUrl.startsWith("/");
+      const isOwnDomain = /^https?:\/\/(www\.)?playduo\.kr(\/|$)/i.test(trimmedUrl);
+      if (!isRelative && !isOwnDomain) {
+        return res.status(400).json({ ok: false, error: "INVALID_URL", reason: "같은 사이트 링크(playduo.kr 또는 /경로)만 허용됩니다." });
+      }
+    }
+
+    // 수신자 존재 확인
+    const { data: recipient } = await supabaseAdmin
+      .from("profiles")
+      .select("id, nickname")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (!recipient) {
+      return res.status(404).json({ ok: false, error: "USER_NOT_FOUND", reason: "해당 유저를 찾을 수 없습니다." });
+    }
+
+    // 알림 INSERT (service_role → RLS bypass)
+    const { data: noti, error: insertErr } = await supabaseAdmin
+      .from("admin_notifications")
+      .insert({
+        recipient_user_id: userId,
+        title: title.trim(),
+        message: message.trim(),
+        type,
+        related_url: related_url ? related_url.trim() : null,
+        sent_by_admin_id: req.user.id,
+      })
+      .select("id")
+      .single();
+
+    if (insertErr) {
+      console.error("admin_notifications insert error:", insertErr);
+      return res.status(500).json({ ok: false, error: "DB_ERROR", detail: insertErr.message });
+    }
+
+    // admin_actions 로그 기록
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: "send_notification",
+      target_type: "user",
+      target_id: userId,
+      detail: JSON.stringify({
+        notification_id: noti.id,
+        title: title.trim(),
+        type,
+        recipient_nickname: recipient.nickname,
+      }),
+    });
+
+    console.log(`[ADMIN] send_notification: to=${userId}(${recipient.nickname}) type=${type} title="${title.trim()}" by admin=${req.user.id}`);
+
+    return res.json({ ok: true, notification_id: noti.id });
+  } catch (err) {
+    console.error("POST /admin/users/:userId/notify:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 티어메이커 관리자 API
 // =========================
 
