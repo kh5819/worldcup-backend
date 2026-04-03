@@ -689,6 +689,121 @@ app.get("/api/og-thumb", async (req, res) => {
   }
 });
 
+// =============================================
+// POST /api/proxy-image — 외부 이미지 URL → Supabase Storage 복사 저장
+// 핫링크 차단(namu.wiki 등) 방지: 서버에서 fetch → Storage upload → publicUrl 반환
+// =============================================
+app.post("/api/proxy-image", requireAuth, async (req, res) => {
+  const MAX_SIZE = 10 * 1024 * 1024; // 10MB
+  const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+
+  try {
+    const { url, bucket, folder } = req.body;
+    if (!url || typeof url !== "string") {
+      return res.status(400).json({ ok: false, error: "url 필수" });
+    }
+
+    // 이미 Supabase URL이면 그대로 반환 (중복 저장 방지)
+    if (url.includes("supabase.co/storage/")) {
+      return res.json({ ok: true, publicUrl: url });
+    }
+
+    // http(s)만 허용
+    if (!/^https?:\/\//i.test(url)) {
+      return res.status(400).json({ ok: false, error: "http(s) URL만 허용" });
+    }
+
+    // 외부 이미지 fetch (타임아웃 10초)
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let resp;
+    try {
+      resp = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; DUO-ImageProxy/1.0)",
+          "Accept": "image/*",
+        },
+        redirect: "follow",
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!resp.ok) {
+      return res.status(502).json({ ok: false, error: `외부 서버 ${resp.status}`, url });
+    }
+
+    // Content-Type 확인
+    const contentType = (resp.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    if (!ALLOWED_TYPES.includes(contentType)) {
+      // Content-Type이 부정확한 경우 확장자로 추정
+      const extMatch = url.match(/\.(jpe?g|png|gif|webp)(\?|#|$)/i);
+      if (!extMatch) {
+        return res.status(400).json({ ok: false, error: `허용되지 않는 타입: ${contentType}` });
+      }
+    }
+
+    // 바이너리 읽기 + 크기 제한
+    const arrayBuf = await resp.arrayBuffer();
+    if (arrayBuf.byteLength > MAX_SIZE) {
+      return res.status(413).json({ ok: false, error: "10MB 초과" });
+    }
+    if (arrayBuf.byteLength === 0) {
+      return res.status(502).json({ ok: false, error: "빈 응답" });
+    }
+
+    const buffer = Buffer.from(arrayBuf);
+
+    // 확장자 결정
+    const MIME_EXT = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };
+    let ext = MIME_EXT[contentType];
+    if (!ext) {
+      const extMatch = url.match(/\.(jpe?g|png|gif|webp)(\?|#|$)/i);
+      ext = extMatch ? extMatch[1].toLowerCase().replace("jpeg", "jpg") : "jpg";
+    }
+
+    // Storage 경로 생성
+    const userId = req.user.sub || req.user.id || "anon";
+    const targetBucket = bucket === "thumbnails" ? "thumbnails" : "ugc-media";
+    const targetFolder = folder ? String(folder).replace(/[^a-zA-Z0-9_\-\/]/g, "") : "proxy";
+    const fileName = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`;
+    const storagePath = `${targetFolder}/${userId}/${fileName}`;
+
+    // Supabase Storage 업로드
+    const { error: upErr } = await supabaseAdmin.storage
+      .from(targetBucket)
+      .upload(storagePath, buffer, {
+        contentType: contentType.startsWith("image/") ? contentType : `image/${ext}`,
+        cacheControl: "public, max-age=31536000",
+        upsert: false,
+      });
+
+    if (upErr) {
+      console.error("[proxy-image] upload error:", upErr.message);
+      return res.status(500).json({ ok: false, error: "Storage 업로드 실패", detail: upErr.message });
+    }
+
+    // Public URL 반환
+    const { data: urlData } = supabaseAdmin.storage.from(targetBucket).getPublicUrl(storagePath);
+    const publicUrl = urlData?.publicUrl || null;
+
+    if (!publicUrl) {
+      return res.status(500).json({ ok: false, error: "publicUrl 생성 실패" });
+    }
+
+    console.log(`[proxy-image] OK: ${url.slice(0, 80)}... → ${publicUrl.slice(-60)}`);
+    return res.json({ ok: true, publicUrl });
+
+  } catch (err) {
+    if (err.name === "AbortError") {
+      return res.status(504).json({ ok: false, error: "외부 서버 타임아웃 (10초)" });
+    }
+    console.error("[proxy-image] error:", err.message);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
 // GET /api/og-thumb/debug — CHZZK 썸네일 디버그 (배포 후 확인용)
 app.get("/api/og-thumb/debug", async (req, res) => {
   const url = req.query.url;

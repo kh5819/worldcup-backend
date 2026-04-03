@@ -126,5 +126,7 @@ CREATE POLICY "thumbnails_delete_own"
     AND (storage.foldername(name))[1] = auth.uid()::text
   );
 
--- 읽기: 공개 버킷이므로 별도 SELECT 정책 불필요
--- (public=true이면 누구나 URL로 접근 가능)
+-- 읽기: public=true라도 다른 RLS 정책이 존재하면 SELECT 정책 필수
+CREATE POLICY "thumbnails_public_read"
+  ON storage.objects FOR SELECT
+  USING (bucket_id = 'thumbnails');

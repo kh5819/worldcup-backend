@@ -135,6 +135,11 @@ CREATE POLICY "candidate_images_delete_own"
     AND (storage.foldername(name))[1] = auth.uid()::text
   );
 
+-- 읽기: public=true라도 다른 RLS 정책이 존재하면 SELECT 정책 필수
+CREATE POLICY "candidate_images_public_read"
+  ON storage.objects FOR SELECT
+  USING (bucket_id = 'candidate-images');
+
 -- ========== 6) public_contents_list 뷰 업데이트 (creator_name 추가) ==========
 DROP VIEW IF EXISTS public_contents_list;
 CREATE VIEW public_contents_list AS
