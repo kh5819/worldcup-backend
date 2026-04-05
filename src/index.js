@@ -2377,6 +2377,8 @@ app.delete("/admin/contents/:id", requireAdmin, async (req, res) => {
 app.post("/admin/users/:userId/ban", requireAdmin, async (req, res) => {
   try {
     const { reason, expires_at } = req.body;
+    // 기존 밴 제거 후 새로 생성 (중복 방지)
+    await supabaseAdmin.from("bans").delete().eq("user_id", req.params.userId);
     const { error } = await supabaseAdmin.from("bans").insert({
       user_id: req.params.userId,
       reason: reason || null,
@@ -2473,11 +2475,17 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
       }
     }
 
-    const items = (data || []).map(u => ({
+    let items = (data || []).map(u => ({
       ...u,
       is_banned: !!bansMap[u.id],
       ban_reason: bansMap[u.id]?.reason || null,
+      ban_expires_at: bansMap[u.id]?.expires_at || null,
     }));
+
+    // 밴 필터
+    const banFilter = req.query.ban;
+    if (banFilter === "banned") items = items.filter(u => u.is_banned);
+    else if (banFilter === "normal") items = items.filter(u => !u.is_banned);
 
     return res.json({
       ok: true,
