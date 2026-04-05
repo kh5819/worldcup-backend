@@ -1265,9 +1265,9 @@ async function verifyJWT(accessToken) {
 
     console.log("[AUTH] ✅ 검증 성공 - user_id:", userId, "email:", email);
 
-    // 관리자 체크
-    const isAdmin = (email && process.env.ADMIN_EMAIL
-      && email.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase())
+    // 관리자 체크 (콤마 구분 다중 이메일 지원)
+    const adminEmails = (process.env.ADMIN_EMAIL || "").split(",").map(e => e.toLowerCase().trim()).filter(Boolean);
+    const isAdmin = (email && adminEmails.includes(email.toLowerCase()))
       || (process.env.ADMIN_USER_ID && userId === process.env.ADMIN_USER_ID);
 
     return { id: userId, email, isAdmin };
@@ -1341,9 +1341,9 @@ async function requireAdmin(req, res, next) {
 // 현재 유저 정보 API (관리자 플래그 포함)
 // =========================
 app.get("/me", requireAuth, (req, res) => {
-  const adminEmail = String(process.env.ADMIN_EMAIL || "").toLowerCase().trim();
+  const adminEmails = (process.env.ADMIN_EMAIL || "").split(",").map(e => e.toLowerCase().trim()).filter(Boolean);
   const userEmail = String(req.user?.email || "").toLowerCase().trim();
-  const isAdmin = !!adminEmail && userEmail === adminEmail;
+  const isAdmin = adminEmails.length > 0 && adminEmails.includes(userEmail);
 
   console.log(`[ME] email=${req.user?.email} is_admin=${isAdmin}`);
 
