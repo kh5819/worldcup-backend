@@ -1877,7 +1877,7 @@ app.patch("/admin/comment-reports/:id/status", requireAdmin, async (req, res) =>
 app.delete("/admin/comments/:commentTable/:commentId", requireAdmin, async (req, res) => {
   try {
     const { commentTable, commentId } = req.params;
-    if (!["content_comments", "tier_instance_comments"].includes(commentTable)) {
+    if (!["content_comments", "tier_instance_comments", "notice_comments"].includes(commentTable)) {
       return res.status(400).json({ ok: false, error: "INVALID_TABLE" });
     }
 
@@ -1902,6 +1902,194 @@ app.delete("/admin/comments/:commentTable/:commentId", requireAdmin, async (req,
     return res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /admin/comments:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// ──────────────────────────────────────────
+// 전체 댓글 조회 (통합)
+// ──────────────────────────────────────────
+app.get("/admin/all-comments", requireAdmin, async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 30));
+    const offset = (page - 1) * limit;
+    const source = req.query.source || "all"; // all | content | tier | notice
+    const q = (req.query.q || "").trim();
+    const authorQ = (req.query.author || "").trim();
+
+    // 각 테이블별 조회
+    const results = [];
+    let totalCount = 0;
+
+    const shouldFetch = (type) => source === "all" || source === type;
+    // source=all 일 때 각 테이블에서 최대 가져올 행 수 (최신순 정렬 후 JS에서 merge)
+    const allFetchLimit = offset + limit;
+
+    // ── content_comments (worldcup / quiz) ──
+    if (shouldFetch("content")) {
+      let cq = supabaseAdmin.from("content_comments").select("id, content_id, content_type, user_id, author_name, body, created_at", { count: "exact" });
+      if (q) cq = cq.ilike("body", `%${q}%`);
+      if (authorQ) cq = cq.ilike("author_name", `%${authorQ}%`);
+      cq = cq.order("created_at", { ascending: false });
+
+      if (source !== "all") {
+        cq = cq.range(offset, offset + limit - 1);
+      } else {
+        cq = cq.range(0, allFetchLimit - 1);
+      }
+
+      const { data: cData, count: cCount, error: cErr } = await cq;
+      if (cErr) console.error("admin/all-comments content_comments error:", cErr);
+      if (cData) {
+        // content titles
+        const contentIds = [...new Set(cData.map(c => c.content_id))];
+        let titleMap = {};
+        if (contentIds.length > 0) {
+          const { data: titles } = await supabaseAdmin.from("contents").select("id, title, mode").in("id", contentIds);
+          if (titles) titles.forEach(t => { titleMap[t.id] = { title: t.title, type: t.mode }; });
+        }
+        // report counts
+        const commentIds = cData.map(c => c.id);
+        let reportMap = {};
+        if (commentIds.length > 0) {
+          const { data: rpts } = await supabaseAdmin.from("comment_reports").select("comment_id").eq("comment_table", "content_comments").in("comment_id", commentIds);
+          if (rpts) rpts.forEach(r => { reportMap[r.comment_id] = (reportMap[r.comment_id] || 0) + 1; });
+        }
+        cData.forEach(c => {
+          const info = titleMap[c.content_id] || {};
+          results.push({
+            id: c.id,
+            source: "content",
+            content_type: c.content_type || info.type || "unknown",
+            content_id: c.content_id,
+            content_title: info.title || "(삭제됨)",
+            user_id: c.user_id,
+            author_name: c.author_name,
+            body: c.body,
+            parent_id: null,
+            report_count: reportMap[c.id] || 0,
+            created_at: c.created_at,
+          });
+        });
+        totalCount += cCount || 0;
+      }
+    }
+
+    // ── tier_instance_comments ──
+    if (shouldFetch("tier")) {
+      let tq = supabaseAdmin.from("tier_instance_comments").select("id, instance_id, user_id, author_name, body, parent_id, created_at", { count: "exact" });
+      if (q) tq = tq.ilike("body", `%${q}%`);
+      if (authorQ) tq = tq.ilike("author_name", `%${authorQ}%`);
+      tq = tq.order("created_at", { ascending: false });
+
+      if (source !== "all") {
+        tq = tq.range(offset, offset + limit - 1);
+      } else {
+        tq = tq.range(0, allFetchLimit - 1);
+      }
+
+      const { data: tData, count: tCount, error: tErr } = await tq;
+      if (tErr) console.error("admin/all-comments tier_instance_comments error:", tErr);
+      if (tData) {
+        // instance → template title
+        const instanceIds = [...new Set(tData.map(c => c.instance_id))];
+        let instMap = {};
+        if (instanceIds.length > 0) {
+          const { data: insts } = await supabaseAdmin.from("tier_instances").select("id, template_id").in("id", instanceIds);
+          if (insts) {
+            const templateIds = [...new Set(insts.map(i => i.template_id))];
+            let tmplMap = {};
+            if (templateIds.length > 0) {
+              const { data: tmpls } = await supabaseAdmin.from("tier_templates").select("id, title").in("id", templateIds);
+              if (tmpls) tmpls.forEach(t => { tmplMap[t.id] = t.title; });
+            }
+            insts.forEach(i => { instMap[i.id] = tmplMap[i.template_id] || "(삭제됨)"; });
+          }
+        }
+        // report counts
+        const commentIds = tData.map(c => c.id);
+        let reportMap = {};
+        if (commentIds.length > 0) {
+          const { data: rpts } = await supabaseAdmin.from("comment_reports").select("comment_id").eq("comment_table", "tier_instance_comments").in("comment_id", commentIds);
+          if (rpts) rpts.forEach(r => { reportMap[r.comment_id] = (reportMap[r.comment_id] || 0) + 1; });
+        }
+        tData.forEach(c => {
+          results.push({
+            id: c.id,
+            source: "tier",
+            content_type: "tier",
+            content_id: c.instance_id,
+            content_title: instMap[c.instance_id] || "(삭제됨)",
+            user_id: c.user_id,
+            author_name: c.author_name,
+            body: c.body,
+            parent_id: c.parent_id || null,
+            report_count: reportMap[c.id] || 0,
+            created_at: c.created_at,
+          });
+        });
+        totalCount += tCount || 0;
+      }
+    }
+
+    // ── notice_comments ──
+    if (shouldFetch("notice")) {
+      let nq = supabaseAdmin.from("notice_comments").select("id, notice_id, user_id, author_name, body, created_at", { count: "exact" });
+      if (q) nq = nq.ilike("body", `%${q}%`);
+      if (authorQ) nq = nq.ilike("author_name", `%${authorQ}%`);
+      nq = nq.order("created_at", { ascending: false });
+
+      if (source !== "all") {
+        nq = nq.range(offset, offset + limit - 1);
+      } else {
+        nq = nq.range(0, allFetchLimit - 1);
+      }
+
+      const { data: nData, count: nCount, error: nErr } = await nq;
+      if (nErr) console.error("admin/all-comments notice_comments error:", nErr);
+      if (nData) {
+        // notice titles
+        const noticeIds = [...new Set(nData.map(c => c.notice_id))];
+        let titleMap = {};
+        if (noticeIds.length > 0) {
+          const { data: notices } = await supabaseAdmin.from("notices").select("id, title").in("id", noticeIds);
+          if (notices) notices.forEach(n => { titleMap[n.id] = n.title; });
+        }
+        nData.forEach(c => {
+          results.push({
+            id: c.id,
+            source: "notice",
+            content_type: "notice",
+            content_id: c.notice_id,
+            content_title: titleMap[c.notice_id] || "(삭제됨)",
+            user_id: c.user_id,
+            author_name: c.author_name,
+            body: c.body,
+            parent_id: null,
+            report_count: 0,
+            created_at: c.created_at,
+          });
+        });
+        totalCount += nCount || 0;
+      }
+    }
+
+    // 통합 정렬 + pagination (source=all일 때)
+    results.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    let items = results;
+    if (source === "all") {
+      items = results.slice(offset, offset + limit);
+    }
+
+    return res.json({
+      ok: true,
+      items,
+      pagination: { page, limit, total: totalCount, totalPages: Math.ceil(totalCount / limit) },
+    });
+  } catch (err) {
+    console.error("GET /admin/all-comments:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
 });
