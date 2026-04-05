@@ -3957,42 +3957,26 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
         if (dErr) console.error("후보 비활성화 실패:", dErr);
       }
 
-      // 3) 수정: 기존 후보 UPDATE (id 유지 → 랭킹 보존)
-      for (let i = 0; i < candidates.length; i++) {
-        const c = candidates[i];
-        if (c.id && existingIds.has(c.id)) {
-          const { error: uErr } = await supabaseAdmin
-            .from("worldcup_candidates")
-            .update({
-              name: c.name,
-              media_type: c.media_type || "image",
-              media_url: c.media_url || "",
-              start_sec: c.start_sec || null,
-              duration_sec: c.duration_sec || null,
-              sort_order: i + 1,
-            })
-            .eq("id", c.id)
-            .eq("content_id", req.params.id);
-          if (uErr) console.error("후보 수정 실패:", uErr);
-        }
-      }
-
-      // 4) 추가: id가 없거나 DB에 없는 새 후보 INSERT
-      const newRows = candidates
-        .map((c, i) => ({ ...c, _sort: i + 1 }))
-        .filter(c => !c.id || !existingIds.has(c.id))
-        .map(c => ({
+      // 3) batch upsert: 기존 후보 UPDATE + 새 후보 INSERT 를 한 번에 처리
+      const upsertRows = candidates.map((c, i) => {
+        const row = {
           content_id: req.params.id,
           name: c.name,
           media_type: c.media_type || "image",
           media_url: c.media_url || "",
           start_sec: c.start_sec || null,
           duration_sec: c.duration_sec || null,
-          sort_order: c._sort,
-        }));
-      if (newRows.length > 0) {
-        const { error: iErr } = await supabaseAdmin.from("worldcup_candidates").insert(newRows);
-        if (iErr) console.error("후보 추가 실패:", iErr);
+          sort_order: i + 1,
+          is_active: true,
+        };
+        if (c.id && existingIds.has(c.id)) row.id = c.id; // 기존 id 보존 → ON CONFLICT UPDATE
+        return row;
+      });
+      if (upsertRows.length > 0) {
+        const { error: uErr } = await supabaseAdmin
+          .from("worldcup_candidates")
+          .upsert(upsertRows, { onConflict: "id" });
+        if (uErr) console.error("후보 upsert 실패:", uErr);
       }
     }
 
@@ -4054,22 +4038,13 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
         if (dErr) console.error("문제 삭제 실패:", dErr);
       }
 
-      // 4) 기존 문제 UPDATE
-      for (const row of toUpdate) {
-        const qId = row.id;
-        delete row.id; // id는 WHERE 조건, SET 대상 아님
-        delete row.content_id; // content_id 변경 불가
+      // 4) batch upsert: 기존 문제 UPDATE + 새 문제 INSERT 를 한 번에 처리
+      const allRows = [...toUpdate, ...toInsert];
+      if (allRows.length > 0) {
         const { error: uErr } = await supabaseAdmin
           .from("quiz_questions")
-          .update(row)
-          .eq("id", qId);
-        if (uErr) console.error(`문제 업데이트 실패 (${qId}):`, uErr);
-      }
-
-      // 5) 새 문제 INSERT
-      if (toInsert.length > 0) {
-        const { error: iErr } = await supabaseAdmin.from("quiz_questions").insert(toInsert);
-        if (iErr) console.error("문제 삽입 실패:", iErr);
+          .upsert(allRows, { onConflict: "id" });
+        if (uErr) console.error("문제 upsert 실패:", uErr);
       }
 
       console.log(`[QUIZ-UPDATE] ${contentId}: updated=${toUpdate.length}, inserted=${toInsert.length}, deleted=${toDeleteIds.length}`);

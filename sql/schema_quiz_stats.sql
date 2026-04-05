@@ -138,7 +138,7 @@ BEGIN
       qq.media_url,
       qq.media_type
     FROM quiz_question_stats_v qs
-    LEFT JOIN quiz_questions qq ON qq.id = qs.question_id
+    INNER JOIN quiz_questions qq ON qq.id = qs.question_id
     WHERE qs.quiz_id = p_quiz_id
   ) t;
 
