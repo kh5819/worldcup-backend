@@ -339,6 +339,216 @@ app.get("/og/content/:id", async (req, res) => {
   }
 });
 
+// =========================
+// OG: 티어 템플릿
+// GET /og/tier/:id
+// =========================
+app.get("/og/tier/:id", async (req, res) => {
+  try {
+    const templateId = req.params.id;
+    if (!templateId) return res.status(400).send("Bad Request");
+
+    const { data: tmpl, error } = await supabaseAdmin
+      .from("tier_templates")
+      .select("id, title, description, thumbnail_url, cards, creator_id, play_count")
+      .eq("id", templateId)
+      .single();
+
+    if (error || !tmpl) {
+      return res.send(generateOgHtml({
+        title: "티어메이커 — DUO",
+        description: "나만의 티어를 만들어보세요!",
+        image: DEFAULT_OG_IMAGE,
+        url: SITE_URL,
+        redirectUrl: SITE_URL
+      }));
+    }
+
+    let creatorName = "";
+    if (tmpl.creator_id) {
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("nickname")
+        .eq("id", tmpl.creator_id)
+        .maybeSingle();
+      creatorName = profile?.nickname || "";
+    }
+
+    const cardCount = Array.isArray(tmpl.cards) ? tmpl.cards.length : 0;
+    let description = tmpl.description || "";
+    if (!description || description.length < 10) {
+      description = `${tmpl.title} — ${cardCount}장 카드 티어메이커`;
+    }
+    if (creatorName) description += ` | 제작자: ${creatorName}`;
+    if (description.length > 120) description = description.slice(0, 117) + "...";
+
+    // 썸네일: thumbnail_url > 첫 카드 이미지 > 기본
+    let ogImage = tmpl.thumbnail_url || DEFAULT_OG_IMAGE;
+    if (!tmpl.thumbnail_url && Array.isArray(tmpl.cards) && tmpl.cards[0]?.image_url) {
+      ogImage = tmpl.cards[0].image_url;
+    }
+    if (ogImage && !ogImage.startsWith("http")) {
+      ogImage = `${process.env.SUPABASE_URL}/storage/v1/object/public/thumbnails/${ogImage}`;
+    }
+
+    const playUrl = `${SITE_URL}/tier-play.html?id=${templateId}`;
+    const html = generateOgHtml({
+      title: `${tmpl.title} — 티어메이커 | DUO`,
+      description,
+      image: ogImage,
+      url: `${SITE_URL}/og/tier/${templateId}`,
+      redirectUrl: playUrl
+    });
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    return res.send(html);
+  } catch (err) {
+    console.error("GET /og/tier/:id error:", err);
+    return res.send(generateOgHtml({
+      title: "티어메이커 — DUO",
+      description: "나만의 티어를 만들어보세요!",
+      image: DEFAULT_OG_IMAGE,
+      url: SITE_URL,
+      redirectUrl: SITE_URL
+    }));
+  }
+});
+
+// =========================
+// OG: 티어 인스턴스 (싸움터)
+// GET /og/tier-result/:id
+// =========================
+app.get("/og/tier-result/:id", async (req, res) => {
+  try {
+    const instanceId = req.params.id;
+    if (!instanceId) return res.status(400).send("Bad Request");
+
+    const { data: inst, error } = await supabaseAdmin
+      .from("tier_instances")
+      .select("id, template_id, user_id, vote_up_count, vote_down_count")
+      .eq("id", instanceId)
+      .single();
+
+    if (error || !inst) {
+      return res.send(generateOgHtml({
+        title: "싸움터 — DUO 티어메이커",
+        description: "이 티어 판결에 투표해보세요!",
+        image: DEFAULT_OG_IMAGE,
+        url: SITE_URL,
+        redirectUrl: SITE_URL
+      }));
+    }
+
+    // 템플릿 정보
+    const { data: tmpl } = await supabaseAdmin
+      .from("tier_templates")
+      .select("title, thumbnail_url, cards")
+      .eq("id", inst.template_id)
+      .maybeSingle();
+
+    // 작성자 닉네임
+    let creatorName = "";
+    if (inst.user_id) {
+      const { data: profile } = await supabaseAdmin
+        .from("profiles")
+        .select("nickname")
+        .eq("id", inst.user_id)
+        .maybeSingle();
+      creatorName = profile?.nickname || "";
+    }
+
+    const tmplTitle = tmpl?.title || "티어";
+    let description = `${tmplTitle} 티어 판결`;
+    if (creatorName) description += ` by ${creatorName}`;
+    const votes = (inst.vote_up_count || 0) + (inst.vote_down_count || 0);
+    if (votes > 0) description += ` · 투표 ${votes}`;
+
+    let ogImage = tmpl?.thumbnail_url || DEFAULT_OG_IMAGE;
+    if (!tmpl?.thumbnail_url && Array.isArray(tmpl?.cards) && tmpl.cards[0]?.image_url) {
+      ogImage = tmpl.cards[0].image_url;
+    }
+    if (ogImage && !ogImage.startsWith("http")) {
+      ogImage = `${process.env.SUPABASE_URL}/storage/v1/object/public/thumbnails/${ogImage}`;
+    }
+
+    const resultUrl = `${SITE_URL}/tier-result.html?id=${instanceId}`;
+    const html = generateOgHtml({
+      title: `${tmplTitle} — 싸움터 | DUO`,
+      description,
+      image: ogImage,
+      url: `${SITE_URL}/og/tier-result/${instanceId}`,
+      redirectUrl: resultUrl
+    });
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    return res.send(html);
+  } catch (err) {
+    console.error("GET /og/tier-result/:id error:", err);
+    return res.send(generateOgHtml({
+      title: "싸움터 — DUO 티어메이커",
+      description: "이 티어 판결에 투표해보세요!",
+      image: DEFAULT_OG_IMAGE,
+      url: SITE_URL,
+      redirectUrl: SITE_URL
+    }));
+  }
+});
+
+// =========================
+// OG: 공지사항
+// GET /og/notice/:id
+// =========================
+app.get("/og/notice/:id", async (req, res) => {
+  try {
+    const noticeId = req.params.id;
+    if (!noticeId) return res.status(400).send("Bad Request");
+
+    const { data: notice, error } = await supabaseAdmin
+      .from("notices")
+      .select("id, title, body, created_at")
+      .eq("id", noticeId)
+      .single();
+
+    if (error || !notice) {
+      return res.send(generateOgHtml({
+        title: "공지사항 — PlayDuo",
+        description: "PlayDuo 공지사항",
+        image: DEFAULT_OG_IMAGE,
+        url: SITE_URL,
+        redirectUrl: `${SITE_URL}/notice.html`
+      }));
+    }
+
+    let description = (notice.body || "").replace(/\n/g, " ").trim();
+    if (description.length > 120) description = description.slice(0, 117) + "...";
+    if (!description) description = "PlayDuo 공지사항";
+
+    const noticeUrl = `${SITE_URL}/notice.html?id=${noticeId}`;
+    const html = generateOgHtml({
+      title: `${notice.title} — 공지사항 | PlayDuo`,
+      description,
+      image: DEFAULT_OG_IMAGE,
+      url: `${SITE_URL}/og/notice/${noticeId}`,
+      redirectUrl: noticeUrl
+    });
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    return res.send(html);
+  } catch (err) {
+    console.error("GET /og/notice/:id error:", err);
+    return res.send(generateOgHtml({
+      title: "공지사항 — PlayDuo",
+      description: "PlayDuo 공지사항",
+      image: DEFAULT_OG_IMAGE,
+      url: SITE_URL,
+      redirectUrl: `${SITE_URL}/notice.html`
+    }));
+  }
+});
+
 // OG HTML 생성 함수
 function generateOgHtml({ title, description, image, url, redirectUrl, type = "website" }) {
   // HTML 이스케이프
