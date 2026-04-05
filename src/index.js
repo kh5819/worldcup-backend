@@ -3815,7 +3815,7 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
           media_type: q.media_type || null,
           media_url: q.media_url || null,
           start_sec: q.start_sec || 0,
-          duration_sec: q.duration_sec || 10,
+          duration_sec: (q.duration_sec != null && q.duration_sec !== "") ? Number(q.duration_sec) : 10,
           reveal_media_type: q.reveal_media_type || null,
           reveal_media_url: q.reveal_media_url || null,
         };
@@ -5768,7 +5768,7 @@ async function loadQuizQuestions(contentId, userId, isAdmin) {
       const rawStart = q.start_sec;
       const rawDur = q.duration_sec;
       const startSec = (typeof rawStart === "number" && rawStart >= 0) ? rawStart : 0;
-      const durationSec = (typeof rawDur === "number" && rawDur > 0) ? rawDur : 10;
+      const durationSec = (typeof rawDur === "number" && rawDur >= 0) ? rawDur : 10;
       if (rawStart !== null && rawStart !== undefined && rawStart !== startSec) {
         console.warn(`[QUIZ] startSec parse: raw=${JSON.stringify(rawStart)} → ${startSec} (qId=${q.id})`);
       }
