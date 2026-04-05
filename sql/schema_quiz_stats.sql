@@ -132,7 +132,11 @@ BEGIN
       qs.accuracy_pct,
       qq.prompt,
       qq.type,
-      qq.sort_order
+      qq.sort_order,
+      qq.answer,
+      qq.choices,
+      qq.media_url,
+      qq.media_type
     FROM quiz_question_stats_v qs
     LEFT JOIN quiz_questions qq ON qq.id = qs.question_id
     WHERE qs.quiz_id = p_quiz_id
