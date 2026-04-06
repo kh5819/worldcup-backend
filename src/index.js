@@ -4098,8 +4098,10 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
         if (dErr) console.error("후보 비활성화 실패:", dErr);
       }
 
-      // 3) batch upsert: 기존 후보 UPDATE + 새 후보 INSERT 를 한 번에 처리
-      const upsertRows = candidates.map((c, i) => {
+      // 3) 기존 후보 UPDATE + 새 후보 INSERT 분리 처리
+      const toUpdate = [];
+      const toInsert = [];
+      candidates.forEach((c, i) => {
         const row = {
           content_id: req.params.id,
           name: c.name,
@@ -4110,16 +4112,29 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
           sort_order: i + 1,
           is_active: true,
         };
-        if (c.id && existingIds.has(c.id)) row.id = c.id; // 기존 id 보존 → ON CONFLICT UPDATE
-        return row;
+        if (c.id && existingIds.has(c.id)) {
+          row.id = c.id;
+          toUpdate.push(row);
+        } else {
+          toInsert.push(row);   // id 없음 → DB DEFAULT uuid 사용
+        }
       });
-      if (upsertRows.length > 0) {
+      if (toUpdate.length > 0) {
         const { error: uErr } = await supabaseAdmin
           .from("worldcup_candidates")
-          .upsert(upsertRows, { onConflict: "id" });
+          .upsert(toUpdate, { onConflict: "id" });
         if (uErr) {
-          console.error("후보 upsert 실패:", uErr);
-          return res.status(500).json({ ok: false, error: "CANDIDATE_UPSERT_FAILED" });
+          console.error("후보 update 실패:", uErr);
+          return res.status(500).json({ ok: false, error: "CANDIDATE_UPDATE_FAILED" });
+        }
+      }
+      if (toInsert.length > 0) {
+        const { error: iErr } = await supabaseAdmin
+          .from("worldcup_candidates")
+          .insert(toInsert);
+        if (iErr) {
+          console.error("후보 insert 실패:", iErr);
+          return res.status(500).json({ ok: false, error: "CANDIDATE_INSERT_FAILED" });
         }
       }
 
