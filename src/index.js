@@ -4117,8 +4117,13 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
         const { error: uErr } = await supabaseAdmin
           .from("worldcup_candidates")
           .upsert(upsertRows, { onConflict: "id" });
-        if (uErr) console.error("후보 upsert 실패:", uErr);
+        if (uErr) {
+          console.error("후보 upsert 실패:", uErr);
+          return res.status(500).json({ ok: false, error: "CANDIDATE_UPSERT_FAILED" });
+        }
       }
+
+      console.log(`[WC-UPDATE] ${req.params.id}: deactivated=${toDeactivate.length}, upserted=${upsertRows.length}`);
     }
 
     if (existing.mode === "quiz" && questions && Array.isArray(questions)) {
