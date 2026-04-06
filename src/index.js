@@ -2734,15 +2734,29 @@ app.patch("/admin/users/:userId/nickname", requireAdmin, async (req, res) => {
       return res.status(400).json({ ok: false, error: "INVALID_NICKNAME", reason: "연속 공백은 사용할 수 없습니다." });
     }
 
-    // 중복 체크 (본인 제외)
-    const { data: existing } = await supabaseAdmin
-      .from("profiles")
-      .select("id")
-      .ilike("nickname", trimmed)
-      .neq("id", userId)
-      .limit(1);
+    // 중복 체크 (본인 제외, normalize 기준)
+    const normalizedAdmin = trimmed.replace(/\s+/g, " ").toLowerCase();
+    let existingAdmin = null;
+    try {
+      const { data } = await supabaseAdmin
+        .from("profiles")
+        .select("id")
+        .eq("nickname_normalized", normalizedAdmin)
+        .neq("id", userId)
+        .limit(1);
+      existingAdmin = data;
+    } catch (_) {
+      // nickname_normalized 컬럼 없으면 ilike fallback
+      const { data } = await supabaseAdmin
+        .from("profiles")
+        .select("id")
+        .ilike("nickname", trimmed)
+        .neq("id", userId)
+        .limit(1);
+      existingAdmin = data;
+    }
 
-    if (existing && existing.length > 0) {
+    if (existingAdmin && existingAdmin.length > 0) {
       return res.status(409).json({ ok: false, error: "DUPLICATE_NICKNAME", reason: "이미 사용 중인 닉네임입니다." });
     }
 
@@ -2779,6 +2793,133 @@ app.patch("/admin/users/:userId/nickname", requireAdmin, async (req, res) => {
     return res.json({ ok: true, old_nickname: oldNickname, new_nickname: trimmed });
   } catch (err) {
     console.error("PATCH /admin/users/:userId/nickname:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// ── 닉네임 중복 체크 (로그인 불필요) ──
+app.get("/nickname/check", async (req, res) => {
+  try {
+    const raw = req.query.nickname;
+    if (!raw || typeof raw !== "string") {
+      return res.status(400).json({ ok: false, available: false, reason: "EMPTY" });
+    }
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return res.status(400).json({ ok: false, available: false, reason: "EMPTY" });
+    }
+
+    // normalize: trim + collapse spaces + lower
+    const normalized = trimmed.replace(/\s+/g, " ").toLowerCase();
+
+    // exclude_user_id: 본인 제외 (닉네임 변경 시)
+    const excludeId = req.query.exclude_user_id || null;
+
+    let query = supabaseAdmin
+      .from("profiles")
+      .select("id")
+      .ilike("nickname", normalized)
+      .limit(1);
+
+    // ilike는 대소문자 무시하지만 공백 normalize는 안 됨
+    // nickname_normalized generated column 이 있으면 그것 사용
+    // 우선 nickname_normalized 컬럼 사용 시도, 없으면 ilike fallback
+    let existing = null;
+    try {
+      let q = supabaseAdmin
+        .from("profiles")
+        .select("id")
+        .eq("nickname_normalized", normalized)
+        .limit(1);
+      if (excludeId) q = q.neq("id", excludeId);
+      const { data } = await q;
+      existing = data;
+    } catch (_) {
+      // nickname_normalized 컬럼이 아직 없을 수 있음 → ilike fallback
+      let q = supabaseAdmin
+        .from("profiles")
+        .select("id")
+        .ilike("nickname", trimmed)
+        .limit(1);
+      if (excludeId) q = q.neq("id", excludeId);
+      const { data } = await q;
+      existing = data;
+    }
+
+    const available = !existing || existing.length === 0;
+    return res.json({ ok: true, available, ...(available ? {} : { reason: "DUPLICATE" }) });
+  } catch (err) {
+    console.error("GET /nickname/check error:", err);
+    return res.status(500).json({ ok: false, available: false, reason: "INTERNAL_ERROR" });
+  }
+});
+
+// ── 일반 유저 닉네임 변경 (인증 필요) ──
+app.patch("/profile/nickname", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id || req.user.sub;
+    const { nickname } = req.body;
+
+    // 유효성 검사
+    if (!nickname || typeof nickname !== "string") {
+      return res.status(400).json({ ok: false, error: "INVALID_NICKNAME", reason: "닉네임을 입력해주세요." });
+    }
+
+    const trimmed = nickname.trim();
+    if (trimmed.length < 2 || trimmed.length > 12) {
+      return res.status(400).json({ ok: false, error: "INVALID_NICKNAME", reason: "닉네임은 2~12자여야 합니다." });
+    }
+
+    const NICK_RE = /^[\w가-힣]+$/;
+    if (!NICK_RE.test(trimmed)) {
+      return res.status(400).json({ ok: false, error: "INVALID_NICKNAME", reason: "한글, 영문, 숫자, _ 만 사용할 수 있습니다." });
+    }
+
+    // normalize: trim + collapse spaces + lower
+    const normalized = trimmed.replace(/\s+/g, " ").toLowerCase();
+
+    // 중복 체크 (본인 제외) — nickname_normalized 컬럼 우선, fallback ilike
+    let existing = null;
+    try {
+      const { data } = await supabaseAdmin
+        .from("profiles")
+        .select("id")
+        .eq("nickname_normalized", normalized)
+        .neq("id", userId)
+        .limit(1);
+      existing = data;
+    } catch (_) {
+      const { data } = await supabaseAdmin
+        .from("profiles")
+        .select("id")
+        .ilike("nickname", trimmed)
+        .neq("id", userId)
+        .limit(1);
+      existing = data;
+    }
+
+    if (existing && existing.length > 0) {
+      return res.status(409).json({ ok: false, error: "DUPLICATE_NICKNAME", reason: "이미 사용 중인 닉네임이에요. 다른 닉네임을 입력해 주세요." });
+    }
+
+    // DB 업데이트
+    const { error: updateErr } = await supabaseAdmin
+      .from("profiles")
+      .update({ nickname: trimmed, updated_at: new Date().toISOString() })
+      .eq("id", userId);
+
+    if (updateErr) {
+      // unique constraint 위반 (race condition 방어)
+      if (updateErr.code === "23505" || (updateErr.message || "").includes("unique")) {
+        return res.status(409).json({ ok: false, error: "DUPLICATE_NICKNAME", reason: "이미 사용 중인 닉네임이에요. 다른 닉네임을 입력해 주세요." });
+      }
+      return res.status(500).json({ ok: false, error: "DB_ERROR", detail: updateErr.message });
+    }
+
+    console.log(`[PROFILE] nickname_change: user=${userId} → "${trimmed}"`);
+    return res.json({ ok: true, nickname: trimmed });
+  } catch (err) {
+    console.error("PATCH /profile/nickname error:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
 });
