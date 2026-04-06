@@ -4138,7 +4138,7 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
         }
       }
 
-      console.log(`[WC-UPDATE] ${req.params.id}: deactivated=${toDeactivate.length}, upserted=${upsertRows.length}`);
+      console.log(`[WC-UPDATE] ${req.params.id}: deactivated=${toDeactivate.length}, updated=${toUpdate.length}, inserted=${toInsert.length}`);
     }
 
     if (existing.mode === "quiz" && questions && Array.isArray(questions)) {
@@ -4199,13 +4199,24 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
         if (dErr) console.error("문제 삭제 실패:", dErr);
       }
 
-      // 4) batch upsert: 기존 문제 UPDATE + 새 문제 INSERT 를 한 번에 처리
-      const allRows = [...toUpdate, ...toInsert];
-      if (allRows.length > 0) {
+      // 4) 기존 문제 UPDATE + 새 문제 INSERT 분리 처리
+      if (toUpdate.length > 0) {
         const { error: uErr } = await supabaseAdmin
           .from("quiz_questions")
-          .upsert(allRows, { onConflict: "id" });
-        if (uErr) console.error("문제 upsert 실패:", uErr);
+          .upsert(toUpdate, { onConflict: "id" });
+        if (uErr) {
+          console.error("문제 update 실패:", uErr);
+          return res.status(500).json({ ok: false, error: "QUESTION_UPDATE_FAILED" });
+        }
+      }
+      if (toInsert.length > 0) {
+        const { error: iErr } = await supabaseAdmin
+          .from("quiz_questions")
+          .insert(toInsert);
+        if (iErr) {
+          console.error("문제 insert 실패:", iErr);
+          return res.status(500).json({ ok: false, error: "QUESTION_INSERT_FAILED" });
+        }
       }
 
       console.log(`[QUIZ-UPDATE] ${contentId}: updated=${toUpdate.length}, inserted=${toInsert.length}, deleted=${toDeleteIds.length}`);
