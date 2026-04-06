@@ -7810,6 +7810,7 @@ io.on("connection", (socket) => {
       skipCount,
       totalActive,
       allSkipped: skipCount >= totalActive,
+      skippedUserIds: Array.from(q.skipVotes),
     });
 
     cb?.({ ok: true, skipCount, totalActive });
