@@ -6335,6 +6335,12 @@ function advanceQuizQuestion(room) {
       room.quizShowTimer = null;
       startQuizAnswering(room);
     }, 500);
+  } else if (question.type === "short") {
+    // 주관식: 빠른 전환 (문제 보자마자 입력 가능하도록)
+    room.quizShowTimer = setTimeout(() => {
+      room.quizShowTimer = null;
+      startQuizAnswering(room);
+    }, 300);
   } else {
     // 일반 문제: 2초 후 자동으로 answering 전환
     room.quizShowTimer = setTimeout(() => {
