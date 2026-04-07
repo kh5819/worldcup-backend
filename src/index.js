@@ -4173,6 +4173,9 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
           duration_sec: (q.duration_sec != null && q.duration_sec !== "") ? Number(q.duration_sec) : 10,
           reveal_media_type: q.reveal_media_type || null,
           reveal_media_url: q.reveal_media_url || null,
+          // 이미지 표시 옵션 (자르기) — 클라이언트가 보내지 않으면 default('original'/{}) 유지
+          media_display_mode: (q.media_display_mode === "crop" || q.media_display_mode === "original") ? q.media_display_mode : "original",
+          media_display_option: (q.media_display_option && typeof q.media_display_option === "object") ? q.media_display_option : {},
         };
         if (row.reveal_media_url) {
           console.log(`[REVEAL-MEDIA] PUT q${i}: reveal_media_url=${row.reveal_media_url}, reveal_media_type=${row.reveal_media_type}`);
@@ -6145,6 +6148,8 @@ async function loadQuizQuestions(contentId, userId, isAdmin) {
         sortOrder: q.sort_order,
         revealMediaType: q.reveal_media_type || null,
         revealMediaUrl: q.reveal_media_url || null,
+        mediaDisplayMode: q.media_display_mode || "original",
+        mediaDisplayOption: q.media_display_option || {},
       };
     })
   };
@@ -6277,6 +6282,11 @@ function safeQuestion(q, index, total) {
   if (q.type !== "audio_youtube" && q.mediaUrl && q.mediaType) {
     payload.media_type = q.mediaType;
     payload.media_url = q.mediaUrl;
+    // 자르기 표시 옵션 (crop 모드일 때만 클라이언트에서 transform 적용)
+    if (q.mediaDisplayMode === "crop") {
+      payload.media_display_mode = "crop";
+      payload.media_display_option = q.mediaDisplayOption || {};
+    }
   }
   return payload;
 }
