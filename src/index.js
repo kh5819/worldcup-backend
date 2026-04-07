@@ -4176,6 +4176,7 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
           // 이미지 표시 옵션 (자르기) — 클라이언트가 보내지 않으면 default('original'/{}) 유지
           media_display_mode: (q.media_display_mode === "crop" || q.media_display_mode === "original") ? q.media_display_mode : "original",
           media_display_option: (q.media_display_option && typeof q.media_display_option === "object") ? q.media_display_option : {},
+          mute_video: q.type === "video_youtube" ? !!q.mute_video : false,
         };
         if (row.reveal_media_url) {
           console.log(`[REVEAL-MEDIA] PUT q${i}: reveal_media_url=${row.reveal_media_url}, reveal_media_type=${row.reveal_media_type}`);
@@ -5598,7 +5599,7 @@ function publicRoom(room) {
         }
       } else if (q.phase === "show") {
         const curQ = q.questions[q.questionIndex];
-        if (curQ?.type === "audio_youtube") {
+        if (curQ?.type === "audio_youtube" || curQ?.type === "video_youtube") {
           status = q.readyPlayers.has(userId) ? "준비 완료" : "준비 중…";
         } else {
           status = "대기 중…";
@@ -6150,6 +6151,7 @@ async function loadQuizQuestions(contentId, userId, isAdmin) {
         revealMediaUrl: q.reveal_media_url || null,
         mediaDisplayMode: q.media_display_mode || "original",
         mediaDisplayOption: q.media_display_option || {},
+        muteVideo: !!q.mute_video,
       };
     })
   };
@@ -6222,7 +6224,7 @@ function checkAnswer(question, userAnswer) {
     return Number(userAnswer) === Number(correctIndex);
   }
 
-  // short / audio_youtube: 공백·대소문자 무시 + 동의어 배열
+  // short / audio_youtube / video_youtube: 공백·대소문자 무시 + 동의어 배열
   const normalized = String(userAnswer).trim().toLowerCase().replace(/\s+/g, "");
   return question.answer.some(ans =>
     String(ans).trim().toLowerCase().replace(/\s+/g, "") === normalized
@@ -6272,14 +6274,17 @@ function safeQuestion(q, index, total) {
     // 카테고리 목록만 별도 전달 (answer 배열 = 카테고리 리스트)
     payload.categories = q.answer; // ["CatA","CatB",...]
   }
-  if (q.type === "audio_youtube") {
+  if (q.type === "audio_youtube" || q.type === "video_youtube") {
     payload.mediaType = "youtube";
     payload.videoId = extractVideoId(q.mediaUrl);
     payload.startSec = q.startSec;
     payload.durationSec = q.durationSec;
+    if (q.type === "video_youtube") {
+      payload.muteVideo = !!q.muteVideo;
+    }
   }
-  // image/gif/mp4 미디어가 있으면 클라이언트에 전달 (audio_youtube 제외)
-  if (q.type !== "audio_youtube" && q.mediaUrl && q.mediaType) {
+  // image/gif/mp4 미디어가 있으면 클라이언트에 전달 (audio_youtube/video_youtube 제외)
+  if (q.type !== "audio_youtube" && q.type !== "video_youtube" && q.mediaUrl && q.mediaType) {
     payload.media_type = q.mediaType;
     payload.media_url = q.mediaUrl;
     // 자르기 표시 옵션 (crop 모드일 때만 클라이언트에서 transform 적용)
@@ -6339,7 +6344,7 @@ function advanceQuizQuestion(room) {
   io.to(room.id).emit("quiz:question", questionPayload);
   io.to(room.id).emit("room:state", publicRoom(room));
 
-  if (question.type === "audio_youtube") {
+  if (question.type === "audio_youtube" || question.type === "video_youtube") {
     // 유튜브: 즉시 answering 전환 (클라이언트에서 플레이어 준비 후 자동재생)
     room.quizShowTimer = setTimeout(() => {
       room.quizShowTimer = null;
@@ -6367,11 +6372,13 @@ function startQuizAnswering(room) {
   const question = q.questions[q.questionIndex];
   let youtubePayload = null;
 
-  if (question.type === "audio_youtube") {
+  if (question.type === "audio_youtube" || question.type === "video_youtube") {
     youtubePayload = {
       videoId: extractVideoId(question.mediaUrl),
       startSec: question.startSec,
       durationSec: question.durationSec,
+      kind: question.type === "video_youtube" ? "video" : "audio",
+      muteVideo: question.type === "video_youtube" ? !!question.muteVideo : true,
     };
     q.youtube = youtubePayload;
   }
@@ -6537,7 +6544,7 @@ function doQuizReveal(room) {
   let revealMedia = null;
   const qIdx = q.questionIndex;
 
-  if (question.type === "audio_youtube") {
+  if (question.type === "audio_youtube" || question.type === "video_youtube") {
     console.log(`[REVEAL-MEDIA] multi q${qIdx}: skip because youtube type`);
   } else if (question.revealMediaUrl) {
     // 1순위: reveal_media_url 사용
