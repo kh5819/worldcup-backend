@@ -170,20 +170,22 @@ app.get("/content-search", async (req, res) => {
     if (!q || q.length < 1) return res.json({ ok: true, items: [] });
     const like = `%${q}%`;
 
-    // 1) contents (월드컵/퀴즈)
+    // 1) contents (월드컵/퀴즈) — public + 비숨김만
     const { data: cData } = await supabaseAdmin
       .from("contents")
       .select("id, title, mode, created_at")
       .ilike("title", like)
+      .eq("visibility", "public")
       .eq("is_hidden", false)
       .order("created_at", { ascending: false })
       .limit(10);
 
-    // 2) tier_templates
+    // 2) tier_templates — public + 비숨김 + 미삭제만
     const { data: tData } = await supabaseAdmin
       .from("tier_templates")
       .select("id, title, created_at")
       .ilike("title", like)
+      .eq("is_public", true)
       .eq("is_hidden", false)
       .is("deleted_at", null)
       .order("created_at", { ascending: false })
