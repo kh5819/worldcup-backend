@@ -2140,7 +2140,7 @@ app.get("/admin/all-comments", requireAdmin, async (req, res) => {
 
     // ── content_comments (worldcup / quiz) ──
     if (shouldFetch("content")) {
-      let cq = supabaseAdmin.from("content_comments").select("id, content_id, content_type, user_id, author_name, body, created_at", { count: "exact" });
+      let cq = supabaseAdmin.from("content_comments").select("id, content_id, content_type, user_id, author_name, body, created_at, winner_candidate_id, winner_label, winner_thumb_url", { count: "exact" });
       if (q) cq = cq.ilike("body", `%${q}%`);
       if (authorQ) cq = cq.ilike("author_name", `%${authorQ}%`);
       cq = cq.order("created_at", { ascending: false });
@@ -2182,6 +2182,10 @@ app.get("/admin/all-comments", requireAdmin, async (req, res) => {
             parent_id: null,
             report_count: reportMap[c.id] || 0,
             created_at: c.created_at,
+            // 우승자 칩 — 게임 종료 댓글에만 존재 (한줄평엔 null)
+            winner_candidate_id: c.winner_candidate_id || null,
+            winner_label: c.winner_label || null,
+            winner_thumb_url: c.winner_thumb_url || null,
           });
         });
         totalCount += cCount || 0;
