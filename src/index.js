@@ -65,7 +65,7 @@ app.get("/health", (req, res) => {
 // ── REST Rate limiting (IP 기준) ──
 const restLimiter = rateLimit({
   windowMs: 60 * 1000,  // 1분
-  max: 120,             // IP당 120 req/min (admin 다건 호출 대응)
+  max: 200,             // IP당 200 req/min (auth 초기화 + admin 다건 호출 + 공유 IP 대응)
   standardHeaders: true,
   legacyHeaders: false,
   message: { ok: false, error: "RATE_LIMITED" },
