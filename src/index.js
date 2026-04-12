@@ -59,7 +59,7 @@ app.use(cors({
 
 // ── Health check (rate limit 제외 — Render 헬스체크 429 방지) ──
 app.get("/health", (req, res) => {
-  res.json({ ok: true, ts: Date.now() });
+  res.status(200).send("ok");
 });
 
 // ── REST Rate limiting (IP 기준) ──
