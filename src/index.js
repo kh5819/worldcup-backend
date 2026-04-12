@@ -57,6 +57,11 @@ app.use(cors({
   credentials: true
 }));
 
+// ── Health check (rate limit 제외 — Render 헬스체크 429 방지) ──
+app.get("/health", (req, res) => {
+  res.json({ ok: true, ts: Date.now() });
+});
+
 // ── REST Rate limiting (IP 기준) ──
 const restLimiter = rateLimit({
   windowMs: 60 * 1000,  // 1분
@@ -106,9 +111,6 @@ try {
 } catch (e) {
   console.error("[AUTH] ❌ JWKS 초기화 실패:", e.message);
 }
-app.get("/health", (req, res) => {
-  res.json({ ok: true, ts: Date.now() });
-});
 // =========================
 // 홈 리스트 API
 // GET /contents?type=worldcup|quiz|all&sort=popular|newest|likes&limit=24&offset=0
