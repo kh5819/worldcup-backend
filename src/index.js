@@ -501,6 +501,152 @@ app.get("/og/tier-result/:id", async (req, res) => {
 });
 
 // =========================
+// OG: 통합 상세 (티어/월드컵/퀴즈 모두 처리)
+// GET /og/detail/:id
+// — 프론트 공유 URL(?detail=<id>)에 대응하는 크롤러용 OG 라우트
+// — 티어(tier_templates) 우선 조회 → contents(worldcup/quiz) fallback
+// — 리다이렉트는 상세 모달 경로(/?detail=<id>)로 통일
+// =========================
+app.get("/og/detail/:id", async (req, res) => {
+  try {
+    const detailId = req.params.id;
+    if (!detailId) return res.status(400).send("Bad Request");
+
+    const detailUrl = `${SITE_URL}/?detail=${encodeURIComponent(detailId)}`;
+    const selfUrl = `${SITE_URL}/og/detail/${detailId}`;
+
+    // 1) 티어 템플릿 우선 조회
+    const { data: tmpl } = await supabaseAdmin
+      .from("tier_templates")
+      .select("id, title, description, thumbnail_url, cards, creator_id")
+      .eq("id", detailId)
+      .maybeSingle();
+
+    if (tmpl) {
+      let creatorName = "";
+      if (tmpl.creator_id) {
+        const { data: profile } = await supabaseAdmin
+          .from("profiles")
+          .select("nickname")
+          .eq("id", tmpl.creator_id)
+          .maybeSingle();
+        creatorName = profile?.nickname || "";
+      }
+
+      const cardCount = Array.isArray(tmpl.cards) ? tmpl.cards.length : 0;
+      let description = tmpl.description || "";
+      if (!description || description.length < 10) {
+        description = `${tmpl.title} — ${cardCount}장 카드 티어메이커`;
+      }
+      if (creatorName) description += ` | 제작자: ${creatorName}`;
+      if (description.length > 120) description = description.slice(0, 117) + "...";
+
+      let ogImage = tmpl.thumbnail_url || DEFAULT_OG_IMAGE;
+      if (!tmpl.thumbnail_url && Array.isArray(tmpl.cards) && tmpl.cards[0]?.image_url) {
+        ogImage = tmpl.cards[0].image_url;
+      }
+      if (ogImage && !ogImage.startsWith("http")) {
+        ogImage = `${process.env.SUPABASE_URL}/storage/v1/object/public/thumbnails/${ogImage}`;
+      }
+
+      const html = generateOgHtml({
+        title: `${tmpl.title} — 티어메이커 | DUO`,
+        description,
+        image: ogImage,
+        url: selfUrl,
+        redirectUrl: detailUrl,
+      });
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      return res.send(html);
+    }
+
+    // 2) contents 테이블 (월드컵/퀴즈)
+    const { data: content } = await supabaseAdmin
+      .from("contents")
+      .select("id, mode, title, description, thumbnail_url, auto_thumbnail_url, owner_id")
+      .eq("id", detailId)
+      .maybeSingle();
+
+    if (content) {
+      // 후보/문제 수
+      let itemCount = 0;
+      if (content.mode === "worldcup") {
+        const { count } = await supabaseAdmin
+          .from("worldcup_candidates")
+          .select("*", { count: "exact", head: true })
+          .eq("content_id", detailId)
+          .eq("is_active", true);
+        itemCount = count || 0;
+      } else if (content.mode === "quiz") {
+        const { count } = await supabaseAdmin
+          .from("quiz_questions")
+          .select("*", { count: "exact", head: true })
+          .eq("content_id", detailId);
+        itemCount = count || 0;
+      }
+
+      // 작성자
+      let creatorName = "";
+      if (content.owner_id) {
+        const { data: profile } = await supabaseAdmin
+          .from("profiles")
+          .select("nickname")
+          .eq("user_id", content.owner_id)
+          .maybeSingle();
+        creatorName = profile?.nickname || "";
+      }
+
+      const typeLabel = content.mode === "worldcup" ? "이상형 월드컵" : "퀴즈";
+      const bracketText = itemCount > 0 ? `${itemCount}${content.mode === "worldcup" ? "강" : "문제"}` : "";
+      let description = content.description || "";
+      if (!description || description.length < 10) {
+        description = content.mode === "worldcup"
+          ? `${content.title} — DUO에서 ${bracketText} 이상형월드컵 플레이!`
+          : `${content.title} — 퀴즈 도전! ${bracketText} 정답률을 올려보자 🎯`;
+      }
+      if (creatorName) description += ` | 제작자: ${creatorName}`;
+      if (description.length > 120) description = description.slice(0, 117) + "...";
+
+      let ogImage = content.thumbnail_url || content.auto_thumbnail_url || DEFAULT_OG_IMAGE;
+      if (ogImage && !ogImage.startsWith("http")) {
+        ogImage = `${process.env.SUPABASE_URL}/storage/v1/object/public/thumbnails/${ogImage}`;
+      }
+
+      const html = generateOgHtml({
+        title: `${content.title} — ${typeLabel} | DUO`,
+        description,
+        image: ogImage,
+        url: selfUrl,
+        redirectUrl: detailUrl,
+        type: content.mode,
+      });
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      return res.send(html);
+    }
+
+    // 3) 어느 테이블에도 없음 → 기본 OG
+    return res.send(generateOgHtml({
+      title: "DUO — 이상형 월드컵 & 퀴즈 & 티어메이커",
+      description: "누구나 만들고 함께 즐기는 DUO에서 함께 즐겨보세요!",
+      image: DEFAULT_OG_IMAGE,
+      url: SITE_URL,
+      redirectUrl: SITE_URL,
+    }));
+  } catch (err) {
+    console.error("GET /og/detail/:id error:", err);
+    return res.send(generateOgHtml({
+      title: "DUO — 이상형 월드컵 & 퀴즈 & 티어메이커",
+      description: "누구나 만들고 함께 즐기는 DUO에서 함께 즐겨보세요!",
+      image: DEFAULT_OG_IMAGE,
+      url: SITE_URL,
+      redirectUrl: SITE_URL,
+    }));
+  }
+});
+
+// =========================
 // OG: 공지사항
 // GET /og/notice/:id
 // =========================
