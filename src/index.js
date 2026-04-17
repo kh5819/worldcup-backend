@@ -5638,6 +5638,9 @@ function publicRoom(room) {
       players: playersList,
       timerEnabled: !!room.timerEnabled,
       timerSec: room.timerSec || 45,
+      // ✅ 게스트에게도 선택 방식 노출 (대기실 뱃지용)
+      tierSelectionMode: room.selectionMode || "random",
+      tierSelectedCount: Array.isArray(room.selectedCardIds) ? room.selectedCardIds.length : 0,
       tier: {
         currentCard,
         currentCardIdx: t.currentCardIdx ?? -1,
@@ -6762,8 +6765,23 @@ async function handleTierGameStart(room, payload, me, socket, cb) {
       cardLimit = 0;
     }
 
-    const selectedCards = prepareTierCards(template.cards, cardLimit);
-    console.log(`[game:start:tier] template="${template.title}" cards=${template.cards.length} selected=${selectedCards.length} limit=${cardLimit}`);
+    // ✅ 직접 선택 모드 분기: manual이면 선택된 카드만 사용 (랜덤 셔플 우회)
+    let selectedCards;
+    if (room.selectionMode === "manual" && Array.isArray(room.selectedCardIds) && room.selectedCardIds.length > 0) {
+      // 선택 순서 보존: room.selectedCardIds 순서대로 카드 매핑
+      const cardById = new Map(template.cards.map(c => [String(c.id), c]));
+      selectedCards = room.selectedCardIds
+        .map(id => cardById.get(String(id)))
+        .filter(Boolean);
+      if (selectedCards.length === 0) {
+        console.log(`[game:start:tier] MANUAL but no valid cards matched — fallback NO_CARDS`);
+        return cb?.({ ok: false, error: "NO_SELECTED_CARDS" });
+      }
+      console.log(`[game:start:tier] MANUAL template="${template.title}" selected=${selectedCards.length}/${template.cards.length}`);
+    } else {
+      selectedCards = prepareTierCards(template.cards, cardLimit);
+      console.log(`[game:start:tier] RANDOM template="${template.title}" cards=${template.cards.length} selected=${selectedCards.length} limit=${cardLimit}`);
+    }
 
     room.content = { id: template.id, title: template.title, thumbnail_url: template.thumbnail_url };
     clearRoomTimers(room);
@@ -7256,6 +7274,15 @@ io.on("connection", (socket) => {
       quizMode: payload?.quizMode === "speed" ? "speed" : "normal",
       // ✅ 티어 카드 수 제한
       cardLimit: parseInt(payload?.cardLimit, 10) || 0,
+      // ✅ 티어 카드 선택 방식 (random | manual)
+      selectionMode: payload?.selectionMode === "manual" ? "manual" : "random",
+      // ✅ 직접 선택 시 호스트가 선택한 카드 ID 목록 (문자열 배열)
+      selectedCardIds: Array.isArray(payload?.selectedCardIds)
+        ? payload.selectedCardIds
+            .filter(x => typeof x === "string" || typeof x === "number")
+            .map(String)
+            .slice(0, 500)
+        : [],
     };
     rooms.set(roomId, room);
     inviteCodeMap.set(inviteCode, roomId);
