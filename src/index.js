@@ -515,11 +515,13 @@ app.get("/og/detail/:id", async (req, res) => {
     const detailUrl = `${SITE_URL}/?detail=${encodeURIComponent(detailId)}`;
     const selfUrl = `${SITE_URL}/og/detail/${detailId}`;
 
-    // 1) 티어 템플릿 우선 조회
+    // 1) 티어 템플릿 우선 조회 (soft-delete / hidden 제외)
     const { data: tmpl } = await supabaseAdmin
       .from("tier_templates")
       .select("id, title, description, thumbnail_url, cards, creator_id")
       .eq("id", detailId)
+      .is("deleted_at", null)
+      .eq("is_hidden", false)
       .maybeSingle();
 
     if (tmpl) {
@@ -561,11 +563,13 @@ app.get("/og/detail/:id", async (req, res) => {
       return res.send(html);
     }
 
-    // 2) contents 테이블 (월드컵/퀴즈)
+    // 2) contents 테이블 (월드컵/퀴즈) — hidden 제외
+    //    (contents는 hard-delete 구조라 deleted_at 필터 불필요 — 삭제되면 row 자체가 없음)
     const { data: content } = await supabaseAdmin
       .from("contents")
       .select("id, mode, title, description, thumbnail_url, auto_thumbnail_url, owner_id")
       .eq("id", detailId)
+      .eq("is_hidden", false)
       .maybeSingle();
 
     if (content) {
