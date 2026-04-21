@@ -8377,6 +8377,37 @@ io.on("connection", (socket) => {
     cb?.({ ok: true });
   });
 
+  /** tier:rename — 호스트가 티어 라벨 이름만 변경 (구조 불변) */
+  safeOn(socket, "tier:rename", (payload, cb) => {
+    const room = rooms.get(payload?.roomId);
+    if (!room || room.mode !== "tier" || !room.tier) return cb?.({ ok: false, error: "NOT_TIER_ROOM" });
+    if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+
+    const t = room.tier;
+    const tierId = payload?.tierId;
+    const rawName = typeof payload?.name === "string" ? payload.name : "";
+    const name = rawName.trim();
+
+    if (!tierId) return cb?.({ ok: false, error: "MISSING_TIER_ID" });
+    if (!name) return cb?.({ ok: false, error: "EMPTY_NAME" });
+    if (name.length > 20) return cb?.({ ok: false, error: "NAME_TOO_LONG" });
+
+    const idx = t.tierMeta.findIndex(m => m.id === tierId);
+    if (idx < 0) return cb?.({ ok: false, error: "TIER_NOT_FOUND" });
+
+    // ✅ 구조(id/순서) 유지, name만 변경
+    if (t.tierMeta[idx].name === name) return cb?.({ ok: true, unchanged: true });
+    t.tierMeta[idx].name = name;
+
+    io.to(room.id).emit("tier:meta-update", {
+      roomId: room.id,
+      tierMeta: t.tierMeta,
+    });
+
+    console.log(`[tier:rename] roomId=${room.id} tierId=${tierId} → "${name}"`);
+    cb?.({ ok: true });
+  });
+
   // =========================
   // 재접속 유예 (disconnect)
   // =========================
