@@ -5655,6 +5655,8 @@ function buildSyncPayload(room, userId) {
         myAnswer: q.answers.get(userId)?.answer ?? null,
         submitted: q.answers.has(userId),
         scores: buildQuizScores(room),
+        teamMode: !!room.teamMode,
+        teamScores: room.teamMode ? _buildTeamScores(room) : null,
         timer: { enabled: !!room.timerEnabled, sec: room.timerSec || 0, remainingSec },
         youtube: q.youtube || null,
         readyPlayers: Array.from(q.readyPlayers),
@@ -5768,7 +5770,7 @@ function publicRoom(room) {
     } else {
       status = room.committed.has(userId) ? "선택 완료" : "선택 중…";
     }
-    return { userId, name: p.name, status, isGuest: !!p.isGuest, avatar_url: p.avatar_url || null };
+    return { userId, name: p.name, status, isGuest: !!p.isGuest, avatar_url: p.avatar_url || null, team: p.team || null };
   });
 
   // ── 멀티 티어: 전용 payload ──
@@ -5839,7 +5841,10 @@ function publicRoom(room) {
     // ✅ 재접속 시 유튜브 구간 재생 복원용
     quizYoutube: room.quiz?.youtube || null,
     // ✅ 퀴즈 모드 (normal / speed)
-    quizMode: room.quizMode || "normal"
+    quizMode: room.quizMode || "normal",
+    // ✅ 퀴즈 팀전 (blueScore/redScore는 개인 점수 합산, 점수 없으면 0)
+    teamMode: !!room.teamMode,
+    teamScores: room.teamMode ? _buildTeamScores(room) : null
   };
 }
 
@@ -6485,6 +6490,37 @@ function buildQuizScores(room) {
     const player = room.players.get(userId);
     return { userId, name: player?.name || userId.slice(0, 6), score };
   }).sort((a, b) => b.score - a.score);
+}
+
+// ── 팀전 헬퍼 ──
+function _getTeamCounts(room) {
+  let blue = 0, red = 0;
+  for (const p of room.players.values()) {
+    if (p.team === "blue") blue++;
+    else if (p.team === "red") red++;
+  }
+  return { blue, red };
+}
+
+/** 신규 합류자 자동 팀 배정 (적은 팀 우선, 동점이면 blue) */
+function _autoAssignTeam(room, userId) {
+  const p = room.players.get(userId);
+  if (!p) return;
+  if (p.team === "blue" || p.team === "red") return;
+  const { blue, red } = _getTeamCounts(room);
+  p.team = red < blue ? "red" : "blue";
+}
+
+/** 팀 점수 합계 — 개인 점수(room.quiz.scores) 기반, 퀴즈 미시작 시 0 */
+function _buildTeamScores(room) {
+  const scores = room.quiz?.scores || {};
+  let blue = 0, red = 0;
+  for (const [uid, p] of room.players.entries()) {
+    const s = Number(scores[uid]) || 0;
+    if (p.team === "blue") blue += s;
+    else if (p.team === "red") red += s;
+  }
+  return { blue, red };
 }
 
 function advanceQuizQuestion(room) {
@@ -7422,6 +7458,8 @@ io.on("connection", (socket) => {
       revoteCount: 0,  // 현재 매치에서 재투표 횟수
       // ✅ 퀴즈 스피드 모드
       quizMode: payload?.quizMode === "speed" ? "speed" : "normal",
+      // ✅ 퀴즈 팀전 모드 (room.mode === "quiz"일 때만 의미있음)
+      teamMode: !!(payload?.teamMode) && payload?.mode === "quiz",
       // ✅ 티어 카드 수 제한
       cardLimit: parseInt(payload?.cardLimit, 10) || 0,
       // ✅ 티어 카드 선택 방식 (random | manual)
@@ -7438,7 +7476,7 @@ io.on("connection", (socket) => {
     inviteCodeMap.set(inviteCode, roomId);
 
     const hostNick = pickNick(socket, payload);
-    const hostPlayer = { name: hostNick, isGuest: false, joinedAt: Date.now(), avatar_url: null };
+    const hostPlayer = { name: hostNick, isGuest: false, joinedAt: Date.now(), avatar_url: null, team: null };
     // 프로필 아바타 조회 (비차단)
     if (me.id && !me.isGuest) {
       supabaseAdmin.from("profiles").select("avatar_url").eq("id", me.id).single()
@@ -7450,10 +7488,12 @@ io.on("connection", (socket) => {
         }).catch(() => {});
     }
     room.players.set(me.id, hostPlayer);
+    // ✅ 팀전: 호스트 자동 팀 배정
+    if (room.teamMode) _autoAssignTeam(room, me.id);
     socket.join(roomId);
     userRoomMap.set(me.id, roomId);
 
-    console.log(`[방 생성] roomId=${roomId} inviteCode=${inviteCode} 호스트=${me.id}(${hostNick}) 모드=${room.mode} contentId=${room.contentId}`);
+    console.log(`[방 생성] roomId=${roomId} inviteCode=${inviteCode} 호스트=${me.id}(${hostNick}) 모드=${room.mode} contentId=${room.contentId} teamMode=${room.teamMode}`);
     io.to(roomId).emit("room:state", publicRoom(room));
     cb?.({ ok: true, roomId, inviteCode });
   });
@@ -7492,7 +7532,7 @@ io.on("connection", (socket) => {
         return cb?.({ ok: false, error: "ROOM_FULL" });
       }
       // 신규 입장
-      const newPlayer = { name: pickNick(socket, payload), isGuest: !!me.isGuest, joinedAt: Date.now(), avatar_url: null };
+      const newPlayer = { name: pickNick(socket, payload), isGuest: !!me.isGuest, joinedAt: Date.now(), avatar_url: null, team: null };
       // 프로필 아바타 조회 (비차단)
       if (me.id && !me.isGuest) {
         supabaseAdmin.from("profiles").select("avatar_url").eq("id", me.id).single()
@@ -7504,6 +7544,8 @@ io.on("connection", (socket) => {
           }).catch(() => {});
       }
       room.players.set(me.id, newPlayer);
+      // ✅ 팀전: 게임 시작 전에만 자동 배정 (진행 중 합류는 팀 없음)
+      if (room.teamMode && !room.quiz) _autoAssignTeam(room, me.id);
     }
     socket.join(roomId);
     userRoomMap.set(me.id, roomId);
@@ -7689,6 +7731,20 @@ io.on("connection", (socket) => {
 
       // ── 퀴즈 모드 → 퀴즈 시작 로직 ──
       if (room.mode === "quiz") {
+        // ✅ 팀전 밸런스 게이트: 참가자 2명 이하면 팀전 강제 해제
+        if (room.teamMode && room.players.size < 3) {
+          console.log(`[game:start] teamMode off — only ${room.players.size} players`);
+          room.teamMode = false;
+          for (const p of room.players.values()) p.team = null;
+        }
+        // ✅ 팀전 편성 검증: 양쪽 최소 1명 필요
+        if (room.teamMode) {
+          const counts = _getTeamCounts(room);
+          if (counts.blue < 1 || counts.red < 1) {
+            return cb?.({ ok: false, error: "TEAM_UNBALANCED" });
+          }
+        }
+
         clearRoomTimers(room);
 
         const loaded = await loadQuizQuestions(contentId, me.id, me.isAdmin);
@@ -7929,6 +7985,30 @@ io.on("connection", (socket) => {
     }
   });
 
+  // ── quiz:set-team (호스트가 참가자 팀 변경, 게임 시작 전까지만) ──
+  safeOn(socket, "quiz:set-team", (payload, cb) => {
+    const room = rooms.get(payload?.roomId);
+    if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
+    if (room.mode !== "quiz") return cb?.({ ok: false, error: "NOT_QUIZ_ROOM" });
+    if (!room.teamMode) return cb?.({ ok: false, error: "NOT_TEAM_MODE" });
+    if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+    if (room.quiz) return cb?.({ ok: false, error: "ALREADY_STARTED" });
+
+    const targetId = payload?.playerId;
+    const team = payload?.team;
+    if (!targetId) return cb?.({ ok: false, error: "MISSING_PLAYER_ID" });
+    if (team !== "blue" && team !== "red") return cb?.({ ok: false, error: "INVALID_TEAM" });
+    const target = room.players.get(targetId);
+    if (!target) return cb?.({ ok: false, error: "PLAYER_NOT_FOUND" });
+
+    if (target.team === team) return cb?.({ ok: true, unchanged: true });
+    target.team = team;
+
+    io.to(room.id).emit("room:state", publicRoom(room));
+    console.log(`[quiz:set-team] roomId=${room.id} ${targetId} → ${team}`);
+    cb?.({ ok: true });
+  });
+
   // ── quiz:submit (답변 제출) ──
   safeOn(socket, "quiz:submit", (payload, cb) => {
     const room = rooms.get(payload?.roomId);
@@ -8084,6 +8164,8 @@ io.on("connection", (socket) => {
         questionIndex: q.questionIndex,
         totalQuestions: q.questions.length,
         isLastQuestion: q.questionIndex >= q.questions.length - 1,
+        teamMode: !!room.teamMode,
+        teamScores: room.teamMode ? _buildTeamScores(room) : null,
       });
       io.to(room.id).emit("room:state", publicRoom(room));
       cb?.({ ok: true });
@@ -8098,6 +8180,8 @@ io.on("connection", (socket) => {
         io.to(room.id).emit("quiz:finished", {
           scores,
           totalQuestions: q.questions.length,
+          teamMode: !!room.teamMode,
+          teamScores: room.teamMode ? _buildTeamScores(room) : null,
         });
         io.to(room.id).emit("room:state", publicRoom(room));
 
