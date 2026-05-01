@@ -7556,6 +7556,19 @@ io.on("connection", (socket) => {
     }
 
     io.to(roomId).emit("room:state", publicRoom(room));
+
+    // ✅ 게임 진행 중인 방에 입장한 소켓에 현재 스냅샷 즉시 전송
+    //    (grace 만료 후 재접속 / 게스트 새 탭 재입장 등으로
+    //     connection 핸들러의 room:sync를 못 받은 케이스 복원)
+    //    connection 단계의 room:sync 경로는 그대로 유지 — 본 emit은 보조 복원 경로
+    const _gameInProgress =
+         (room.mode === "quiz"     && room.quiz?.phase     && room.quiz.phase !== "lobby")
+      || (room.mode === "worldcup" && room.phase           && room.phase !== "lobby")
+      || (room.mode === "tier"     && room.tier?.tierPhase && room.tier.tierPhase !== "lobby");
+    if (_gameInProgress) {
+      socket.emit("room:sync", buildSyncPayload(room, me.id));
+    }
+
     cb?.({ ok: true, roomId, inviteCode: room.inviteCode || null, mode: room.mode || "worldcup" });
   });
 
