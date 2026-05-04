@@ -5895,7 +5895,8 @@ async function loadCandidates(contentId, userId, isAdmin) {
     console.log(`  [${i}] name="${c.name}" mediaUrl="${(c.mediaUrl || "").slice(0, 80)}" mediaType="${c.mediaType}"`);
   });
   return {
-    content: { id: content.id, title: content.title, visibility: content.visibility, timerEnabled: content.timer_enabled !== false },
+    // [2026-05-04] variant_type/is_admin_variant 포함 (월드컵도 향후 variant 도입 시 호환)
+    content: { id: content.id, title: content.title, visibility: content.visibility, timerEnabled: content.timer_enabled !== false, variant_type: content.variant_type ?? null, is_admin_variant: !!content.is_admin_variant },
     candidates: mapped
   };
 }
@@ -6290,7 +6291,8 @@ async function loadQuizQuestions(contentId, userId, isAdmin) {
   if (rows.length < 1) return { error: "NO_QUESTIONS" };
 
   return {
-    content: { id: content.id, title: content.title, visibility: content.visibility, timerEnabled: content.timer_enabled !== false },
+    // [2026-05-04] variant_type/is_admin_variant 포함 → 게스트도 RLS 우회로 silhouette 분기 즉시 가능
+    content: { id: content.id, title: content.title, visibility: content.visibility, timerEnabled: content.timer_enabled !== false, variant_type: content.variant_type ?? null, is_admin_variant: !!content.is_admin_variant },
     questions: rows.map(q => {
       const rawStart = q.start_sec;
       const rawDur = q.duration_sec;
