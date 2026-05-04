@@ -6540,10 +6540,13 @@ function advanceQuizQuestion(room) {
   q.skipVotes.clear();
 
   const questionPayload = safeQuestion(question, q.questionIndex, q.questions.length);
-  // [2026-05-04] room:state를 먼저 emit → 클라이언트가 첫 문제 render 전에 room.content.variant_type
-  // (silhouette 등) 을 set 할 수 있어 게스트/non-host도 첫 문제부터 silhouette 정상 표시
-  io.to(room.id).emit("room:state", publicRoom(room));
+  // [2026-05-04] silhouette 등 admin variant 정보를 quiz:question payload 자체에 포함
+  // → emit 순서에 의존하지 않고 게스트/non-host도 첫 문제부터 즉시 분기 가능
+  // (이전엔 room:state를 먼저 emit하는 방식으로 시도했으나 audio_youtube 자동재생 흐름을 깨뜨림 → 원복)
+  questionPayload.variant_type = room.content?.variant_type ?? null;
+  questionPayload.is_admin_variant = !!room.content?.is_admin_variant;
   io.to(room.id).emit("quiz:question", questionPayload);
+  io.to(room.id).emit("room:state", publicRoom(room));
 
   if (question.type === "audio_youtube" || question.type === "video_youtube") {
     // 유튜브: 즉시 answering 전환 (클라이언트에서 플레이어 준비 후 자동재생)
