@@ -6540,8 +6540,10 @@ function advanceQuizQuestion(room) {
   q.skipVotes.clear();
 
   const questionPayload = safeQuestion(question, q.questionIndex, q.questions.length);
-  io.to(room.id).emit("quiz:question", questionPayload);
+  // [2026-05-04] room:state를 먼저 emit → 클라이언트가 첫 문제 render 전에 room.content.variant_type
+  // (silhouette 등) 을 set 할 수 있어 게스트/non-host도 첫 문제부터 silhouette 정상 표시
   io.to(room.id).emit("room:state", publicRoom(room));
+  io.to(room.id).emit("quiz:question", questionPayload);
 
   if (question.type === "audio_youtube" || question.type === "video_youtube") {
     // 유튜브: 즉시 answering 전환 (클라이언트에서 플레이어 준비 후 자동재생)
