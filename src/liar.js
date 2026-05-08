@@ -9,6 +9,15 @@
 
 import { CATEGORIES, LIAR_KEYWORDS, pickRandomPair } from "./liar-words.js";
 
+const CATEGORY_IDS = Object.keys(LIAR_KEYWORDS);
+function isValidCategory(cat) {
+  return cat === "random" || !!LIAR_KEYWORDS[cat];
+}
+function resolveCategoryForRound(roomCategory) {
+  if (roomCategory !== "random") return roomCategory;
+  return CATEGORY_IDS[Math.floor(Math.random() * CATEGORY_IDS.length)];
+}
+
 const liarRooms = new Map();
 const liarInvites = new Map();
 const liarUserRoom = new Map();
@@ -84,7 +93,8 @@ function publicRoom(room) {
     totalRounds: room.totalRounds,
     turnSec: room.turnSec,
     voteSec: room.voteSec,
-    category: room.category,
+    category: room.category,                                // 호스트 설정값 (random 가능)
+    effectiveCategory: room.roundData?.effectiveCategory || null,  // 진행 중 라운드의 실제 카테고리
     currentRoundIdx: room.currentRoundIdx,
     phase: room.roundData?.phase || (room.status === "lobby" ? "lobby" : null),
     players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
@@ -118,7 +128,9 @@ function startNextRound(io, room) {
   if (room.status !== "playing") return;
   if (room.currentRoundIdx >= room.totalRounds) return endGame(io, room);
 
-  const pair = pickRandomPair(room.category);
+  // 랜덤 카테고리면 매 라운드마다 다시 뽑기
+  const effectiveCat = resolveCategoryForRound(room.category);
+  const pair = pickRandomPair(effectiveCat);
   if (!pair) return endGame(io, room);
   const [citizenWord, liarWord] = pair;
   const liarUid = pickRandom(room.playerOrder);
@@ -126,6 +138,7 @@ function startNextRound(io, room) {
   room.roundData = {
     phase: "hint",
     citizenWord, liarWord, liarUserId: liarUid,
+    effectiveCategory: effectiveCat,
     turnIdx: 0,
     hints: new Map(),
     votes: new Map(),
@@ -133,12 +146,15 @@ function startNextRound(io, room) {
     timer: null,
   };
 
+  const catLabel = CATEGORIES.find(c => c.id === effectiveCat)?.label || effectiveCat;
+
   // 모두에게 라운드 시작 (역할/키워드 제외)
   io.to(socketRoomName(room.id)).emit("liar:roundStart", {
     roundIdx: room.currentRoundIdx,
     totalRounds: room.totalRounds,
-    category: room.category,
-    categoryLabel: CATEGORIES.find(c => c.id === room.category)?.label || room.category,
+    category: effectiveCat,                  // 실제 사용된 카테고리
+    categoryLabel: catLabel,
+    isRandomCategory: room.category === "random",
     playerOrder: room.playerOrder,
   });
 
@@ -151,7 +167,7 @@ function startNextRound(io, room) {
     sock.emit("liar:yourRole", {
       role: uid === liarUid ? "liar" : "citizen",
       keyword: uid === liarUid ? liarWord : citizenWord,
-      categoryLabel: CATEGORIES.find(c => c.id === room.category)?.label || room.category,
+      categoryLabel: catLabel,
     });
   }
 
@@ -404,7 +420,7 @@ export function registerLiar(io, supabaseAdmin) {
           ? Number(payload.voteSec) : 60;
         const maxPlayers = ALLOWED_MAX_PLAYERS.includes(Number(payload?.maxPlayers))
           ? Number(payload.maxPlayers) : 6;
-        const category = LIAR_KEYWORDS[payload?.category] ? payload.category : "food";
+        const category = isValidCategory(payload?.category) ? payload.category : "random";
 
         const roomId = `lr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const inviteCode = genInviteCode();
@@ -514,7 +530,7 @@ export function registerLiar(io, supabaseAdmin) {
       if (payload?.voteSec != null && ALLOWED_VOTE_SECS.includes(Number(payload.voteSec))) {
         room.voteSec = Number(payload.voteSec);
       }
-      if (payload?.category && LIAR_KEYWORDS[payload.category]) {
+      if (payload?.category && isValidCategory(payload.category)) {
         room.category = payload.category;
       }
       cb?.({ ok: true });
