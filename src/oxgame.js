@@ -12,8 +12,8 @@ const oxUserRoom = new Map();
 
 const ALLOWED_INPUT_SECS = [30, 45, 60, 90, 120];
 const ALLOWED_ROUNDS = [3, 5, 7];
-const ALLOWED_MAX_PLAYERS = [4, 6, 8];
-const MIN_PLAYERS = 3;
+const ALLOWED_MAX_PLAYERS = [2, 4, 6, 8];
+const MIN_PLAYERS = 2;
 const RESULT_DELAY_MS = 6500;
 const ROUND_INTRO_MS = 1500;
 const EMPTY_ROOM_TTL_MS = 30_000;
