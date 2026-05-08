@@ -10,6 +10,8 @@ import { v4 as uuidv4 } from "uuid";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 // socket.io-client 제거 — 치지직 CHAT 이벤트 미수신 문제로 raw ws로 교체 (2026-03-14)
 import WebSocket from "ws";
+// DUO GAME ZONE — 인생게임 멀티 (별도 모듈, 기존 시스템 무관)
+import { registerLifegame } from "./lifegame.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -5493,6 +5495,12 @@ async function recordWorldcupRun(room, championCand) {
 const rooms = new Map();
 const GRACE_MS = 15000;
 const MAX_PLAYERS = 6;
+// ✅ 호스트가 방 생성 시 선택 가능한 최대 인원 옵션 (모든 모드 공통)
+const ALLOWED_MAX_PLAYERS = [2, 4, 6, 8];
+function _normalizeMaxPlayers(v) {
+  const n = Number(v);
+  return ALLOWED_MAX_PLAYERS.includes(n) ? n : MAX_PLAYERS;
+}
 const userRoomMap = new Map();
 const inviteCodeMap = new Map(); // inviteCode → roomId
 
@@ -5788,6 +5796,7 @@ function publicRoom(room) {
       tierPhase: t.tierPhase || "lobby",
       content: room.content || null,
       players: playersList,
+      maxPlayers: room.maxPlayers || MAX_PLAYERS,
       timerEnabled: !!room.timerEnabled,
       timerSec: room.timerSec || 45,
       // ✅ 게스트에게도 선택 방식 노출 (대기실 뱃지용)
@@ -5828,6 +5837,7 @@ function publicRoom(room) {
     currentMatch: room.currentMatch || null,
     content: room.content || null,
     players: playersList,
+    maxPlayers: room.maxPlayers || MAX_PLAYERS,
     // ✅ 월드컵 강수/선발방식 옵션
     wcRound: room.wcRound || 0,
     wcPick: room.wcPick || "random",
@@ -7380,6 +7390,11 @@ async function finishTierGame(room) {
 }
 
 // =========================
+// 인생게임 멀티 — 독립 모듈 등록 (lifegame:* 이벤트 prefix)
+// =========================
+registerLifegame(io, supabaseAdmin);
+
+// =========================
 // Socket 연결 핸들러
 // =========================
 
@@ -7449,6 +7464,8 @@ io.on("connection", (socket) => {
       timerEnabled: !!payload?.timerEnabled,
       timerSec: Math.min(180, Math.max(10, Number(payload?.timerSec) || 45)),
       timeoutPolicy: payload?.timeoutPolicy === "AUTO_PASS" ? "AUTO_PASS" : "RANDOM",
+      // ✅ 호스트가 방 생성 시 설정하는 최대 인원 (2/4/6/8)
+      maxPlayers: _normalizeMaxPlayers(payload?.maxPlayers),
       roundTimer: null,
       roundEndsAt: null,
       quizTimer: null,
@@ -7534,8 +7551,9 @@ io.on("connection", (socket) => {
       const newNick = payload?.nickname || payload?.name;
       if (newNick && newNick.trim()) existing.name = newNick.trim().slice(0, 20);
     } else {
-      // ── MAX_PLAYERS 초과 시 입장 거절 ──
-      if (room.players.size >= MAX_PLAYERS) {
+      // ── 최대 인원 초과 시 입장 거절 (room.maxPlayers, 미설정 시 fallback) ──
+      const _cap = room.maxPlayers || MAX_PLAYERS;
+      if (room.players.size >= _cap) {
         return cb?.({ ok: false, error: "ROOM_FULL" });
       }
       // 신규 입장
@@ -7620,6 +7638,36 @@ io.on("connection", (socket) => {
   });
 
   safeOn(socket, "room:ping", () => {});
+
+  // =========================
+  // ✅ 호스트가 최대 인원 변경 (lobby에서만, 모든 모드 공통)
+  // =========================
+  safeOn(socket, "room:setMaxPlayers", (payload, cb) => {
+    const roomId = payload?.roomId;
+    const room = rooms.get(roomId);
+    if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
+    if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+
+    // 게임 진행 중이면 변경 불가
+    const _gameInProgress =
+         (room.mode === "quiz"     && room.quiz?.phase     && room.quiz.phase !== "lobby")
+      || (room.mode === "worldcup" && room.phase           && room.phase !== "lobby")
+      || (room.mode === "tier"     && room.tier?.tierPhase && room.tier.tierPhase !== "lobby");
+    if (_gameInProgress) return cb?.({ ok: false, error: "GAME_IN_PROGRESS" });
+
+    const requested = Number(payload?.maxPlayers);
+    if (!ALLOWED_MAX_PLAYERS.includes(requested)) {
+      return cb?.({ ok: false, error: "INVALID_VALUE" });
+    }
+    // 현재 인원보다 적게는 못 줄임
+    if (requested < room.players.size) {
+      return cb?.({ ok: false, error: "BELOW_CURRENT_PLAYERS", current: room.players.size });
+    }
+
+    room.maxPlayers = requested;
+    io.to(roomId).emit("room:state", publicRoom(room));
+    cb?.({ ok: true, maxPlayers: requested });
+  });
 
   // =========================
   // 호스트 강퇴 기능
