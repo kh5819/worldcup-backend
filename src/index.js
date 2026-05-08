@@ -12,6 +12,8 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import WebSocket from "ws";
 // DUO GAME ZONE — 인생게임 멀티 (별도 모듈, 기존 시스템 무관)
 import { registerLifegame } from "./lifegame.js";
+// DUO GAME ZONE — 라이어 키워드 (별도 모듈)
+import { registerLiar } from "./liar.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -7393,6 +7395,11 @@ async function finishTierGame(room) {
 // 인생게임 멀티 — 독립 모듈 등록 (lifegame:* 이벤트 prefix)
 // =========================
 registerLifegame(io, supabaseAdmin);
+
+// =========================
+// 라이어 키워드 — 독립 모듈 등록 (liar:* 이벤트 prefix)
+// =========================
+registerLiar(io, supabaseAdmin);
 
 // =========================
 // Socket 연결 핸들러
