@@ -450,10 +450,10 @@ function endGame(io, room) {
     totalRounds: TOTAL_ROUNDS,
   });
 
-  // 30초 뒤 정리
+  // ✅ 결과 카드 충분히 읽고 친구들이랑 얘기할 시간 (10분)
   setTimeout(() => {
     if (room.status === "ended") deleteRoom(io, room, "GAME_END_TTL");
-  }, 30_000);
+  }, 10 * 60_000);
 }
 
 // ===== 핸들러 등록 =====
