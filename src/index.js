@@ -14,6 +14,8 @@ import WebSocket from "ws";
 import { registerLifegame } from "./lifegame.js";
 // DUO GAME ZONE — 라이어 키워드 (별도 모듈)
 import { registerLiar } from "./liar.js";
+// DUO GAME ZONE — 우리방 OX (별도 모듈)
+import { registerOxGame } from "./oxgame.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -7400,6 +7402,11 @@ registerLifegame(io, supabaseAdmin);
 // 라이어 키워드 — 독립 모듈 등록 (liar:* 이벤트 prefix)
 // =========================
 registerLiar(io, supabaseAdmin);
+
+// =========================
+// 우리방 OX — 독립 모듈 등록 (ox:* 이벤트 prefix)
+// =========================
+registerOxGame(io, supabaseAdmin);
 
 // =========================
 // Socket 연결 핸들러
