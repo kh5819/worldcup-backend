@@ -275,8 +275,12 @@ function finishRound(io, room, timedOut) {
     gain: gain.get(uid) || 0,
   }));
 
+  const isLastRound = room.currentRoundIdx >= room.totalRounds - 1;
+
   io.to(socketRoomName(room.id)).emit("ox:roundResult", {
     roundIdx: room.currentRoundIdx,
+    totalRounds: room.totalRounds,
+    isLastRound,
     question: room.roundData.question,
     answers: answersArr,
     predictions: predictionsArr,
@@ -286,11 +290,7 @@ function finishRound(io, room, timedOut) {
     timedOut: !!timedOut,
   });
 
-  // 다음 라운드
-  room.phaseTimer = setTimeout(() => {
-    room.currentRoundIdx++;
-    startNextRound(io, room);
-  }, RESULT_DELAY_MS);
+  // ✅ 자동 진행 X — 호스트가 ox:nextRound emit 해야 다음 라운드/게임종료
 }
 
 function endGame(io, room) {
@@ -534,6 +534,26 @@ export function registerOxGame(io, supabaseAdmin) {
       const ok = submitAnswer(io, room, me.id, payload);
       if (!ok) return cb?.({ ok: false, error: "INVALID_PAYLOAD" });
       cb?.({ ok: true });
+    });
+
+    // ✅ 호스트 수동 다음 라운드 진행
+    socket.on("ox:nextRound", (_payload, cb) => {
+      const roomId = oxUserRoom.get(me.id);
+      const room = roomId ? oxRooms.get(roomId) : null;
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
+      if (room.status !== "playing") return cb?.({ ok: false, error: "NOT_PLAYING" });
+      if (room.roundData?.phase !== "result") return cb?.({ ok: false, error: "NOT_RESULT_PHASE" });
+
+      cb?.({ ok: true });
+      clearRoundTimer(room);
+      room.currentRoundIdx++;
+      // 마지막 라운드 끝났으면 endGame, 아니면 다음 라운드
+      if (room.currentRoundIdx >= room.totalRounds) {
+        endGame(io, room);
+      } else {
+        startNextRound(io, room);
+      }
     });
 
     socket.on("ox:leaveRoom", (_payload, cb) => {
