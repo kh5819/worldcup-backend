@@ -16,6 +16,8 @@ import { registerLifegame } from "./lifegame.js";
 import { registerLiar } from "./liar.js";
 // DUO GAME ZONE — 우리방 OX (별도 모듈)
 import { registerOxGame } from "./oxgame.js";
+// DUO GAME ZONE — 거짓말 매치 (별도 모듈)
+import { registerFibbage } from "./fibbage.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -7407,6 +7409,11 @@ registerLiar(io, supabaseAdmin);
 // 우리방 OX — 독립 모듈 등록 (ox:* 이벤트 prefix)
 // =========================
 registerOxGame(io, supabaseAdmin);
+
+// =========================
+// 거짓말 매치 — 독립 모듈 등록 (fb:* 이벤트 prefix)
+// =========================
+registerFibbage(io, supabaseAdmin);
 
 // =========================
 // Socket 연결 핸들러
