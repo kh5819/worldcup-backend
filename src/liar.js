@@ -28,7 +28,9 @@ const ALLOWED_ROUNDS = [3, 5];
 const ALLOWED_MAX_PLAYERS = [4, 6, 8];
 const MIN_PLAYERS = 3;
 const HINT_LEN_MAX = 80;
-const REVIEW_DELAY_MS = 6000;
+const MAX_HINT_ROUNDS = 3;       // 한 라운드에서 최대 힌트 바퀴 수
+const DECISION_SEC = 30;         // 결정 단계(투표 vs 한 바퀴 더) 제한시간
+const DECISION_TRANSITION_MS = 1500; // 결정 결과 노출 후 다음 단계 진입 딜레이
 const RESULT_DELAY_MS = 8000;
 const EMPTY_ROOM_TTL_MS = 30_000;
 
@@ -102,6 +104,8 @@ function publicRoom(room) {
     turnUserId: room.roundData?.phase === "hint"
       ? room.playerOrder[room.roundData.turnIdx]
       : null,
+    hintRoundIdx: room.roundData?.hintRoundIdx ?? null,
+    maxHintRounds: MAX_HINT_ROUNDS,
     deadline: room.roundData?.deadline || null,
   };
 }
@@ -139,8 +143,10 @@ function startNextRound(io, room) {
     phase: "hint",
     citizenWord, liarWord, liarUserId: liarUid,
     effectiveCategory: effectiveCat,
+    hintRoundIdx: 0,
+    hintsByRound: [new Map()],   // 바퀴마다 새 Map(uid → {text,timedOut})
     turnIdx: 0,
-    hints: new Map(),
+    decisionVotes: new Map(),    // uid → "vote" | "more"
     votes: new Map(),
     deadline: null,
     timer: null,
@@ -156,6 +162,7 @@ function startNextRound(io, room) {
     categoryLabel: catLabel,
     isRandomCategory: room.category === "random",
     playerOrder: room.playerOrder,
+    maxHintRounds: MAX_HINT_ROUNDS,
   });
 
   // 각자에게 자기 역할/키워드 (private)
@@ -175,18 +182,37 @@ function startNextRound(io, room) {
   room.phaseTimer = setTimeout(() => startHintTurn(io, room), 3000);
 }
 
+function currentHintMap(room) {
+  return room.roundData.hintsByRound[room.roundData.hintRoundIdx];
+}
+
+function buildHintsByRoundPayload(room) {
+  return room.roundData.hintsByRound.map((m, idx) => ({
+    hintRoundIdx: idx,
+    hints: room.playerOrder.map(uid => {
+      const h = m.get(uid);
+      return {
+        userId: uid,
+        hint: h?.text || "(미입력)",
+        timedOut: !!h?.timedOut,
+      };
+    }),
+  }));
+}
+
 function startHintTurn(io, room) {
   if (room.status !== "playing" || !room.roundData) return;
+  const hintsMap = currentHintMap(room);
   // 다음 미입력자/연결자 찾기
   while (room.roundData.turnIdx < room.playerOrder.length) {
     const uid = room.playerOrder[room.roundData.turnIdx];
     const p = room.players.get(uid);
-    const alreadySubmitted = room.roundData.hints.has(uid);
+    const alreadySubmitted = hintsMap.has(uid);
     if (p?.connected && !alreadySubmitted) break;
     room.roundData.turnIdx++;
   }
   if (room.roundData.turnIdx >= room.playerOrder.length) {
-    return startReviewPhase(io, room);
+    return startDecisionPhase(io, room);
   }
 
   const turnUid = room.playerOrder[room.roundData.turnIdx];
@@ -194,6 +220,8 @@ function startHintTurn(io, room) {
 
   io.to(socketRoomName(room.id)).emit("liar:hintTurn", {
     roundIdx: room.currentRoundIdx,
+    hintRoundIdx: room.roundData.hintRoundIdx,
+    maxHintRounds: MAX_HINT_ROUNDS,
     turnUserId: turnUid,
     turnSec: room.turnSec,
     deadline: room.roundData.deadline,
@@ -208,41 +236,107 @@ function startHintTurn(io, room) {
 function submitHint(io, room, userId, rawHint, timedOut) {
   if (room.status !== "playing" || !room.roundData) return;
   if (room.roundData.phase !== "hint") return;
-  if (room.roundData.hints.has(userId)) return;
+  const hintsMap = currentHintMap(room);
+  if (hintsMap.has(userId)) return;
   const turnUid = room.playerOrder[room.roundData.turnIdx];
   if (turnUid !== userId) return;
 
   clearTimer(room);
   const text = String(rawHint || "").slice(0, HINT_LEN_MAX).trim() || "(빈 힌트)";
 
-  room.roundData.hints.set(userId, { text, timedOut: !!timedOut });
+  hintsMap.set(userId, { text, timedOut: !!timedOut });
   io.to(socketRoomName(room.id)).emit("liar:hintSubmitted", {
     userId,
+    hintRoundIdx: room.roundData.hintRoundIdx,
     timedOut: !!timedOut,
-    // 힌트 내용은 review phase에서 일괄 공개 — 지금은 누가 냈는지만
   });
 
   room.roundData.turnIdx++;
   startHintTurn(io, room);
 }
 
-function startReviewPhase(io, room) {
+function startDecisionPhase(io, room) {
   if (room.status !== "playing" || !room.roundData) return;
-  room.roundData.phase = "review";
-  const hintsArr = room.playerOrder.map(uid => {
-    const h = room.roundData.hints.get(uid);
-    return {
-      userId: uid,
-      hint: h?.text || "(미입력)",
-      timedOut: !!h?.timedOut,
-    };
-  });
-  io.to(socketRoomName(room.id)).emit("liar:reviewPhase", {
-    roundIdx: room.currentRoundIdx,
-    hints: hintsArr,
-  });
   clearTimer(room);
-  room.phaseTimer = setTimeout(() => startVotePhase(io, room), REVIEW_DELAY_MS);
+  room.roundData.phase = "decision";
+  room.roundData.decisionVotes = new Map();
+  room.roundData.deadline = Date.now() + DECISION_SEC * 1000;
+
+  const canMore = (room.roundData.hintRoundIdx + 1) < MAX_HINT_ROUNDS;
+
+  io.to(socketRoomName(room.id)).emit("liar:decisionPhase", {
+    roundIdx: room.currentRoundIdx,
+    hintRoundIdx: room.roundData.hintRoundIdx,
+    maxHintRounds: MAX_HINT_ROUNDS,
+    canMore,
+    decisionSec: DECISION_SEC,
+    deadline: room.roundData.deadline,
+    hintsByRound: buildHintsByRoundPayload(room),
+  });
+
+  room.roundData.timer = setTimeout(() => tallyDecision(io, room, true), DECISION_SEC * 1000);
+}
+
+function submitDecision(io, room, voterId, choice) {
+  if (room.status !== "playing" || !room.roundData) return;
+  if (room.roundData.phase !== "decision") return;
+  if (!room.players.has(voterId)) return;
+  if (room.roundData.decisionVotes.has(voterId)) return;
+
+  let normalized = choice === "more" ? "more" : "vote";
+  // 마지막 라운드에서는 "more" 차단 → 강제로 vote
+  const canMore = (room.roundData.hintRoundIdx + 1) < MAX_HINT_ROUNDS;
+  if (!canMore) normalized = "vote";
+
+  room.roundData.decisionVotes.set(voterId, normalized);
+  io.to(socketRoomName(room.id)).emit("liar:decisionVoteSubmitted", {
+    voterId,
+    choice: normalized,
+  });
+
+  // 연결된 사람 모두 결정하면 즉시 종료
+  const connectedUids = room.playerOrder.filter(uid => room.players.get(uid)?.connected);
+  if (room.roundData.decisionVotes.size >= connectedUids.length) {
+    clearTimer(room);
+    tallyDecision(io, room, false);
+  }
+}
+
+function tallyDecision(io, room, timedOut) {
+  if (room.status !== "playing" || !room.roundData) return;
+  if (room.roundData.phase !== "decision") return; // 중복 호출 방어 (지연 vote + timeout race)
+  clearTimer(room);
+  // sentinel: 다음 phase로 넘어가기 전까지 submitDecision/tallyDecision 모두 차단
+  room.roundData.phase = "decision_locked";
+
+  const canMore = (room.roundData.hintRoundIdx + 1) < MAX_HINT_ROUNDS;
+  let moreCount = 0, voteCount = 0;
+  for (const c of room.roundData.decisionVotes.values()) {
+    if (c === "more") moreCount++;
+    else voteCount++;
+  }
+  // 다수결: more가 vote보다 strictly 많고 canMore일 때만 진행. 동률은 → 투표 (안전 default).
+  const goMore = canMore && moreCount > voteCount;
+
+  io.to(socketRoomName(room.id)).emit("liar:decisionResult", {
+    decision: goMore ? "more" : "vote",
+    moreCount,
+    voteCount,
+    timedOut: !!timedOut,
+    nextHintRoundIdx: goMore ? room.roundData.hintRoundIdx + 1 : null,
+  });
+
+  if (goMore) {
+    // 다음 힌트 바퀴 시작 — 약간 delay (UI가 결과 보여줄 시간)
+    room.roundData.hintRoundIdx++;
+    room.roundData.hintsByRound.push(new Map());
+    room.roundData.turnIdx = 0;
+    room.roundData.phase = "hint";
+    room.phaseTimer = setTimeout(() => startHintTurn(io, room), DECISION_TRANSITION_MS);
+  } else {
+    // 투표 단계로
+    room.phaseTimer = setTimeout(() => startVotePhase(io, room), DECISION_TRANSITION_MS);
+  }
 }
 
 function startVotePhase(io, room) {
@@ -382,7 +476,7 @@ function leavePlayer(io, room, userId) {
     if (wasTurn) {
       // 현재 차례였으면 자동 패스 → 다음 사람
       if (room.roundData) {
-        room.roundData.hints.set(userId, { text: "(이탈)", timedOut: true });
+        currentHintMap(room).set(userId, { text: "(이탈)", timedOut: true });
         room.roundData.turnIdx++;
         clearTimer(room);
         startHintTurn(io, room);
@@ -588,6 +682,19 @@ export function registerLiar(io, supabaseAdmin) {
       submitHint(io, room, me.id, payload?.hint || "", false);
     });
 
+    socket.on("liar:submitDecision", (payload, cb) => {
+      const roomId = liarUserRoom.get(me.id);
+      const room = roomId ? liarRooms.get(roomId) : null;
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.status !== "playing" || !room.roundData) return cb?.({ ok: false, error: "NOT_PLAYING" });
+      if (room.roundData.phase !== "decision") return cb?.({ ok: false, error: "NOT_DECISION_PHASE" });
+      if (room.roundData.decisionVotes.has(me.id)) return cb?.({ ok: false, error: "ALREADY_DECIDED" });
+      const choice = payload?.choice === "more" ? "more" : "vote";
+
+      cb?.({ ok: true });
+      submitDecision(io, room, me.id, choice);
+    });
+
     socket.on("liar:submitVote", (payload, cb) => {
       const roomId = liarUserRoom.get(me.id);
       const room = roomId ? liarRooms.get(roomId) : null;
@@ -637,8 +744,8 @@ export function registerLiar(io, supabaseAdmin) {
         // 자기 차례였으면 자동 패스
         if (room.roundData?.phase === "hint"
             && room.playerOrder[room.roundData.turnIdx] === me.id
-            && !room.roundData.hints.has(me.id)) {
-          room.roundData.hints.set(me.id, { text: "(연결 끊김)", timedOut: true });
+            && !currentHintMap(room).has(me.id)) {
+          currentHintMap(room).set(me.id, { text: "(연결 끊김)", timedOut: true });
           room.roundData.turnIdx++;
           clearTimer(room);
           startHintTurn(io, room);
