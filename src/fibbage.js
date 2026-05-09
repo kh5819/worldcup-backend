@@ -35,7 +35,7 @@ const ALLOWED_ROUNDS = [3, 5];
 const ALLOWED_MAX_PLAYERS = [2, 4, 6, 8];
 const MIN_PLAYERS = 2;                      // 2명도 OK (선택지 부족 시 decoys로 자동 패딩 4개 보장)
 const FAKE_LEN_MAX = 30;
-const RESULT_DELAY_MS = 10000;
+const RESULT_FALLBACK_MS = 60_000;         // 호스트 부재 시 자동 진행 안전장치
 const REVEAL_BEFORE_VOTE_MS = 1500;        // 셔플 후 보여주기 전 짧은 텀
 const EMPTY_ROOM_TTL_MS = 30_000;
 
@@ -423,8 +423,13 @@ function finishVotePhase(io, room, timedOut) {
     isDecoy: !!c.isDecoy,
   }));
 
+  const isLastRound = (room.currentRoundIdx + 1) >= room.totalRounds;
+
   io.to(socketRoomName(room.id)).emit("fb:roundResult", {
     roundIdx: room.currentRoundIdx,
+    isLastRound,
+    hostUserId: room.hostUserId,
+    fallbackSec: Math.floor(RESULT_FALLBACK_MS / 1000),
     realIdx: realChoiceIdx,
     realAnswer: question.answer,
     source: question.source || null,
@@ -442,10 +447,17 @@ function finishVotePhase(io, room, timedOut) {
   });
 
   room.roundData.phase = "result";
-  room.phaseTimer = setTimeout(() => {
-    room.currentRoundIdx++;
-    startNextRound(io, room);
-  }, RESULT_DELAY_MS);
+  // 호스트가 fb:hostNext로 진행. 부재 시 fallback timeout으로 안전 진행.
+  room.phaseTimer = setTimeout(() => advanceFromResult(io, room), RESULT_FALLBACK_MS);
+}
+
+function advanceFromResult(io, room) {
+  if (room.status !== "playing" || !room.roundData) return;
+  if (room.roundData.phase !== "result") return;
+  clearTimer(room);
+  room.roundData.phase = "result_locked";
+  room.currentRoundIdx++;
+  startNextRound(io, room);
 }
 
 function endGame(io, room) {
@@ -711,6 +723,18 @@ export function registerFibbage(io, supabaseAdmin) {
 
       cb?.({ ok: true });
       submitVote(io, room, me.id, idx);
+    });
+
+    socket.on("fb:hostNext", (_payload, cb) => {
+      const roomId = fbUserRoom.get(me.id);
+      const room = roomId ? fbRooms.get(roomId) : null;
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
+      if (room.status !== "playing" || !room.roundData) return cb?.({ ok: false, error: "NOT_PLAYING" });
+      if (room.roundData.phase !== "result") return cb?.({ ok: false, error: "NOT_RESULT_PHASE" });
+
+      cb?.({ ok: true });
+      advanceFromResult(io, room);
     });
 
     socket.on("fb:leaveRoom", (_payload, cb) => {
