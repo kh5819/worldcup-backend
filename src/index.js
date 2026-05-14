@@ -3569,6 +3569,116 @@ app.delete("/admin/tier-templates/:id", requireAdmin, async (req, res) => {
 });
 
 // =========================
+// 티어 템플릿 공식 승격 (관리자 전용)
+// body: { category, sort_order?, featured? }
+// 원본을 참조하지 않고 새 row 복사본을 만든다 (snapshot).
+// 원본은 손대지 않는다.
+// =========================
+app.post("/admin/tier-templates/:id/promote", requireAdmin, async (req, res) => {
+  try {
+    const srcId = String(req.params.id || "");
+    const { category, sort_order, featured } = req.body || {};
+    if (!srcId) return res.status(400).json({ ok: false, error: "MISSING_ID" });
+    if (!category) return res.status(400).json({ ok: false, error: "MISSING_CATEGORY" });
+    const ALLOWED_CATEGORIES = ["상황극","자리배치","빙고","사분면","매칭","게임/애니","연애/밈","조직도/포지션"];
+    if (!ALLOWED_CATEGORIES.includes(category)) {
+      return res.status(400).json({ ok: false, error: "INVALID_CATEGORY" });
+    }
+
+    // 1) 원본 조회
+    const { data: src, error: selErr } = await supabaseAdmin
+      .from("tier_templates")
+      .select("*")
+      .eq("id", srcId)
+      .single();
+    if (selErr || !src) {
+      console.error("[promote] src select fail:", selErr);
+      return res.status(404).json({ ok: false, error: "SRC_NOT_FOUND" });
+    }
+
+    // 2) 복사본 INSERT (참조 X, 새 row)
+    const payload = {
+      creator_id: req.user.id,        // 공식 템플릿의 creator는 승격 관리자
+      title: src.title,
+      description: src.description,
+      tags: src.tags,
+      cards: src.cards,
+      base_tiers: src.base_tiers,
+      board_type: src.board_type || "tier",
+      board_config: src.board_config,
+      board_items: src.board_items,
+      thumbnail_url: src.thumbnail_url,
+      is_public: true,
+      is_official_template: true,
+      official_category: category,
+      official_sort_order: Number.isInteger(sort_order) ? sort_order : 0,
+      official_featured: !!featured,
+      source_template_id: src.id,
+    };
+
+    const { data: created, error: insErr } = await supabaseAdmin
+      .from("tier_templates")
+      .insert(payload)
+      .select("id, title, board_type, is_official_template, official_category, official_featured")
+      .single();
+    if (insErr) {
+      console.error("[promote] insert fail:", insErr);
+      return res.status(500).json({ ok: false, error: "DB_ERROR", detail: insErr.message });
+    }
+
+    // 3) audit log
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: "promote_official",
+      target_type: "tier_template",
+      target_id: srcId,
+      detail: JSON.stringify({ new_template_id: created.id, category, featured: !!featured }),
+    }).then(() => {}).catch(() => {});
+
+    return res.json({ ok: true, new_template_id: created.id, template: created });
+  } catch (err) {
+    console.error("POST /admin/tier-templates/:id/promote:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 공식 템플릿 토글 (이미 공식인 row의 featured/sort/해제)
+app.patch("/admin/tier-templates/:id/official", requireAdmin, async (req, res) => {
+  try {
+    const id = String(req.params.id || "");
+    const { is_official_template, official_category, official_sort_order, official_featured } = req.body || {};
+    const patch = {};
+    if (typeof is_official_template === "boolean") patch.is_official_template = is_official_template;
+    if (typeof official_category === "string") patch.official_category = official_category;
+    if (Number.isInteger(official_sort_order)) patch.official_sort_order = official_sort_order;
+    if (typeof official_featured === "boolean") patch.official_featured = official_featured;
+    if (!Object.keys(patch).length) return res.status(400).json({ ok: false, error: "NO_FIELDS" });
+
+    const { error } = await supabaseAdmin
+      .from("tier_templates")
+      .update(patch)
+      .eq("id", id);
+    if (error) {
+      console.error("[official PATCH] error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    await supabaseAdmin.from("admin_actions").insert({
+      admin_user_id: req.user.id,
+      action_type: "set_official",
+      target_type: "tier_template",
+      target_id: id,
+      detail: JSON.stringify(patch),
+    }).then(() => {}).catch(() => {});
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /admin/tier-templates/:id/official:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 티어 신고 관리자 API
 // =========================
 
