@@ -1299,58 +1299,99 @@ async function _withSitemapCache(key, fn) {
   return xml;
 }
 
+function escapeXml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;")
+    // XML 1.0에서 허용되지 않는 제어문자 제거
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+}
+
+function _isValidId(id) {
+  if (id == null) return false;
+  const s = String(id).trim();
+  if (!s) return false;
+  // UUID 또는 영숫자+하이픈+언더스코어만 (XML/URL 안전 보장)
+  return /^[A-Za-z0-9_-]+$/.test(s);
+}
+
+function _formatLastmod(v) {
+  if (!v) return "";
+  try {
+    const d = new Date(v);
+    if (isNaN(d.getTime())) return "";
+    return d.toISOString().slice(0, 10);
+  } catch { return ""; }
+}
+
 app.get("/sitemap-content.xml", async (req, res) => {
   try {
     const xml = await _withSitemapCache("content", async () => {
-      const { data: rows } = await supabaseAdmin
+      const { data: rows, error } = await supabaseAdmin
         .from("contents")
         .select("id, mode, updated_at")
         .eq("is_hidden", false)
         .eq("visibility", "public")
         .order("updated_at", { ascending: false })
         .limit(50000);
-      const items = (rows || []).map(r => {
-        const path = r.mode === "worldcup" ? `/w/${r.id}` : `/q/${r.id}`;
-        const lastmod = r.updated_at ? new Date(r.updated_at).toISOString().slice(0, 10) : "";
-        return `<url><loc>${SITE_URL}${path}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}<changefreq>weekly</changefreq><priority>0.7</priority></url>`;
-      }).join("");
-      return `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${items}</urlset>`;
+      if (error) { console.error("[sitemap-content query]", error); }
+      const items = (rows || [])
+        .filter(r => r && _isValidId(r.id) && (r.mode === "worldcup" || r.mode === "quiz"))
+        .map(r => {
+          const path = r.mode === "worldcup" ? `/w/${escapeXml(r.id)}` : `/q/${escapeXml(r.id)}`;
+          const lastmod = _formatLastmod(r.updated_at);
+          return `<url><loc>${SITE_URL}${path}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}<changefreq>weekly</changefreq><priority>0.7</priority></url>`;
+        })
+        .filter(Boolean)
+        .join("");
+      // 빈 응답도 valid한 형태 보장
+      return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${items || `<url><loc>${SITE_URL}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`}</urlset>`;
     });
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
     res.send(xml);
   } catch (e) {
     console.error("[sitemap-content]", e);
-    res.status(500).send("Internal");
+    res.status(500).type("text/plain").send("Internal");
   }
 });
 
 app.get("/sitemap-tier.xml", async (req, res) => {
   try {
     const xml = await _withSitemapCache("tier", async () => {
-      const { data: rows } = await supabaseAdmin
+      const { data: rows, error } = await supabaseAdmin
         .from("tier_templates")
         .select("id, updated_at, visibility")
         .eq("is_hidden", false)
         .order("updated_at", { ascending: false })
         .limit(50000);
+      if (error) { console.error("[sitemap-tier query]", error); }
       const items = (rows || [])
-        .filter(r => !r.visibility || r.visibility === "public")
+        .filter(r => r && _isValidId(r.id) && (!r.visibility || r.visibility === "public"))
         .map(r => {
-          const lastmod = r.updated_at ? new Date(r.updated_at).toISOString().slice(0, 10) : "";
-          return `<url><loc>${SITE_URL}/t/${r.id}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}<changefreq>weekly</changefreq><priority>0.6</priority></url>`;
-        }).join("");
-      return `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${items}</urlset>`;
+          const lastmod = _formatLastmod(r.updated_at);
+          return `<url><loc>${SITE_URL}/t/${escapeXml(r.id)}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}<changefreq>weekly</changefreq><priority>0.6</priority></url>`;
+        })
+        .filter(Boolean)
+        .join("");
+      return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${items || `<url><loc>${SITE_URL}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`}</urlset>`;
     });
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
     res.send(xml);
   } catch (e) {
     console.error("[sitemap-tier]", e);
-    res.status(500).send("Internal");
+    res.status(500).type("text/plain").send("Internal");
   }
+});
+
+// sitemap 캐시 즉시 무효화 (개발/admin용, 토큰 옵션)
+app.get("/sitemap-bust", (req, res) => {
+  SITEMAP_CACHE.clear();
+  res.json({ ok: true, cleared: true });
 });
 
 // /sitemap-index.xml — 모든 sitemap을 묶는 index
