@@ -5,7 +5,9 @@
   "main": "src/index.js",
   "scripts": {
     "dev": "node --watch src/index.js",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "sync-lifegame": "node scripts/sync-lifegame-data.js",
+    "sync-lifegame:watch": "node scripts/sync-lifegame-data.js --watch"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",

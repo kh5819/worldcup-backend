@@ -61,17 +61,20 @@ function clampStat(key, val) {
   return Math.max(0, Math.min(100, val));
 }
 
-function newPlayerState(name, isGuest, avatarUrl) {
+function newPlayerState(name, isGuest, avatarUrl, gender) {
   const stats = {};
   for (const def of STAT_DEFS) stats[def.key] = def.initial;
   return {
     name: String(name || "익명").slice(0, 20),
     isGuest: !!isGuest,
     avatar_url: avatarUrl || null,
+    gender: gender || null, // 'M' | 'F' | 'X' | null — 효과/엔딩에만 영향, 멀티는 이벤트 필터링은 하지 않음
     joinedAt: Date.now(),
     connected: true,
     stats,
     routes: new Set(),
+    relations: { romance: null, friends: {}, foes: [] },
+    flags: new Set(),
     history: [],
     finished: false,
     ending: null,
@@ -86,9 +89,16 @@ function publicPlayer(userId, p, opts = {}) {
     name: p.name,
     isGuest: p.isGuest,
     avatar_url: p.avatar_url || null,
+    gender: p.gender || null,
     connected: p.connected,
     stats: { ...p.stats },
     routes: Array.from(p.routes),
+    relations: {
+      romance: p.relations?.romance || null,
+      friends: { ...(p.relations?.friends || {}) },
+      foes: [...(p.relations?.foes || [])],
+    },
+    flags: Array.from(p.flags || []),
     finished: p.finished,
   };
 }
@@ -117,6 +127,7 @@ function publicEvent(ev) {
   return {
     id: ev.id,
     stage: ev.stage,
+    type: ev.type || "normal",
     emoji: ev.emoji,
     title: ev.title,
     desc: ev.desc,
@@ -127,6 +138,7 @@ function publicEvent(ev) {
       text: c.text,
       sub: c.sub || null,
       hasOutcomes: !!c.outcomes,
+      hasLongTerm: !!c.longTerm,
     })),
   };
 }
@@ -139,11 +151,16 @@ function getStage(room) {
 function pickRoomEvent(room) {
   const stage = getStage(room);
   if (!stage) return null;
+  // 멀티에서는 모든 플레이어가 같은 이벤트를 보므로
+  // 개인 조건(gender/flag/relation/longterm 결과) 이벤트는 제외한다.
   const candidates = EVENTS.filter(ev => {
+    if (ev.type === "longterm") return false;
     if (ev.stage !== stage.id) return false;
     if (room.seenEventIds.has(ev.id)) return false;
+    if (ev.genderRequired) return false;
+    if (ev.flagRequired) return false;
+    if (ev.relationRequired) return false;
     if (ev.routeRequired) {
-      // 한 명이라도 해당 루트가 있으면 OK
       const anyHas = room.playerOrder.some(uid => {
         const p = room.players.get(uid);
         return p && ev.routeRequired.some(r => p.routes.has(r));
@@ -153,10 +170,20 @@ function pickRoomEvent(room) {
     return true;
   });
   if (candidates.length === 0) {
-    const fallback = EVENTS.filter(ev => ev.stage === stage.id && !ev.routeRequired);
+    const fallback = EVENTS.filter(ev =>
+      ev.stage === stage.id && !ev.routeRequired && !ev.genderRequired &&
+      !ev.flagRequired && !ev.relationRequired && ev.type !== "longterm"
+    );
     return fallback.length ? pickWeighted(fallback) : null;
   }
-  return pickWeighted(candidates);
+  return pickWeighted(candidates, (ev) => {
+    let w = ev.weight != null ? ev.weight : 1;
+    if (ev.routeRequired && ev.routeRequired.some(r =>
+      room.playerOrder.some(uid => room.players.get(uid)?.routes?.has?.(r))
+    )) w *= 1.6;
+    if (ev.type === "special") w *= 0.7;
+    return w;
+  });
 }
 
 function applyChoiceForPlayer(player, event, choiceId) {
@@ -207,6 +234,33 @@ function applyChoiceForPlayer(player, event, choiceId) {
   if (choice.route) player.routes.add(choice.route);
   if (outcome?.route) player.routes.add(outcome.route);
 
+  // 관계 처리 (멀티에서도 솔로와 동일 시맨틱)
+  const applyRelation = (rel) => {
+    if (!rel) return;
+    if (rel.romance) player.relations.romance = rel.romance;
+    if (rel.breakup) player.relations.romance = null;
+    if (rel.friend && rel.delta != null) {
+      player.relations.friends[rel.friend] = (player.relations.friends[rel.friend] || 0) + rel.delta;
+      if (player.relations.friends[rel.friend] <= -50) {
+        player.relations.foes.push(rel.friend);
+        delete player.relations.friends[rel.friend];
+      }
+    }
+    if (rel.foe) player.relations.foes.push(rel.foe);
+  };
+  applyRelation(choice.relation);
+  applyRelation(outcome?.relation);
+
+  // 플래그 처리
+  const applyFlag = (fl) => {
+    if (!fl) return;
+    if (fl.add) (Array.isArray(fl.add) ? fl.add : [fl.add]).forEach(f => player.flags.add(f));
+    if (fl.remove) (Array.isArray(fl.remove) ? fl.remove : [fl.remove]).forEach(f => player.flags.delete(f));
+  };
+  applyFlag(choice.flag);
+  applyFlag(outcome?.flag);
+  // 주: choice.longTerm은 멀티 v1에서는 큐 미구현 — 효과만 적용되고 결과 이벤트는 발생 X
+
   // narrative
   let narrative = "";
   if (outcome?.narrative) narrative = outcome.narrative;
@@ -238,8 +292,14 @@ function applyChoiceForPlayer(player, event, choiceId) {
 
 function computeEndingFor(player) {
   const r = { has: (k) => player.routes.has(k) };
+  const ctx = {
+    gender: player.gender,
+    flags: { has: (k) => player.flags.has(k) },
+    relations: player.relations,
+    history: player.history,
+  };
   for (const ending of ENDINGS) {
-    if (ending.match(player.stats, r)) {
+    if (ending.match(player.stats, r, ctx)) {
       player.ending = ending;
       break;
     }
@@ -248,7 +308,7 @@ function computeEndingFor(player) {
 
   const lines = [];
   for (const a of ANALYSIS_LINES) {
-    if (a.when(player.stats, r)) lines.push(a.text);
+    if (a.when(player.stats, r, ctx)) lines.push(a.text);
     if (lines.length >= 4) break;
   }
   if (!lines.length) lines.push("어느 한 쪽에 치우치지 않은 균형형. 그냥저냥 살아간다.");
@@ -264,7 +324,23 @@ function rankPlayers(room) {
       p.stats.happy + p.stats.intel + p.stats.social +
       p.stats.power + p.stats.internet + p.stats.luck
     );
-    return { userId: uid, name: p.name, avatar_url: p.avatar_url, score, stats: { ...p.stats }, ending: p.ending, analysis: p.analysis, routes: Array.from(p.routes) };
+    return {
+      userId: uid,
+      name: p.name,
+      avatar_url: p.avatar_url,
+      gender: p.gender || null,
+      score,
+      stats: { ...p.stats },
+      ending: p.ending,
+      analysis: p.analysis,
+      routes: Array.from(p.routes),
+      relations: {
+        romance: p.relations?.romance || null,
+        friends: { ...(p.relations?.friends || {}) },
+        foes: [...(p.relations?.foes || [])],
+      },
+      flags: Array.from(p.flags || []),
+    };
   });
   arr.sort((a, b) => b.score - a.score);
 
@@ -514,7 +590,8 @@ export function registerLifegame(io, supabaseAdmin) {
         } catch {}
 
         const hostName = String(payload?.nickname || "방장").slice(0, 20);
-        room.players.set(me.id, newPlayerState(hostName, false, avatar));
+        const hostGender = ["M", "F", "X"].includes(payload?.gender) ? payload.gender : "X";
+        room.players.set(me.id, newPlayerState(hostName, false, avatar, hostGender));
         room.playerOrder.push(me.id);
         lifegameUserRoom.set(me.id, roomId);
         socket.join(socketRoomName(roomId));
@@ -557,8 +634,9 @@ export function registerLifegame(io, supabaseAdmin) {
           } catch {}
         }
         const playerName = String(payload?.nickname || (me.isGuest ? "게스트" : "유저")).slice(0, 20);
+        const joinGender = ["M", "F", "X"].includes(payload?.gender) ? payload.gender : "X";
 
-        room.players.set(me.id, newPlayerState(playerName, !!me.isGuest, avatar));
+        room.players.set(me.id, newPlayerState(playerName, !!me.isGuest, avatar, joinGender));
         room.playerOrder.push(me.id);
         lifegameUserRoom.set(me.id, roomId);
         socket.join(socketRoomName(roomId));
