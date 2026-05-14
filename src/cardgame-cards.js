@@ -48,6 +48,13 @@ export const CARDS = [
     effect: { damage: 4, splash: 2 }, text: "대상 4 데미지 + 주변 2 데미지" },
   { id: "a_bleed",   name: "베기",        emoji: "🩸", type: "attack", targeting: "enemy",  copies: 2,
     effect: { damage: 2, applyStatus: { bleed: 3 } }, text: "2 데미지 + 출혈(3턴)" },
+  // (v3 신규)
+  { id: "a_volley",  name: "광역 화살",   emoji: "🏹", type: "attack", targeting: "enemy",  copies: 1,
+    effect: { damage: 2, splash: 2 }, text: "대상 2 + 주변 적 2 (전체 광역)" },
+  { id: "a_execute", name: "처형",        emoji: "⚰️", type: "attack", targeting: "enemy",  copies: 1,
+    effect: { damage: 4, executeBonus: { threshold: 8, bonus: 6 } }, text: "4 데미지, 대상 HP 8 이하면 +6" },
+  { id: "a_recoil",  name: "무모한 돌격", emoji: "🐗", type: "attack", targeting: "enemy",  copies: 2,
+    effect: { damage: 7, selfDamage: 1 }, text: "7 데미지, 자기도 1 피해" },
 
   // ===== 방어 카드 (반응 전용) =====
   { id: "d_shield",  name: "방패",        emoji: "🛡️", type: "defense", reactsTo: ["attack"], copies: 4,
@@ -59,6 +66,11 @@ export const CARDS = [
     effect: { reduceDamage: 3 }, text: "받는 피해 -3" },
   { id: "d_void",    name: "무효화",      emoji: "🚫", type: "defense", reactsTo: ["attack"], copies: 1,
     effect: { negateDamage: true, negateStatus: true }, text: "데미지+상태이상 모두 무효" },
+  // (v3 신규) — 사전 발동 self 카드 (방어로 분류하지만 targeting=self로 즉시 사용)
+  { id: "d_charge",  name: "차지 자세",   emoji: "🧱", type: "support", targeting: "self",   copies: 2,
+    effect: { applyStatus: { shield_buff: 2 } }, text: "2턴간 받는 모든 피해 -2" },
+  { id: "d_ward",    name: "결계",        emoji: "🔯", type: "support", targeting: "self",   copies: 1,
+    effect: { teamWard: 1 }, text: "팀 전원에게 다음 공격 1회 무효" },
 
   // ===== 반응 카드 =====
   { id: "r_counter", name: "반격",        emoji: "⚡", type: "reaction", reactsTo: ["attack"], copies: 2,
@@ -67,6 +79,11 @@ export const CARDS = [
     effect: { redirectToSelf: true }, text: "아군 대신 피해 받기" },
   { id: "r_mirror",  name: "거울",        emoji: "🪞", type: "reaction", reactsTo: ["attack"], copies: 1,
     effect: { reflectAll: true }, text: "피해를 공격자에게 그대로 반사" },
+  // (v3 신규)
+  { id: "r_absorb",  name: "흡수",        emoji: "🌀", type: "reaction", reactsTo: ["attack"], copies: 1,
+    effect: { negateDamage: true, absorbCard: true }, text: "공격 무효 + 그 카드를 손패로" },
+  { id: "r_disable", name: "무력화",      emoji: "🙅", type: "reaction", reactsTo: ["attack"], copies: 1,
+    effect: { negateDamage: true, silenceAttacker: 2 }, text: "공격 무효 + 공격자 침묵(2턴)" },
 
   // ===== 지원 카드 =====
   { id: "s_heal",    name: "응급치료",    emoji: "💚", type: "support", targeting: "ally",   copies: 4,
@@ -80,6 +97,9 @@ export const CARDS = [
     effect: { drawSelf: 2 }, text: "카드 2장 드로우" },
   { id: "s_buff",    name: "전투의 함성", emoji: "📯", type: "support", targeting: "self",   copies: 1,
     effect: { applyStatus: { rage: 2 } }, text: "다음 공격 +3 데미지(2턴)" },
+  // (v3 신규)
+  { id: "s_lifesteal", name: "흡혈의 술", emoji: "🦇", type: "support", targeting: "self",   copies: 1,
+    effect: { applyStatus: { lifesteal: 2 } }, text: "2턴간 공격 시 가한 피해의 절반 회복" },
 
   // ===== 특수/억까 카드 =====
   { id: "x_lucky",   name: "운빨좆망겜",  emoji: "🎰", type: "special", targeting: "enemy",  copies: 2,
@@ -97,6 +117,11 @@ export const CARDS = [
   // (신규)
   { id: "x_burn",    name: "손패 태우기", emoji: "🔥", type: "special", targeting: "enemy",  copies: 1,
     effect: { discardTarget: 1 }, text: "대상의 손패 1장 랜덤 파괴" },
+  // (v3 신규)
+  { id: "x_swaphp",  name: "운명 교환",   emoji: "🔄", type: "special", targeting: "enemy",  copies: 1,
+    effect: { swapHp: true }, text: "대상과 HP 교환" },
+  { id: "x_nuke",    name: "핵폭탄",      emoji: "☢️", type: "special", targeting: "self",   copies: 1,
+    effect: { nuke: 5 }, text: "전원(자기 포함) 5 데미지" },
 ];
 
 // === 덱 빌드: copies 만큼 풀어서 1차원 배열 ===

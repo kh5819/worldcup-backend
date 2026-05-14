@@ -22,6 +22,8 @@ import { registerFibbage } from "./fibbage.js";
 import { registerOmok } from "./omok.js";
 // DUO GAME ZONE — 난장 카드게임 (별도 모듈)
 import { registerCardGame } from "./cardgame.js";
+// DUO GAME ZONE — 보드파티 (별도 모듈)
+import { registerBoardParty } from "./boardparty.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -7538,6 +7540,11 @@ registerOmok(io, supabaseAdmin);
 // 난장 카드게임 — 독립 모듈 등록 (cg:* 이벤트 prefix)
 // =========================
 registerCardGame(io, supabaseAdmin);
+
+// =========================
+// 보드파티 — 독립 모듈 등록 (bp:* 이벤트 prefix)
+// =========================
+registerBoardParty(io, supabaseAdmin);
 
 // =========================
 // Socket 연결 핸들러

@@ -394,6 +394,15 @@ function tickStatusesAtTurnStart(io, room, userId) {
     p.statuses.rage -= 1;
     if (p.statuses.rage <= 0) delete p.statuses.rage;
   }
+  if (p.statuses.shield_buff) {
+    p.statuses.shield_buff -= 1;
+    if (p.statuses.shield_buff <= 0) delete p.statuses.shield_buff;
+  }
+  if (p.statuses.lifesteal) {
+    p.statuses.lifesteal -= 1;
+    if (p.statuses.lifesteal <= 0) delete p.statuses.lifesteal;
+  }
+  // ward는 자동 감소 X — 공격 받을 때 소모됨
   if (totalTick > 0) {
     io.to(socketRoomName(room.id)).emit("cg:statusTick", {
       userId, damage: totalTick, statuses: { ...p.statuses }, isDown: p.isDown,
@@ -556,15 +565,28 @@ function resolveTopFrame(io, room) {
   const target = room.players.get(frame.targetUserId);
 
   if (frame.type === "attack") {
+    // ward (다음 공격 1회 무효) — 반응 카드 negate가 없어도 자동 무효
+    if (target && target.statuses?.ward && !frame.negated) {
+      frame.negated = true;
+      target.statuses.ward -= 1;
+      if (target.statuses.ward <= 0) delete target.statuses.ward;
+    }
     if (!frame.negated && target && !target.isDown) {
       let dmg = frame.pendingDamage;
       if (frame.halved) dmg = Math.ceil(dmg / 2);
       if (frame.reduceBy) dmg = Math.max(0, dmg - frame.reduceBy);
+      // shield_buff (받는 모든 피해 -2)
+      if (target.statuses?.shield_buff) dmg = Math.max(0, dmg - 2);
       // 반사 (reflectTo): 공격자 또는 redirect 대상이 받음
       if (frame.reflectTo) {
         applyDamageDirect(io, room, frame.reflectTo, dmg, "반사");
       } else {
         applyDamageDirect(io, room, frame.targetUserId, dmg, "공격");
+        // lifesteal: actor의 statuses.lifesteal가 있으면 절반 회복
+        if (actor && actor.statuses?.lifesteal && dmg > 0) {
+          const heal = Math.ceil(dmg / 2);
+          actor.hp = Math.min(actor.maxHp, actor.hp + heal);
+        }
       }
       // 카드의 applyStatus (negateStatus면 무효)
       const card = getCard(frame.cardId);
@@ -608,6 +630,24 @@ function resolveTopFrame(io, room) {
       }
       if (ef.redirectToSelf) {
         parent.targetUserId = frame.actorUserId; // 보호자가 대신 받음
+      }
+      if (ef.absorbCard) {
+        // 부모 공격 카드를 reaction 사용자 손패로 (덱/버린더미에 안 보냄)
+        const reactor = room.players.get(frame.actorUserId);
+        if (reactor && parent.cardId) {
+          // discard에서 빼고 손패로 (parent.cardId는 사용 시점에 discard로 들어감)
+          const di = room.discard.lastIndexOf(parent.cardId);
+          if (di >= 0) room.discard.splice(di, 1);
+          // 손패 최대치 검사
+          if (reactor.hand.length < MAX_HAND) reactor.hand.push(parent.cardId);
+          sendHandTo(io, room, frame.actorUserId);
+        }
+      }
+      if (ef.silenceAttacker) {
+        const att = room.players.get(parent.actorUserId);
+        if (att && !att.isDown) {
+          att.statuses.silence = Math.max(att.statuses.silence || 0, ef.silenceAttacker);
+        }
       }
     }
   }
@@ -694,9 +734,17 @@ function tryPlayCard(io, room, userId, cardId, targetUserId) {
   discardCard(room, cardId);
   room.cardsPlayedThisTurn += 1;
 
-  // 공격력 보정 (rage: +3, hits: 합산 데미지 그대로 / pierce: pendingDamage 그대로)
+  // 공격력 보정 (rage: +3, executeBonus: 대상 HP 임계 이하면 추가, selfDamage: 자기도 피해)
   let dmg = card.effect?.damage || 0;
   if (p.statuses.rage) dmg += 3;
+  if (card.effect?.executeBonus && targetP) {
+    const eb = card.effect.executeBonus;
+    if (targetP.hp <= eb.threshold) dmg += eb.bonus;
+  }
+  // selfDamage는 카드 사용 즉시 자기에게 적용
+  if (card.effect?.selfDamage) {
+    applyDamageDirect(io, room, userId, card.effect.selfDamage, "반동");
+  }
 
   // 공격 카드 → 반응 스택
   if (card.type === "attack" && !card.pierce) {
@@ -809,6 +857,32 @@ function applyImmediateEffect(io, room, actorId, card, targetUserId) {
     }
   }
   if (ef.drawSelf) drawIntoHand(room, actorId, ef.drawSelf);
+  if (ef.teamWard) {
+    // 자기 팀 전원에게 ward 1 부여 (개인전이면 자기에게만)
+    const actorP = room.players.get(actorId);
+    if (actorP) {
+      const isTeam = modeTeamCount(room.mode) > 0;
+      for (const uid of room.playerOrder) {
+        const tp = room.players.get(uid);
+        if (!tp || tp.isDown) continue;
+        if (!isTeam && uid !== actorId) continue;
+        if (isTeam && tp.team !== actorP.team) continue;
+        tp.statuses.ward = Math.max(tp.statuses.ward || 0, ef.teamWard);
+      }
+    }
+  }
+  if (ef.swapHp) {
+    const a = room.players.get(actorId);
+    const b = room.players.get(targetUserId);
+    if (a && b && !b.isDown && !a.isDown) {
+      const tmp = a.hp; a.hp = Math.min(a.maxHp, b.hp); b.hp = Math.min(b.maxHp, tmp);
+    }
+  }
+  if (ef.nuke) {
+    const ctx = makeEventCtx(io, room);
+    const alive = ctx.alivePlayers();
+    alive.forEach(p => ctx.damage(p.userId, ef.nuke, "핵폭탄"));
+  }
   if (ef.triggerEvent === "random") fireRandomEvent(io, room);
 }
 
