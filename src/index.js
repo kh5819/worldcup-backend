@@ -18,6 +18,8 @@ import { registerLiar } from "./liar.js";
 import { registerOxGame } from "./oxgame.js";
 // DUO GAME ZONE — 거짓말 매치 (별도 모듈)
 import { registerFibbage } from "./fibbage.js";
+// DUO GAME ZONE — 멀티 오목 (별도 모듈)
+import { registerOmok } from "./omok.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
