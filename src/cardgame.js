@@ -858,14 +858,10 @@ function tryPlayReaction(io, room, userId, cardId) {
   });
   sendHandTo(io, room, userId);
 
-  // 반응 깊이 도달 시: 추가 윈도우 없이 즉시 resolve 시작
-  if (newFrame.depth >= REACTION_DEPTH_LIMIT) {
-    return resolveTopFrame(io, room);
-  }
-  // 반응에 또 반응할 수 있는 카드는 MVP에서는 거의 없음(거울 정도)
-  // → 일단 동일하게 윈도우 오픈, 자격자 없으면 즉시 resolve
-  openReactionWindow(io, room, newFrame);
-  return { ok: true };
+  // 반응 카드는 체인을 만들지 않음 — 즉시 LIFO resolve 시작.
+  // (모든 반응 카드의 reactsTo는 'attack' 한정이라 reaction frame에는 어차피 반응 불가.
+  //  윈도우를 열면 원래 공격자에게 의미없는 윈도우가 다시 열려 "다시 A 턴" 버그 발생.)
+  return resolveTopFrame(io, room);
 }
 
 function tryPassReaction(io, room, userId) {
