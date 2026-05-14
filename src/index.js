@@ -7416,6 +7416,11 @@ registerOxGame(io, supabaseAdmin);
 registerFibbage(io, supabaseAdmin);
 
 // =========================
+// 멀티 오목 — 독립 모듈 등록 (omok:* 이벤트 prefix)
+// =========================
+registerOmok(io, supabaseAdmin);
+
+// =========================
 // Socket 연결 핸들러
 // =========================
 
