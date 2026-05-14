@@ -787,6 +787,596 @@ function generateOgHtml({ title, description, image, url, redirectUrl, type = "w
 }
 
 // =========================
+// SEO SSR 라우트 — /q/:id (퀴즈) /w/:id (월드컵) /t/:id (티어)
+// 카톡 미리보기용 /og/* 와 별도. meta refresh 없음. 풀 HTML + JSON-LD.
+// =========================
+
+const escHtml = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+function generateSeoHtml({ title, description, image, canonical, jsonLd, bodyHtml, playUrl, breadcrumb }) {
+  const ldScript = jsonLd ? `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>` : "";
+  const bcScript = breadcrumb ? `<script type="application/ld+json">${JSON.stringify(breadcrumb)}</script>` : "";
+  return `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${escHtml(title)}</title>
+  <meta name="description" content="${escHtml(description)}">
+  <link rel="canonical" href="${escHtml(canonical)}">
+  <meta name="robots" content="index,follow,max-image-preview:large">
+
+  <!-- Open Graph (검색엔진 + SNS 공유 양용) -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="${SITE_NAME}">
+  <meta property="og:title" content="${escHtml(title)}">
+  <meta property="og:description" content="${escHtml(description)}">
+  <meta property="og:image" content="${escHtml(image)}">
+  <meta property="og:url" content="${escHtml(canonical)}">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${escHtml(title)}">
+  <meta name="twitter:description" content="${escHtml(description)}">
+  <meta name="twitter:image" content="${escHtml(image)}">
+
+  ${ldScript}
+  ${bcScript}
+
+  <link rel="icon" href="${SITE_URL}/favicon.ico">
+
+  <!-- Google tag -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-L5HGC9R92N"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-L5HGC9R92N');
+  </script>
+
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+      background: #0d1422; color: #e6ebf5;
+      margin: 0; line-height: 1.6;
+    }
+    .seo-shell { max-width: 720px; margin: 0 auto; padding: 24px 16px 60px; }
+    .seo-topbar {
+      display: flex; justify-content: space-between; align-items: center;
+      padding-bottom: 14px; border-bottom: 1px solid #2c3445; margin-bottom: 18px;
+    }
+    .seo-topbar a { color: #facc15; text-decoration: none; font-weight: 700; font-size: 16px; }
+    .seo-bc {
+      font-size: 12px; color: #94a3b8; margin-bottom: 14px;
+    }
+    .seo-bc a { color: #94a3b8; text-decoration: none; }
+    .seo-bc a:hover { color: #facc15; }
+    h1.seo-title {
+      font-size: 26px; font-weight: 800; margin: 0 0 8px;
+      line-height: 1.3; color: #fff;
+    }
+    .seo-meta {
+      color: #c2c8d4; font-size: 13px; margin-bottom: 18px;
+      display: flex; gap: 8px; flex-wrap: wrap;
+    }
+    .seo-chip {
+      padding: 3px 10px; border-radius: 999px;
+      background: #1a2030; border: 1px solid #2c3445;
+      font-size: 12px;
+    }
+    .seo-thumb {
+      width: 100%; max-width: 480px; border-radius: 12px;
+      display: block; margin: 0 auto 22px;
+      background: #1a2030;
+    }
+    .seo-desc {
+      background: #161b29; border: 1px solid #2c3445;
+      border-radius: 10px; padding: 14px 16px;
+      margin: 16px 0; color: #d1d5db; font-size: 14px;
+    }
+    .seo-section { margin: 22px 0; }
+    .seo-section h2 {
+      font-size: 17px; color: #facc15; margin: 0 0 10px;
+      font-weight: 700; letter-spacing: 0.3px;
+    }
+    .seo-section ol, .seo-section ul { padding-left: 22px; }
+    .seo-section li { margin: 4px 0; color: #c2c8d4; font-size: 13px; }
+    .seo-tags {
+      font-size: 12px; color: #94a3b8; margin: 12px 0;
+    }
+    .seo-tags span {
+      display: inline-block; padding: 2px 8px;
+      background: rgba(255,255,255,0.04); border-radius: 6px;
+      margin: 0 4px 4px 0;
+    }
+    .seo-play {
+      display: block; text-align: center;
+      background: linear-gradient(135deg, #facc15, #f59e0b);
+      color: #0d1422; font-weight: 800; font-size: 17px;
+      padding: 16px; border-radius: 12px; text-decoration: none;
+      margin: 24px 0;
+      box-shadow: 0 6px 20px rgba(250,204,21,0.35);
+      transition: transform .15s;
+    }
+    .seo-play:hover { transform: translateY(-2px); }
+    .seo-creator {
+      font-size: 12px; color: #94a3b8; margin: 8px 0;
+    }
+    .seo-related {
+      margin-top: 32px; padding-top: 18px;
+      border-top: 1px solid #2c3445;
+    }
+    .seo-related h2 { color: #94a3b8; font-size: 14px; }
+    .seo-related a {
+      display: inline-block; padding: 6px 12px;
+      background: #1a2030; border: 1px solid #2c3445;
+      border-radius: 8px; color: #c2c8d4;
+      text-decoration: none; font-size: 13px;
+      margin: 4px 4px 4px 0;
+    }
+    .seo-related a:hover { color: #facc15; border-color: #facc15; }
+  </style>
+</head>
+<body>
+  <div class="seo-shell">
+    <div class="seo-topbar">
+      <a href="${SITE_URL}">🎮 DUO — PlayDuo</a>
+      <a href="${SITE_URL}/gamezone.html" style="font-size:13px">🎮 게임천국</a>
+    </div>
+    ${bodyHtml}
+    <a class="seo-play" href="${escHtml(playUrl)}">▶ 플레이 시작</a>
+    <div class="seo-related">
+      <h2>다른 무료 게임도 즐겨보세요</h2>
+      <a href="${SITE_URL}/gamezone.html">🎮 게임천국</a>
+      <a href="${SITE_URL}/omok.html">⚫⚪ 멀티 오목</a>
+      <a href="${SITE_URL}/cardgame-multi.html">🃏 난장 카드게임</a>
+      <a href="${SITE_URL}/boardparty-multi.html">🎲 보드파티</a>
+      <a href="${SITE_URL}/liar-multi.html">🕵️ 라이어 키워드</a>
+      <a href="${SITE_URL}/fibbage-multi.html">🎭 거짓말 매치</a>
+      <a href="${SITE_URL}/lifegame.html">🎲 인생게임</a>
+      <a href="${SITE_URL}/oxgame-multi.html">⭕ 우리방 OX</a>
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+// 콘텐츠 페이로드 → SEO HTML 생성 (월드컵/퀴즈 공용)
+async function buildContentSeoHtml(contentId, mode) {
+  // contents 조회 + visibility/hidden 필터
+  const { data: content } = await supabaseAdmin
+    .from("contents")
+    .select("id, mode, title, description, thumbnail_url, auto_thumbnail_url, play_count, complete_count, created_at, updated_at, owner_id, visibility, is_hidden, tags, category")
+    .eq("id", contentId)
+    .eq("is_hidden", false)
+    .eq("visibility", "public")
+    .maybeSingle();
+
+  if (!content) return null;
+  // 잘못된 모드 접근 (예: /q/:id인데 worldcup) → 모드 맞는 경로로 canonical 표시
+  // 단 404는 안 함 — 모드 다르면 그냥 contents의 mode로 캐노니컬 설정
+
+  // 후보/문제 수
+  let itemCount = 0;
+  let preview = [];
+  if (content.mode === "worldcup") {
+    const { data: cands } = await supabaseAdmin
+      .from("worldcup_candidates")
+      .select("name", { count: "exact" })
+      .eq("content_id", contentId)
+      .eq("is_active", true)
+      .limit(8);
+    preview = (cands || []).map(c => c.name).filter(Boolean);
+    const { count } = await supabaseAdmin
+      .from("worldcup_candidates")
+      .select("*", { count: "exact", head: true })
+      .eq("content_id", contentId)
+      .eq("is_active", true);
+    itemCount = count || preview.length;
+  } else if (content.mode === "quiz") {
+    const { data: qs } = await supabaseAdmin
+      .from("quiz_questions")
+      .select("title, question")
+      .eq("content_id", contentId)
+      .limit(5);
+    preview = (qs || []).map(q => q.title || q.question).filter(Boolean);
+    const { count } = await supabaseAdmin
+      .from("quiz_questions")
+      .select("*", { count: "exact", head: true })
+      .eq("content_id", contentId);
+    itemCount = count || preview.length;
+  }
+
+  // 제작자 닉네임
+  let creatorName = "";
+  if (content.owner_id) {
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("nickname")
+      .eq("id", content.owner_id)
+      .maybeSingle();
+    creatorName = profile?.nickname || "";
+  }
+
+  const typeLabel = content.mode === "worldcup" ? "이상형 월드컵" : "퀴즈";
+  const typeEmoji = content.mode === "worldcup" ? "🏆" : "❓";
+  const bracketText = itemCount > 0 ? `${itemCount}${content.mode === "worldcup" ? "강" : "문제"}` : "";
+
+  let description = (content.description || "").trim();
+  if (!description || description.length < 20) {
+    if (content.mode === "worldcup") {
+      description = `${content.title} — ${bracketText} 이상형 월드컵. ${creatorName ? creatorName + "이(가) 만든 " : ""}DUO 무료 이상형 월드컵에 도전해보세요. ${typeEmoji}`;
+    } else {
+      description = `${content.title} — ${bracketText} 퀴즈에 도전! ${creatorName ? creatorName + "이(가) 만든 " : ""}DUO 무료 퀴즈. 친구들과 정답률을 비교해보세요.`;
+    }
+  }
+  if (description.length > 160) description = description.slice(0, 157) + "...";
+
+  let ogImage = content.thumbnail_url || content.auto_thumbnail_url || DEFAULT_OG_IMAGE;
+  if (ogImage && !ogImage.startsWith("http")) {
+    ogImage = `${process.env.SUPABASE_URL}/storage/v1/object/public/thumbnails/${ogImage}`;
+  }
+
+  const path = content.mode === "worldcup" ? `/w/${content.id}` : `/q/${content.id}`;
+  const canonical = `${SITE_URL}${path}`;
+  const playUrl = `${SITE_URL}/play.html?solo=1&type=${content.mode}&id=${content.id}`;
+  const title = `${content.title} — ${typeLabel} | DUO`;
+
+  // 카테고리/태그
+  const tags = Array.isArray(content.tags) ? content.tags : [];
+  const tagsHtml = tags.length > 0
+    ? `<div class="seo-tags">${tags.map(t => `<span>#${escHtml(t)}</span>`).join(" ")}</div>`
+    : "";
+
+  // JSON-LD
+  const jsonLd = content.mode === "quiz" ? {
+    "@context": "https://schema.org",
+    "@type": "Quiz",
+    "name": content.title,
+    "description": description,
+    "url": canonical,
+    "image": ogImage,
+    "datePublished": content.created_at,
+    "dateModified": content.updated_at || content.created_at,
+    "author": creatorName ? { "@type": "Person", "name": creatorName } : { "@type": "Organization", "name": "DUO" },
+    "publisher": { "@type": "Organization", "name": "DUO (PlayDuo)", "url": SITE_URL },
+    "numberOfQuestions": itemCount,
+    "interactionStatistic": {
+      "@type": "InteractionCounter",
+      "interactionType": "https://schema.org/PlayAction",
+      "userInteractionCount": content.play_count || 0,
+    },
+  } : {
+    "@context": "https://schema.org",
+    "@type": "CreativeWork",
+    "name": content.title,
+    "description": description,
+    "url": canonical,
+    "image": ogImage,
+    "datePublished": content.created_at,
+    "dateModified": content.updated_at || content.created_at,
+    "author": creatorName ? { "@type": "Person", "name": creatorName } : { "@type": "Organization", "name": "DUO" },
+    "publisher": { "@type": "Organization", "name": "DUO (PlayDuo)", "url": SITE_URL },
+    "interactionStatistic": {
+      "@type": "InteractionCounter",
+      "interactionType": "https://schema.org/PlayAction",
+      "userInteractionCount": content.play_count || 0,
+    },
+  };
+
+  const breadcrumb = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "DUO", "item": SITE_URL },
+      { "@type": "ListItem", "position": 2, "name": typeLabel, "item": canonical },
+    ],
+  };
+
+  // 본문
+  const previewHtml = preview.length > 0
+    ? `<div class="seo-section">
+        <h2>${content.mode === "worldcup" ? "후보 미리보기" : "문제 미리보기"}</h2>
+        <ol>${preview.map(p => `<li>${escHtml(p)}</li>`).join("")}</ol>
+      </div>`
+    : "";
+
+  const bodyHtml = `
+    <nav class="seo-bc" aria-label="breadcrumb">
+      <a href="${SITE_URL}">DUO</a> · <a href="${SITE_URL}/gamezone.html">게임천국</a> · ${escHtml(typeLabel)}
+    </nav>
+    <h1 class="seo-title">${typeEmoji} ${escHtml(content.title)}</h1>
+    <div class="seo-meta">
+      <span class="seo-chip">${escHtml(typeLabel)}</span>
+      ${bracketText ? `<span class="seo-chip">${escHtml(bracketText)}</span>` : ""}
+      <span class="seo-chip">💯 ${(content.play_count || 0).toLocaleString()}회 플레이</span>
+      ${creatorName ? `<span class="seo-chip">👤 ${escHtml(creatorName)}</span>` : ""}
+    </div>
+    ${ogImage ? `<img class="seo-thumb" src="${escHtml(ogImage)}" alt="${escHtml(content.title)}" loading="lazy" />` : ""}
+    <div class="seo-desc">${escHtml(description)}</div>
+    ${tagsHtml}
+    ${previewHtml}
+    <div class="seo-section">
+      <h2>게임 정보</h2>
+      <ul>
+        <li>종류: ${escHtml(typeLabel)}</li>
+        ${bracketText ? `<li>${content.mode === "worldcup" ? "후보 수" : "문제 수"}: ${itemCount}</li>` : ""}
+        <li>누적 플레이: ${(content.play_count || 0).toLocaleString()}회</li>
+        ${content.complete_count ? `<li>완주 수: ${(content.complete_count || 0).toLocaleString()}회</li>` : ""}
+        ${creatorName ? `<li>제작자: ${escHtml(creatorName)}</li>` : ""}
+        <li>등록일: ${new Date(content.created_at).toISOString().slice(0, 10)}</li>
+      </ul>
+    </div>
+  `;
+
+  return generateSeoHtml({
+    title, description, image: ogImage, canonical, jsonLd, breadcrumb, bodyHtml, playUrl,
+  });
+}
+
+// 티어 SEO HTML
+async function buildTierSeoHtml(templateId) {
+  const { data: tmpl } = await supabaseAdmin
+    .from("tier_templates")
+    .select("id, title, description, thumbnail_url, cards, creator_id, play_count, created_at, updated_at, visibility, is_hidden, tags, category")
+    .eq("id", templateId)
+    .eq("is_hidden", false)
+    .maybeSingle();
+
+  if (!tmpl) return null;
+  if (tmpl.visibility && tmpl.visibility !== "public") return null;
+
+  let creatorName = "";
+  if (tmpl.creator_id) {
+    const { data: profile } = await supabaseAdmin
+      .from("profiles")
+      .select("nickname")
+      .eq("id", tmpl.creator_id)
+      .maybeSingle();
+    creatorName = profile?.nickname || "";
+  }
+
+  const cards = Array.isArray(tmpl.cards) ? tmpl.cards : [];
+  const cardCount = cards.length;
+  const preview = cards.slice(0, 10).map(c => c.name || c.label).filter(Boolean);
+
+  let description = (tmpl.description || "").trim();
+  if (!description || description.length < 20) {
+    description = `${tmpl.title} — ${cardCount}장 카드 티어메이커. ${creatorName ? creatorName + "이(가) 만든 " : ""}DUO에서 무료로 티어를 매겨보세요.`;
+  }
+  if (description.length > 160) description = description.slice(0, 157) + "...";
+
+  let ogImage = tmpl.thumbnail_url || (cards[0]?.image_url) || DEFAULT_OG_IMAGE;
+  if (ogImage && !ogImage.startsWith("http")) {
+    ogImage = `${process.env.SUPABASE_URL}/storage/v1/object/public/thumbnails/${ogImage}`;
+  }
+
+  const canonical = `${SITE_URL}/t/${tmpl.id}`;
+  const playUrl = `${SITE_URL}/tier-play.html?id=${tmpl.id}`;
+  const title = `${tmpl.title} — 티어메이커 | DUO`;
+
+  const tags = Array.isArray(tmpl.tags) ? tmpl.tags : [];
+  const tagsHtml = tags.length > 0
+    ? `<div class="seo-tags">${tags.map(t => `<span>#${escHtml(t)}</span>`).join(" ")}</div>`
+    : "";
+
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "CreativeWork",
+    "name": tmpl.title,
+    "description": description,
+    "url": canonical,
+    "image": ogImage,
+    "datePublished": tmpl.created_at,
+    "dateModified": tmpl.updated_at || tmpl.created_at,
+    "author": creatorName ? { "@type": "Person", "name": creatorName } : { "@type": "Organization", "name": "DUO" },
+    "publisher": { "@type": "Organization", "name": "DUO (PlayDuo)", "url": SITE_URL },
+    "interactionStatistic": {
+      "@type": "InteractionCounter",
+      "interactionType": "https://schema.org/PlayAction",
+      "userInteractionCount": tmpl.play_count || 0,
+    },
+  };
+
+  const breadcrumb = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "DUO", "item": SITE_URL },
+      { "@type": "ListItem", "position": 2, "name": "티어메이커", "item": canonical },
+    ],
+  };
+
+  const previewHtml = preview.length > 0
+    ? `<div class="seo-section">
+        <h2>카드 미리보기</h2>
+        <ol>${preview.map(p => `<li>${escHtml(p)}</li>`).join("")}</ol>
+      </div>`
+    : "";
+
+  const bodyHtml = `
+    <nav class="seo-bc" aria-label="breadcrumb">
+      <a href="${SITE_URL}">DUO</a> · <a href="${SITE_URL}/gamezone.html">게임천국</a> · 티어메이커
+    </nav>
+    <h1 class="seo-title">🎴 ${escHtml(tmpl.title)}</h1>
+    <div class="seo-meta">
+      <span class="seo-chip">티어메이커</span>
+      ${cardCount > 0 ? `<span class="seo-chip">${cardCount}장 카드</span>` : ""}
+      <span class="seo-chip">💯 ${(tmpl.play_count || 0).toLocaleString()}회 플레이</span>
+      ${creatorName ? `<span class="seo-chip">👤 ${escHtml(creatorName)}</span>` : ""}
+    </div>
+    ${ogImage ? `<img class="seo-thumb" src="${escHtml(ogImage)}" alt="${escHtml(tmpl.title)}" loading="lazy" />` : ""}
+    <div class="seo-desc">${escHtml(description)}</div>
+    ${tagsHtml}
+    ${previewHtml}
+    <div class="seo-section">
+      <h2>티어메이커 정보</h2>
+      <ul>
+        <li>종류: 티어메이커 (Tier Maker)</li>
+        ${cardCount > 0 ? `<li>카드 수: ${cardCount}</li>` : ""}
+        <li>누적 플레이: ${(tmpl.play_count || 0).toLocaleString()}회</li>
+        ${creatorName ? `<li>제작자: ${escHtml(creatorName)}</li>` : ""}
+        <li>등록일: ${new Date(tmpl.created_at).toISOString().slice(0, 10)}</li>
+      </ul>
+    </div>
+  `;
+
+  return generateSeoHtml({
+    title, description, image: ogImage, canonical, jsonLd, breadcrumb, bodyHtml, playUrl,
+  });
+}
+
+// /q/:id — 퀴즈 SSR
+app.get("/q/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const html = await buildContentSeoHtml(id, "quiz");
+    if (!html) return res.status(404).send(generateOgHtml({
+      title: "콘텐츠를 찾을 수 없습니다 — DUO",
+      description: "비공개되었거나 삭제된 콘텐츠입니다.",
+      image: DEFAULT_OG_IMAGE, url: SITE_URL, redirectUrl: SITE_URL,
+    }));
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=600, s-maxage=3600, stale-while-revalidate=600");
+    res.send(html);
+  } catch (e) {
+    console.error("[GET /q/:id]", e);
+    res.status(500).send("Internal");
+  }
+});
+
+// /w/:id — 월드컵 SSR
+app.get("/w/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const html = await buildContentSeoHtml(id, "worldcup");
+    if (!html) return res.status(404).send(generateOgHtml({
+      title: "콘텐츠를 찾을 수 없습니다 — DUO",
+      description: "비공개되었거나 삭제된 콘텐츠입니다.",
+      image: DEFAULT_OG_IMAGE, url: SITE_URL, redirectUrl: SITE_URL,
+    }));
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=600, s-maxage=3600, stale-while-revalidate=600");
+    res.send(html);
+  } catch (e) {
+    console.error("[GET /w/:id]", e);
+    res.status(500).send("Internal");
+  }
+});
+
+// /t/:id — 티어 SSR
+app.get("/t/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const html = await buildTierSeoHtml(id);
+    if (!html) return res.status(404).send(generateOgHtml({
+      title: "콘텐츠를 찾을 수 없습니다 — DUO",
+      description: "비공개되었거나 삭제된 티어입니다.",
+      image: DEFAULT_OG_IMAGE, url: SITE_URL, redirectUrl: SITE_URL,
+    }));
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=600, s-maxage=3600, stale-while-revalidate=600");
+    res.send(html);
+  } catch (e) {
+    console.error("[GET /t/:id]", e);
+    res.status(500).send("Internal");
+  }
+});
+
+// =========================
+// 동적 sitemap — UGC 전체 색인
+// /sitemap-content.xml: 월드컵+퀴즈
+// /sitemap-tier.xml: 티어
+// /sitemap-index.xml: 위 둘 + 정적 + 게임 페이지를 묶는 sitemap index
+// =========================
+
+const SITEMAP_CACHE = new Map();
+const SITEMAP_TTL = 3600_000; // 1시간
+
+async function _withSitemapCache(key, fn) {
+  const c = SITEMAP_CACHE.get(key);
+  if (c && Date.now() - c.ts < SITEMAP_TTL) return c.xml;
+  const xml = await fn();
+  SITEMAP_CACHE.set(key, { xml, ts: Date.now() });
+  return xml;
+}
+
+app.get("/sitemap-content.xml", async (req, res) => {
+  try {
+    const xml = await _withSitemapCache("content", async () => {
+      const { data: rows } = await supabaseAdmin
+        .from("contents")
+        .select("id, mode, updated_at")
+        .eq("is_hidden", false)
+        .eq("visibility", "public")
+        .order("updated_at", { ascending: false })
+        .limit(50000);
+      const items = (rows || []).map(r => {
+        const path = r.mode === "worldcup" ? `/w/${r.id}` : `/q/${r.id}`;
+        const lastmod = r.updated_at ? new Date(r.updated_at).toISOString().slice(0, 10) : "";
+        return `<url><loc>${SITE_URL}${path}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}<changefreq>weekly</changefreq><priority>0.7</priority></url>`;
+      }).join("");
+      return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${items}</urlset>`;
+    });
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
+    res.send(xml);
+  } catch (e) {
+    console.error("[sitemap-content]", e);
+    res.status(500).send("Internal");
+  }
+});
+
+app.get("/sitemap-tier.xml", async (req, res) => {
+  try {
+    const xml = await _withSitemapCache("tier", async () => {
+      const { data: rows } = await supabaseAdmin
+        .from("tier_templates")
+        .select("id, updated_at, visibility")
+        .eq("is_hidden", false)
+        .order("updated_at", { ascending: false })
+        .limit(50000);
+      const items = (rows || [])
+        .filter(r => !r.visibility || r.visibility === "public")
+        .map(r => {
+          const lastmod = r.updated_at ? new Date(r.updated_at).toISOString().slice(0, 10) : "";
+          return `<url><loc>${SITE_URL}/t/${r.id}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}<changefreq>weekly</changefreq><priority>0.6</priority></url>`;
+        }).join("");
+      return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${items}</urlset>`;
+    });
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
+    res.send(xml);
+  } catch (e) {
+    console.error("[sitemap-tier]", e);
+    res.status(500).send("Internal");
+  }
+});
+
+// /sitemap-index.xml — 모든 sitemap을 묶는 index
+app.get("/sitemap-index.xml", async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap>
+    <loc>${SITE_URL}/sitemap.xml</loc>
+    <lastmod>${today}</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>${SITE_URL}/sitemap-content.xml</loc>
+    <lastmod>${today}</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>${SITE_URL}/sitemap-tier.xml</loc>
+    <lastmod>${today}</lastmod>
+  </sitemap>
+</sitemapindex>`;
+  res.setHeader("Content-Type", "application/xml; charset=utf-8");
+  res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
+  res.send(xml);
+});
+
+// =========================
 // OG 이미지 프록시 (선택적: Storage 권한 문제 해결용)
 // GET /og/image/:id → 이미지 프록시/리다이렉트
 // =========================
