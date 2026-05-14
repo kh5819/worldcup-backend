@@ -5,10 +5,14 @@
 // - 'cg:*' 이벤트 prefix
 // - socket.io room name = `cg:${roomId}`
 //
-// 모드:
-//   '1v1'  — 2인, 팀 2
-//   '2v2'  — 4인, 팀 2
-//   'ffa4' — 2~4인 개인전
+// 모드: 처음부터 8인 기준 통합 설계
+//   '1v1'     — 2인, 팀2 (1-1)
+//   '2v2'     — 4인, 팀2 (2-2)
+//   '3v3'     — 6인, 팀2 (3-3)
+//   '4v4'     — 8인, 팀2 (4-4)
+//   '2v2v2'   — 6인, 팀3 (2-2-2)
+//   '2v2v2v2' — 8인, 팀4 (2-2-2-2)
+//   'ffa8'    — 2~8인 개인전
 //
 // 핵심: 반응 카드 스택 (Action Stack, LIFO)
 //   공격 카드 사용 → 스택에 push → 대상(+팀원/전체)에게 반응 윈도우 오픈
@@ -25,12 +29,22 @@ const cgInvites = new Map();    // inviteCode → roomId
 const cgUserRoom = new Map();   // userId → roomId
 
 // ===== Constants =====
-const ALLOWED_MODES = ["1v1", "2v2", "ffa4"];
+// 모드: 처음부터 8인 기준 통합 설계
+// teams=0 (개인전) / 2 / 3 / 4
+// perTeam = 팀당 인원 (teams>=2일 때)
+const ALLOWED_MODES = ["1v1", "2v2", "3v3", "4v4", "2v2v2", "2v2v2v2", "ffa8"];
 const MODE_INFO = {
-  "1v1":  { players: 2, teams: 2 },
-  "2v2":  { players: 4, teams: 2 },
-  "ffa4": { players: null, teams: 0, max: 4 },
+  "1v1":     { players: 2, teams: 2, perTeam: 1 },
+  "2v2":     { players: 4, teams: 2, perTeam: 2 },
+  "3v3":     { players: 6, teams: 2, perTeam: 3 },
+  "4v4":     { players: 8, teams: 2, perTeam: 4 },
+  "2v2v2":   { players: 6, teams: 3, perTeam: 2 },
+  "2v2v2v2": { players: 8, teams: 4, perTeam: 2 },
+  "ffa8":    { players: 8, teams: 0, perTeam: null, min: 2 },
 };
+const MAX_PLAYERS_HARD_CAP = 8;
+const ALLOWED_TURN_SECS = [10, 20, 30, 45, 60, 90, 120, 180];
+const ALLOWED_REACTION_SECS = [3, 5, 7, 10];
 const DEFAULT_HP = 25;
 const DEFAULT_HAND = 5;
 const DEFAULT_DRAW_PER_TURN = 1;
@@ -41,7 +55,9 @@ const REACTION_DEPTH_LIMIT = 3;
 const EVENT_EVERY_N_TURNS = 4;
 const EMPTY_ROOM_TTL_MS = 30_000;
 const ENDED_ROOM_TTL_MS = 10 * 60_000;
-const TEAM_COLORS = ["#3b82f6", "#ef4444", "#22c55e", "#facc15"];
+// 팀 색상 (최대 4팀까지)
+const TEAM_COLORS = ["#ef4444", "#3b82f6", "#22c55e", "#facc15"];
+const TEAM_LABELS = ["A", "B", "C", "D"];
 
 function socketRoomName(roomId) { return `cg:${roomId}`; }
 function shuffleArr(arr) {
@@ -76,25 +92,29 @@ function newPlayerState(name, isGuest, avatarUrl) {
   };
 }
 
+// 팀 자동 배정: 입장 순서로 round-robin (팀 수 만큼 회전)
+// 개인전(ffa8)이면 각자 다른 team id
 function assignTeams(room) {
+  const info = MODE_INFO[room.mode];
+  if (!info) return;
   const order = room.playerOrder;
-  if (room.mode === "1v1") {
+  if (info.teams === 0) {
+    // 개인전: 각자 고유 team
     order.forEach((uid, i) => { const p = room.players.get(uid); if (p) p.team = i; });
-  } else if (room.mode === "2v2") {
-    order.forEach((uid, i) => { const p = room.players.get(uid); if (p) p.team = i % 2; });
-  } else if (room.mode === "ffa4") {
-    order.forEach((uid, i) => { const p = room.players.get(uid); if (p) p.team = i; });
+  } else {
+    // 팀전: round-robin
+    order.forEach((uid, i) => { const p = room.players.get(uid); if (p) p.team = i % info.teams; });
   }
 }
 
-function modeMaxPlayers(mode) {
-  if (mode === "ffa4") return MODE_INFO.ffa4.max;
-  return MODE_INFO[mode]?.players || 2;
-}
+function modeMaxPlayers(mode) { return MODE_INFO[mode]?.players || 2; }
 function modeMinPlayers(mode) {
-  if (mode === "ffa4") return 2;
-  return MODE_INFO[mode]?.players || 2;
+  const info = MODE_INFO[mode];
+  if (!info) return 2;
+  return info.min ?? info.players;
 }
+function modeTeamCount(mode) { return MODE_INFO[mode]?.teams || 0; }
+function modePerTeam(mode) { return MODE_INFO[mode]?.perTeam || null; }
 
 // ===== Public serialization =====
 function publicPlayer(userId, p, includeHandCount = true) {
@@ -266,24 +286,21 @@ function teamsAlive(room) {
 
 function checkWinCondition(io, room) {
   const teams = teamsAlive(room);
-  if (room.mode === "ffa4") {
-    if (teams.size <= 1) {
-      const winnerUid = room.playerOrder.find(uid => !room.players.get(uid).isDown) || null;
-      const winnerP = winnerUid ? room.players.get(winnerUid) : null;
-      room.winnerTeam = winnerP?.team ?? null;
-      room.winnerUserId = winnerUid;
-      endGame(io, room);
-      return true;
-    }
+  if (teams.size > 1) return false;
+
+  const isTeamMode = modeTeamCount(room.mode) > 0;
+  if (isTeamMode) {
+    room.winnerTeam = teams.values().next().value ?? null;
+    room.winnerUserId = null;
   } else {
-    if (teams.size <= 1) {
-      room.winnerTeam = teams.values().next().value ?? null;
-      room.winnerUserId = null;
-      endGame(io, room);
-      return true;
-    }
+    // 개인전: 마지막 생존자
+    const winnerUid = room.playerOrder.find(uid => !room.players.get(uid).isDown) || null;
+    const winnerP = winnerUid ? room.players.get(winnerUid) : null;
+    room.winnerTeam = winnerP?.team ?? null;
+    room.winnerUserId = winnerUid;
   }
-  return false;
+  endGame(io, room);
+  return true;
 }
 
 function endGame(io, room) {
@@ -439,15 +456,16 @@ function makeFrame({ type, actorUserId, targetUserId, cardId, depth, pendingDama
   };
 }
 
+// 누가 반응 카드를 낼 수 있는가?
+// 1) targetUserId 본인
+// 2) 팀전이면 target과 같은 팀원 (protect 카드용 — reactsTo: 'attack:targetTeam')
+// 개인전(teams=0)이면 본인만
 function reactionAwaitList(room, frame) {
-  // 누가 반응 카드를 낼 수 있는가?
-  // 1) targetUserId 본인
-  // 2) target 의 같은 팀원 (protect 같은 카드 — reactsTo: 'attack:targetTeam')
-  // (anyone 카드 추가 시 확장)
   const list = new Set();
   const target = room.players.get(frame.targetUserId);
   if (target && !target.isDown && target.connected) list.add(frame.targetUserId);
-  if (target && room.mode !== "ffa4") {
+  const isTeamMode = modeTeamCount(room.mode) > 0;
+  if (target && isTeamMode) {
     for (const uid of room.playerOrder) {
       const p = room.players.get(uid);
       if (!p || p.isDown || !p.connected) continue;
@@ -597,12 +615,12 @@ function tryPlayCard(io, room, userId, cardId, targetUserId) {
   const targetP = targetUserId ? room.players.get(targetUserId) : null;
   if (card.targeting === "enemy") {
     if (!targetP || targetP.isDown) return { ok: false, error: "INVALID_TARGET" };
-    if (targetP.team === p.team && room.mode !== "ffa4") return { ok: false, error: "TARGET_NOT_ENEMY" };
+    if (targetP.team === p.team && modeTeamCount(room.mode) > 0) return { ok: false, error: "TARGET_NOT_ENEMY" };
     if (targetUserId === userId) return { ok: false, error: "TARGET_NOT_ENEMY" };
   } else if (card.targeting === "ally") {
     if (!targetP || targetP.isDown) return { ok: false, error: "INVALID_TARGET" };
-    if (room.mode !== "ffa4" && targetP.team !== p.team) return { ok: false, error: "TARGET_NOT_ALLY" };
-    if (room.mode === "ffa4" && targetUserId !== userId) return { ok: false, error: "TARGET_NOT_SELF" };
+    if (modeTeamCount(room.mode) > 0 && targetP.team !== p.team) return { ok: false, error: "TARGET_NOT_ALLY" };
+    if (modeTeamCount(room.mode) === 0 && targetUserId !== userId) return { ok: false, error: "TARGET_NOT_SELF" };
   } else if (card.targeting === "any") {
     if (!targetP || targetP.isDown) return { ok: false, error: "INVALID_TARGET" };
   } else if (card.targeting === "self") {
@@ -954,6 +972,16 @@ export function registerCardGame(io, supabaseAdmin) {
         room.maxPlayers = newMax;
         assignTeams(room);
       }
+      if (payload?.turnSec != null) {
+        const n = Number(payload.turnSec);
+        if (!ALLOWED_TURN_SECS.includes(n)) return cb?.({ ok: false, error: "INVALID_TURN_SEC" });
+        room.turnSec = n;
+      }
+      if (payload?.reactionSec != null) {
+        const n = Number(payload.reactionSec);
+        if (!ALLOWED_REACTION_SECS.includes(n)) return cb?.({ ok: false, error: "INVALID_REACTION_SEC" });
+        room.reactionSec = n;
+      }
       broadcastRoomState(io, room);
       cb?.({ ok: true, room: publicRoom(room) });
     });
@@ -963,9 +991,12 @@ export function registerCardGame(io, supabaseAdmin) {
       const room = roomId ? cgRooms.get(roomId) : null;
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (room.status !== "lobby") return cb?.({ ok: false, error: "GAME_ALREADY_STARTED" });
-      if (room.mode === "ffa4") return cb?.({ ok: false, error: "FFA_NO_TEAMS" });
+      const teamCount = modeTeamCount(room.mode);
+      if (teamCount === 0) return cb?.({ ok: false, error: "FFA_NO_TEAMS" });
       const team = Number(payload?.team);
-      if (![0, 1].includes(team)) return cb?.({ ok: false, error: "INVALID_TEAM" });
+      if (!Number.isInteger(team) || team < 0 || team >= teamCount) {
+        return cb?.({ ok: false, error: "INVALID_TEAM" });
+      }
       const p = room.players.get(me.id);
       if (!p) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       p.team = team;
@@ -981,16 +1012,16 @@ export function registerCardGame(io, supabaseAdmin) {
       if (room.status !== "lobby") return cb?.({ ok: false, error: "ALREADY_STARTED" });
       const minNeeded = modeMinPlayers(room.mode);
       if (room.players.size < minNeeded) return cb?.({ ok: false, error: "NOT_ENOUGH_PLAYERS", needed: minNeeded });
-      // 1v1/2v2 팀 인원 균형 체크
-      if (room.mode === "1v1" || room.mode === "2v2") {
-        const need = room.mode === "1v1" ? 1 : 2;
-        let t0 = 0, t1 = 0;
+      // 팀전: 각 팀이 정확히 perTeam 명이어야 시작 가능 (ffa는 검사 X)
+      const tc = modeTeamCount(room.mode);
+      const pt = modePerTeam(room.mode);
+      if (tc > 0 && pt) {
+        const counts = new Array(tc).fill(0);
         for (const uid of room.playerOrder) {
           const p = room.players.get(uid);
-          if (p?.team === 0) t0++;
-          else if (p?.team === 1) t1++;
+          if (p?.team != null && p.team >= 0 && p.team < tc) counts[p.team]++;
         }
-        if (t0 !== need || t1 !== need) return cb?.({ ok: false, error: "TEAM_UNBALANCED" });
+        if (counts.some(n => n !== pt)) return cb?.({ ok: false, error: "TEAM_UNBALANCED", expected: pt, counts });
       }
 
       room.status = "playing";
