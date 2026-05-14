@@ -26,7 +26,7 @@
 // effect: 서버 cardgame.js engine에서 해석. 클라이언트는 표시용 텍스트만 참조.
 
 export const CARDS = [
-  // ===== 공격 카드 (12장) =====
+  // ===== 공격 카드 =====
   { id: "a_club",    name: "몽둥이",      emoji: "🏑", type: "attack", targeting: "enemy",  copies: 4,
     effect: { damage: 3 }, text: "3 데미지" },
   { id: "a_knife",   name: "칼찌르기",    emoji: "🔪", type: "attack", targeting: "enemy",  copies: 4,
@@ -39,14 +39,28 @@ export const CARDS = [
     effect: { damage: 6 }, text: "6 데미지 (반응 불가)", pierce: true },
   { id: "a_pebble",  name: "조약돌",      emoji: "🪨", type: "attack", targeting: "any",    copies: 3,
     effect: { damage: 2 }, text: "아무에게나 2 데미지 (아군 가능)" },
+  // (신규)
+  { id: "a_combo",   name: "연속공격",    emoji: "🤜", type: "attack", targeting: "enemy",  copies: 2,
+    effect: { damage: 5, hits: 2 }, text: "2회 공격, 합산 5 데미지" },
+  { id: "a_snipe",   name: "저격",        emoji: "🎯", type: "attack", targeting: "enemy",  copies: 2,
+    effect: { damage: 7 }, text: "7 데미지 (반응 불가)", pierce: true },
+  { id: "a_bomb",    name: "폭탄",        emoji: "💣", type: "attack", targeting: "enemy",  copies: 1,
+    effect: { damage: 4, splash: 2 }, text: "대상 4 데미지 + 주변 2 데미지" },
+  { id: "a_bleed",   name: "베기",        emoji: "🩸", type: "attack", targeting: "enemy",  copies: 2,
+    effect: { damage: 2, applyStatus: { bleed: 3 } }, text: "2 데미지 + 출혈(3턴)" },
 
-  // ===== 방어 카드 (반응 전용, 7장) =====
+  // ===== 방어 카드 (반응 전용) =====
   { id: "d_shield",  name: "방패",        emoji: "🛡️", type: "defense", reactsTo: ["attack"], copies: 4,
     effect: { halveDamage: true }, text: "받는 피해 절반" },
   { id: "d_dodge",   name: "회피",        emoji: "💨", type: "defense", reactsTo: ["attack"], copies: 3,
     effect: { negateDamage: true }, text: "공격 무효" },
+  // (신규)
+  { id: "d_barrier", name: "보호막",      emoji: "🟦", type: "defense", reactsTo: ["attack"], copies: 2,
+    effect: { reduceDamage: 3 }, text: "받는 피해 -3" },
+  { id: "d_void",    name: "무효화",      emoji: "🚫", type: "defense", reactsTo: ["attack"], copies: 1,
+    effect: { negateDamage: true, negateStatus: true }, text: "데미지+상태이상 모두 무효" },
 
-  // ===== 반응 카드 (5장) =====
+  // ===== 반응 카드 =====
   { id: "r_counter", name: "반격",        emoji: "⚡", type: "reaction", reactsTo: ["attack"], copies: 2,
     effect: { negateDamage: true, reflectDamage: 3 }, text: "피해 막고 공격자에게 3 데미지" },
   { id: "r_protect", name: "보호",        emoji: "💚", type: "reaction", reactsTo: ["attack:targetTeam"], copies: 2,
@@ -54,15 +68,20 @@ export const CARDS = [
   { id: "r_mirror",  name: "거울",        emoji: "🪞", type: "reaction", reactsTo: ["attack"], copies: 1,
     effect: { reflectAll: true }, text: "피해를 공격자에게 그대로 반사" },
 
-  // ===== 지원 카드 (8장) =====
+  // ===== 지원 카드 =====
   { id: "s_heal",    name: "응급치료",    emoji: "💚", type: "support", targeting: "ally",   copies: 4,
     effect: { heal: 4 }, text: "아군 1명 +4 HP" },
   { id: "s_bigheal", name: "회복마법",    emoji: "✨", type: "support", targeting: "ally",   copies: 2,
     effect: { heal: 7 }, text: "아군 1명 +7 HP" },
   { id: "s_cleanse", name: "해독",        emoji: "🧪", type: "support", targeting: "ally",   copies: 2,
     effect: { clearStatus: true }, text: "아군 1명 상태이상 모두 제거" },
+  // (신규)
+  { id: "s_draw",    name: "카드 보급",   emoji: "📦", type: "support", targeting: "self",   copies: 2,
+    effect: { drawSelf: 2 }, text: "카드 2장 드로우" },
+  { id: "s_buff",    name: "전투의 함성", emoji: "📯", type: "support", targeting: "self",   copies: 1,
+    effect: { applyStatus: { rage: 2 } }, text: "다음 공격 +3 데미지(2턴)" },
 
-  // ===== 특수/억까 카드 (8장) =====
+  // ===== 특수/억까 카드 =====
   { id: "x_lucky",   name: "운빨좆망겜",  emoji: "🎰", type: "special", targeting: "enemy",  copies: 2,
     effect: { coinflip: { onWin: { damage: 20 }, onLose: {} } }, text: "50%: 20 데미지 / 50%: 실패" },
   { id: "x_stun",    name: "기절시키기",  emoji: "💫", type: "special", targeting: "enemy",  copies: 2,
@@ -75,6 +94,9 @@ export const CARDS = [
     effect: { triggerEvent: "random" }, text: "랜덤 이벤트 즉시 발동" },
   { id: "x_steal",   name: "카드 훔치기", emoji: "🫳", type: "special", targeting: "enemy",  copies: 1,
     effect: { stealCard: 1 }, text: "대상의 손패 1장 랜덤으로 가져옴" },
+  // (신규)
+  { id: "x_burn",    name: "손패 태우기", emoji: "🔥", type: "special", targeting: "enemy",  copies: 1,
+    effect: { discardTarget: 1 }, text: "대상의 손패 1장 랜덤 파괴" },
 ];
 
 // === 덱 빌드: copies 만큼 풀어서 1차원 배열 ===

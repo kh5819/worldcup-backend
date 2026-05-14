@@ -67,6 +67,92 @@ export const EVENTS = [
       return { affected: [target.userId], msg: `🌟 ${target.name}이(가) 치유의 빛으로 +5 HP` };
     },
   },
+  {
+    id: "ev_shuffle",
+    emoji: "🤡",
+    title: "카드 셔플",
+    desc: "전원 손패 랜덤 재분배",
+    apply: (ctx) => {
+      const alive = ctx.alivePlayers();
+      ctx.shuffleHands(alive.map(p => p.userId));
+      return { affected: alive.map(p => p.userId), msg: "🤡 모두의 손패가 뒤섞임!" };
+    },
+  },
+  {
+    id: "ev_robbery",
+    emoji: "💸",
+    title: "삥뜯기",
+    desc: "랜덤 플레이어 카드 1장 손실",
+    apply: (ctx) => {
+      const alive = ctx.alivePlayers().filter(p => p.hand && p.hand.length > 0);
+      if (alive.length === 0) return { affected: [], msg: "" };
+      ctx.shuffle(alive);
+      const target = alive[0];
+      ctx.discardRandomFromHand(target.userId, 1);
+      return { affected: [target.userId], msg: `💸 ${target.name}의 카드 1장이 사라짐` };
+    },
+  },
+  {
+    id: "ev_berserk",
+    emoji: "⚔️",
+    title: "광전 모드",
+    desc: "전원 다음 공격 +3 데미지",
+    apply: (ctx) => {
+      const alive = ctx.alivePlayers();
+      alive.forEach(p => ctx.applyStatus(p.userId, { rage: 2 }));
+      return { affected: alive.map(p => p.userId), msg: "⚔️ 모두에게 광기! 다음 공격 +3" };
+    },
+  },
+  {
+    id: "ev_topkill",
+    emoji: "💀",
+    title: "죽창",
+    desc: "체력 최고 플레이어 5 데미지",
+    apply: (ctx) => {
+      const alive = ctx.alivePlayers();
+      if (alive.length === 0) return { affected: [], msg: "" };
+      alive.sort((a, b) => b.hp - a.hp);
+      const target = alive[0];
+      ctx.damage(target.userId, 5, "죽창");
+      return { affected: [target.userId], msg: `💀 1등 ${target.name}에게 죽창!` };
+    },
+  },
+  {
+    id: "ev_dice",
+    emoji: "🎲",
+    title: "운명의 주사위",
+    desc: "랜덤 효과 발동",
+    apply: (ctx) => {
+      const alive = ctx.alivePlayers();
+      if (alive.length === 0) return { affected: [], msg: "" };
+      const roll = Math.floor(Math.random() * 6) + 1;
+      const tgt = alive[Math.floor(Math.random() * alive.length)];
+      if (roll <= 2) {
+        ctx.damage(tgt.userId, 3, "주사위");
+        return { affected: [tgt.userId], msg: `🎲 주사위 ${roll}: ${tgt.name} 3 데미지` };
+      } else if (roll <= 4) {
+        ctx.heal(tgt.userId, 4);
+        return { affected: [tgt.userId], msg: `🎲 주사위 ${roll}: ${tgt.name} +4 HP` };
+      } else if (roll === 5) {
+        alive.forEach(p => ctx.drawCards(p.userId, 1));
+        return { affected: alive.map(p => p.userId), msg: `🎲 주사위 5: 전원 카드 +1` };
+      } else {
+        ctx.applyStatus(tgt.userId, { stun: 1 });
+        return { affected: [tgt.userId], msg: `🎲 주사위 6: ${tgt.name} 기절!` };
+      }
+    },
+  },
+  {
+    id: "ev_suicide",
+    emoji: "🧨",
+    title: "자폭 버튼",
+    desc: "전원 2 데미지",
+    apply: (ctx) => {
+      const alive = ctx.alivePlayers();
+      alive.forEach(p => ctx.damage(p.userId, 2, "자폭"));
+      return { affected: alive.map(p => p.userId), msg: "🧨 누군가 자폭 버튼을 누름! 전원 2 데미지" };
+    },
+  },
 ];
 
 const EV_MAP = new Map(EVENTS.map(e => [e.id, e]));

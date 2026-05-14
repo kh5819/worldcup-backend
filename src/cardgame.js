@@ -47,6 +47,7 @@ const ALLOWED_TURN_SECS = [10, 20, 30, 45, 60, 90, 120, 180];
 const ALLOWED_REACTION_SECS = [3, 5, 7, 10];
 const DEFAULT_HP = 25;
 const DEFAULT_HAND = 5;
+const MAX_HAND = 8;                  // 손패 최대치 — 초과 시 드로우 시 무시
 const DEFAULT_DRAW_PER_TURN = 1;
 const DEFAULT_PLAY_PER_TURN = 2;
 const TURN_SEC = 30;
@@ -153,6 +154,7 @@ function publicRoom(room) {
     status: room.status,
     mode: room.mode,
     maxPlayers: room.maxPlayers,
+    maxHand: MAX_HAND,
     turnSec: room.turnSec,
     reactionSec: room.reactionSec,
     teamColors: TEAM_COLORS,
@@ -232,7 +234,10 @@ function drawN(room, n) {
 function drawIntoHand(room, userId, n) {
   const p = room.players.get(userId);
   if (!p) return 0;
-  const cards = drawN(room, n);
+  const room_cap = Math.max(0, MAX_HAND - p.hand.length);
+  const want = Math.min(n, room_cap);
+  if (want <= 0) return 0;
+  const cards = drawN(room, want);
   p.hand.push(...cards);
   return cards.length;
 }
@@ -259,6 +264,35 @@ function makeEventCtx(io, room) {
       }
     },
     drawCards: (userId, n) => drawIntoHand(room, userId, n),
+    discardRandomFromHand: (userId, n) => {
+      const pp = room.players.get(userId);
+      if (!pp) return;
+      for (let i = 0; i < n && pp.hand.length > 0; i++) {
+        const idx = Math.floor(Math.random() * pp.hand.length);
+        const [c] = pp.hand.splice(idx, 1);
+        discardCard(room, c);
+      }
+      sendHandTo(io, room, userId);
+    },
+    shuffleHands: (userIds) => {
+      // 살아있는 플레이어들의 손패를 모두 합쳐서 셔플 후 다시 같은 크기로 분배
+      const pile = [];
+      const sizes = [];
+      for (const uid of userIds) {
+        const pp = room.players.get(uid);
+        if (!pp) { sizes.push(0); continue; }
+        pile.push(...pp.hand);
+        sizes.push(pp.hand.length);
+        pp.hand = [];
+      }
+      shuffleArr(pile);
+      for (let i = 0; i < userIds.length; i++) {
+        const pp = room.players.get(userIds[i]);
+        if (!pp) continue;
+        pp.hand = pile.splice(0, sizes[i]);
+        sendHandTo(io, room, userIds[i]);
+      }
+    },
   };
 }
 
@@ -321,7 +355,7 @@ function endGame(io, room) {
 function tickStatusesAtTurnStart(io, room, userId) {
   const p = room.players.get(userId);
   if (!p) return { skip: false };
-  // burn/poison: 턴 시작 시 피해
+  // burn/poison/bleed: 턴 시작 시 피해
   let totalTick = 0;
   if (p.statuses.poison) {
     const d = 2;
@@ -337,6 +371,13 @@ function tickStatusesAtTurnStart(io, room, userId) {
     p.statuses.burn -= 1;
     if (p.statuses.burn <= 0) delete p.statuses.burn;
   }
+  if (p.statuses.bleed) {
+    const d = 1;
+    totalTick += d;
+    applyDamageDirect(io, room, userId, d, "출혈");
+    p.statuses.bleed -= 1;
+    if (p.statuses.bleed <= 0) delete p.statuses.bleed;
+  }
   // stun: 행동 불가
   let skip = false;
   if (p.statuses.stun) {
@@ -344,10 +385,14 @@ function tickStatusesAtTurnStart(io, room, userId) {
     if (p.statuses.stun <= 0) delete p.statuses.stun;
     skip = !p.isDown;
   }
-  // silence: 자동 감소
+  // silence/rage: 자동 감소
   if (p.statuses.silence) {
     p.statuses.silence -= 1;
     if (p.statuses.silence <= 0) delete p.statuses.silence;
+  }
+  if (p.statuses.rage) {
+    p.statuses.rage -= 1;
+    if (p.statuses.rage <= 0) delete p.statuses.rage;
   }
   if (totalTick > 0) {
     io.to(socketRoomName(room.id)).emit("cg:statusTick", {
@@ -514,20 +559,33 @@ function resolveTopFrame(io, room) {
     if (!frame.negated && target && !target.isDown) {
       let dmg = frame.pendingDamage;
       if (frame.halved) dmg = Math.ceil(dmg / 2);
+      if (frame.reduceBy) dmg = Math.max(0, dmg - frame.reduceBy);
       // 반사 (reflectTo): 공격자 또는 redirect 대상이 받음
       if (frame.reflectTo) {
         applyDamageDirect(io, room, frame.reflectTo, dmg, "반사");
       } else {
         applyDamageDirect(io, room, frame.targetUserId, dmg, "공격");
       }
-      // 카드의 applyStatus
+      // 카드의 applyStatus (negateStatus면 무효)
       const card = getCard(frame.cardId);
-      if (card?.effect?.applyStatus && !frame.reflectTo) {
+      if (card?.effect?.applyStatus && !frame.reflectTo && !frame.negateStatus) {
         const tp = room.players.get(frame.targetUserId);
         if (tp && !tp.isDown) {
           for (const k of Object.keys(card.effect.applyStatus)) {
             tp.statuses[k] = Math.max(tp.statuses[k] || 0, card.effect.applyStatus[k]);
           }
+        }
+      }
+      // splash: 인접한 적도 일부 데미지
+      if (card?.effect?.splash && !frame.reflectTo) {
+        const sp = card.effect.splash;
+        for (const uid of room.playerOrder) {
+          if (uid === frame.targetUserId) continue;
+          const sp_p = room.players.get(uid);
+          if (!sp_p || sp_p.isDown) continue;
+          // 같은 팀이면 splash 안 받음 (팀전 한정)
+          if (modeTeamCount(room.mode) > 0 && sp_p.team === target.team) continue;
+          applyDamageDirect(io, room, uid, sp, "폭발");
         }
       }
     }
@@ -539,6 +597,8 @@ function resolveTopFrame(io, room) {
       const ef = card?.effect || {};
       if (ef.negateDamage) parent.negated = true;
       if (ef.halveDamage) parent.halved = true;
+      if (ef.reduceDamage) parent.reduceBy = (parent.reduceBy || 0) + ef.reduceDamage;
+      if (ef.negateStatus) parent.negateStatus = true;
       if (ef.reflectDamage) {
         // 반격: 새 공격 프레임 만들지 않고 즉시 공격자에게 데미지
         applyDamageDirect(io, room, parent.actorUserId, ef.reflectDamage, "반격");
@@ -634,11 +694,15 @@ function tryPlayCard(io, room, userId, cardId, targetUserId) {
   discardCard(room, cardId);
   room.cardsPlayedThisTurn += 1;
 
+  // 공격력 보정 (rage: +3, hits: 합산 데미지 그대로 / pierce: pendingDamage 그대로)
+  let dmg = card.effect?.damage || 0;
+  if (p.statuses.rage) dmg += 3;
+
   // 공격 카드 → 반응 스택
   if (card.type === "attack" && !card.pierce) {
     const frame = makeFrame({
       type: "attack", actorUserId: userId, targetUserId, cardId,
-      depth: 0, pendingDamage: card.effect?.damage || 0,
+      depth: 0, pendingDamage: dmg,
     });
     room.actionStack.push(frame);
     io.to(socketRoomName(room.id)).emit("cg:actionDeclared", {
@@ -656,7 +720,7 @@ function tryPlayCard(io, room, userId, cardId, targetUserId) {
       frame: null, cardId, actorUserId: userId, actorName: p.name,
       targetUserId, targetName: targetP?.name || null, pierce: true,
     });
-    applyDamageDirect(io, room, targetUserId, card.effect?.damage || 0, "관통");
+    applyDamageDirect(io, room, targetUserId, dmg, "관통");
     if (card.effect?.applyStatus) {
       const tp = room.players.get(targetUserId);
       if (tp && !tp.isDown) {
@@ -732,6 +796,19 @@ function applyImmediateEffect(io, room, actorId, card, targetUserId) {
       sendHandTo(io, room, targetUserId);
     }
   }
+  if (ef.discardTarget) {
+    const b = room.players.get(targetUserId);
+    if (b && !b.isDown && b.hand.length > 0) {
+      const n = Math.min(ef.discardTarget, b.hand.length);
+      for (let i = 0; i < n; i++) {
+        const idx = Math.floor(Math.random() * b.hand.length);
+        const [burned] = b.hand.splice(idx, 1);
+        discardCard(room, burned);
+      }
+      sendHandTo(io, room, targetUserId);
+    }
+  }
+  if (ef.drawSelf) drawIntoHand(room, actorId, ef.drawSelf);
   if (ef.triggerEvent === "random") fireRandomEvent(io, room);
 }
 
@@ -1078,6 +1155,22 @@ export function registerCardGame(io, supabaseAdmin) {
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       const res = tryPassReaction(io, room, me.id);
       cb?.(res);
+    });
+
+    socket.on("cg:drawAndEnd", (_payload, cb) => {
+      const roomId = cgUserRoom.get(me.id);
+      const room = roomId ? cgRooms.get(roomId) : null;
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.status !== "playing") return cb?.({ ok: false, error: "NOT_PLAYING" });
+      if (room.playerOrder[room.currentTurnIdx] !== me.id) return cb?.({ ok: false, error: "NOT_YOUR_TURN" });
+      if (room.actionStack.length > 0) return cb?.({ ok: false, error: "REACTION_PHASE" });
+      if (room.cardsPlayedThisTurn > 0) return cb?.({ ok: false, error: "ALREADY_PLAYED" });
+
+      const drew = drawIntoHand(room, me.id, 1);
+      sendHandTo(io, room, me.id);
+      io.to(socketRoomName(room.id)).emit("cg:draw", { userId: me.id, count: drew, name: room.players.get(me.id)?.name });
+      cb?.({ ok: true, drew });
+      endTurn(io, room, me.id, "DRAW");
     });
 
     socket.on("cg:endTurn", (_payload, cb) => {
