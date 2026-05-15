@@ -188,19 +188,26 @@ async function pickOfficialWord(supabase, category) {
 
 // ===== 라운드/게임 lifecycle =====
 async function startRound(io, room, supabase) {
-  // 다음 출제자 결정 — drewThisGame=false인 사람 중 playerOrder 순서대로
-  let drawerId = null;
-  for (const uid of room.playerOrder) {
-    const p = room.players.get(uid);
-    if (p && !p.drewThisGame) { drawerId = uid; break; }
-  }
-  if (!drawerId) {
-    // 모두 출제 완료 → 게임 종료
+  // 다음 라운드 번호. rounds 옵션 채우면 종료.
+  const nextRoundNo = room.currentRound + 1;
+  if (nextRoundNo > room.rounds) {
     finishGame(io, room, "ALL_ROUNDS_DONE");
     return;
   }
+  // 출제자 = playerOrder 순환 (라운드-1 인덱스). 2명 5라운드 = A,B,A,B,A
+  // playerOrder가 비어있거나 손상되면 종료
+  if (!room.playerOrder.length) {
+    finishGame(io, room, "NO_PLAYERS");
+    return;
+  }
+  const drawerIdx = (nextRoundNo - 1) % room.playerOrder.length;
+  const drawerId = room.playerOrder[drawerIdx];
+  if (!drawerId || !room.players.has(drawerId)) {
+    finishGame(io, room, "NO_DRAWER");
+    return;
+  }
 
-  room.currentRound += 1;
+  room.currentRound = nextRoundNo;
   room.currentDrawerId = drawerId;
   room.currentWord = null;
   room.roundStartedAt = null;
@@ -240,7 +247,7 @@ function beginDrawing(io, room, word) {
   room.roundStartedAt = Date.now();
   const drawerId = room.currentDrawerId;
   const drawer = room.players.get(drawerId);
-  if (drawer) drawer.drewThisGame = true;
+  // drewThisGame 플래그는 더 이상 사용 X (라운드 순환은 currentRound 기반)
 
   io.to(socketRoomName(room.id)).emit("draw:roundStart", {
     round: room.currentRound,
