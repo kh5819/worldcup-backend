@@ -11169,6 +11169,165 @@ app.get("/merge/leaderboard/me", async (req, res) => {
   }
 });
 
+// ============================================================
+// 피해피해 (DUO Dodge) — 솔로 점수 / 랭킹 (수라상 패턴 이식)
+// 로그인 유저만 공식 랭킹 (게스트는 localStorage)
+// 유저당 BEST 1개만 — 도배 불가
+// ============================================================
+async function fetchDodgeLeaderboard(supabase, { limit, dailyOnly = false }) {
+  const base = supabase
+    .from("dodge_scores")
+    .select("user_id, nickname, score, kills, level_max, duration_sec, created_at")
+    .eq("flagged", false)
+    .not("user_id", "is", null);
+
+  if (dailyOnly) {
+    const today = new Date().toISOString().slice(0, 10);
+    base.gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
+  }
+
+  const overFetch = Math.min(limit * 8, 200);
+  const { data, error } = await base
+    .order("score", { ascending: false })
+    .order("created_at", { ascending: true })
+    .limit(overFetch);
+  if (error) return { error };
+
+  // user_id 기준 best 1개만 (이미 score DESC sorted)
+  const seen = new Set();
+  const rows = [];
+  for (const r of data || []) {
+    if (!r.user_id) continue;
+    if (seen.has(r.user_id)) continue;
+    seen.add(r.user_id);
+    rows.push(r);
+    if (rows.length >= limit) break;
+  }
+  return { rows };
+}
+
+app.post("/dodge/score", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const score = Number(body.score);
+    const kills = Number(body.kills);
+    const levelMax = Number(body.levelMax ?? body.level ?? 1);
+    const durationSec = Number(body.durationSec);
+    const guestId = body.guestId ? String(body.guestId).slice(0, 64) : null;
+    const nickname = String(body.nickname || "익명").slice(0, 14);
+    const roomId = body.roomId ? String(body.roomId).slice(0, 32) : null;
+    const clientRunId = body.clientRunId ? String(body.clientRunId).slice(0, 64) : null;
+
+    if (!Number.isFinite(score) || score < 0) return res.status(400).json({ ok: false, error: "INVALID_SCORE" });
+    if (!Number.isFinite(durationSec) || durationSec < 0) return res.status(400).json({ ok: false, error: "INVALID_DURATION" });
+
+    const user = await getOptionalUser(req);
+    const userId = user?.sub || null;
+
+    // sanity 검증
+    let flagged = false;
+    if (durationSec < 3) flagged = true;
+    if (score > durationSec * 500 + 5000) flagged = true; // 이론상 최대치 over → 의심
+    if (kills > durationSec * 10 + 100) flagged = true;
+
+    const insertPayload = {
+      user_id: userId,
+      guest_id: userId ? null : guestId,
+      nickname,
+      score: Math.round(score),
+      kills: Math.max(0, Math.round(kills || 0)),
+      level_max: Math.max(1, Math.round(levelMax)),
+      duration_sec: Math.round(durationSec),
+      flagged,
+      room_id: roomId,
+      client_run_id: clientRunId,
+    };
+
+    const { data, error } = await supabaseAdmin
+      .from("dodge_scores")
+      .insert(insertPayload)
+      .select()
+      .single();
+
+    if (error) {
+      if (String(error.code) === "23505") return res.status(409).json({ ok: false, error: "DUPLICATE_RUN" });
+      console.error("[dodge/score] insert error:", error);
+      return res.status(500).json({ ok: false, error: "INSERT_FAIL" });
+    }
+
+    // 랭크 계산: 로그인 유저만 공식. 유저당 BEST 기준이므로 내 best가 갱신된 경우만 정확.
+    // 간단히: 나보다 score 높은 distinct user 수 + 1
+    let globalRank = null, dailyRank = null, official = false;
+    if (!flagged && userId) {
+      official = true;
+      // 내가 가진 모든 점수 중 best score를 기준으로 — 방금 insert 후 SELECT
+      const { data: myBestRow } = await supabaseAdmin
+        .from("dodge_scores")
+        .select("score")
+        .eq("user_id", userId).eq("flagged", false)
+        .order("score", { ascending: false }).limit(1).maybeSingle();
+      const myBest = myBestRow?.score ?? Math.round(score);
+
+      // 나보다 score 큰 user_id (best 기준이라 distinct 필요)
+      const { data: higher } = await supabaseAdmin
+        .from("dodge_scores")
+        .select("user_id, score")
+        .eq("flagged", false).not("user_id", "is", null).gt("score", myBest);
+      const higherUsers = new Set();
+      for (const r of higher || []) higherUsers.add(r.user_id);
+      globalRank = higherUsers.size + 1;
+
+      const today = new Date().toISOString().slice(0, 10);
+      const { data: higherDaily } = await supabaseAdmin
+        .from("dodge_scores")
+        .select("user_id, score")
+        .eq("flagged", false).not("user_id", "is", null).gt("score", myBest)
+        .gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
+      const higherUsersDaily = new Set();
+      for (const r of higherDaily || []) higherUsersDaily.add(r.user_id);
+      dailyRank = higherUsersDaily.size + 1;
+    }
+
+    res.json({ ok: true, id: data.id, flagged, official, globalRank, dailyRank });
+  } catch (err) {
+    console.error("[dodge/score]", err);
+    res.status(500).json({ ok: false, error: "INTERNAL" });
+  }
+});
+
+app.get("/dodge/leaderboard/global", async (req, res) => {
+  try {
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const result = await fetchDodgeLeaderboard(supabaseAdmin, { limit, dailyOnly: false });
+    if (result.error) { console.error("[dodge/leaderboard/global]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
+    res.json({ ok: true, rows: result.rows });
+  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+});
+
+app.get("/dodge/leaderboard/daily", async (req, res) => {
+  try {
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const result = await fetchDodgeLeaderboard(supabaseAdmin, { limit, dailyOnly: true });
+    if (result.error) { console.error("[dodge/leaderboard/daily]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
+    res.json({ ok: true, rows: result.rows });
+  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+});
+
+app.get("/dodge/leaderboard/me", async (req, res) => {
+  try {
+    const user = await getOptionalUser(req);
+    const userId = user?.sub || null;
+    if (!userId) return res.json({ ok: true, row: null });
+    const { data, error } = await supabaseAdmin
+      .from("dodge_scores")
+      .select("nickname, score, kills, level_max, duration_sec, created_at")
+      .eq("flagged", false).eq("user_id", userId)
+      .order("score", { ascending: false }).limit(1);
+    if (error) { console.error("[dodge/leaderboard/me]", error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
+    res.json({ ok: true, row: data?.[0] || null });
+  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+});
+
 server.listen(process.env.PORT || 3001, () => {
   console.log(`Backend listening on http://localhost:${process.env.PORT || 3001}`);
 });
