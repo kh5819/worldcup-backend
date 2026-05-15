@@ -28,6 +28,8 @@ import { registerBoardParty } from "./boardparty.js";
 import { registerMerge } from "./merge.js";
 import { registerDraw } from "./draw.js";
 import { registerSuspect } from "./suspect.js";
+import { registerMakak } from "./makak.js";
+import { registerDodge } from "./dodge.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -8188,6 +8190,8 @@ registerBoardParty(io, supabaseAdmin);
 registerMerge(io, supabaseAdmin);
 registerDraw(io, supabaseAdmin);
 registerSuspect(io, supabaseAdmin);
+registerMakak(io, supabaseAdmin);
+registerDodge(io, supabaseAdmin);
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {

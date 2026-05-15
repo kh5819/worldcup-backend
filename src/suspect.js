@@ -23,6 +23,7 @@ const EMPTY_ROOM_TTL_MS = 30_000;
 const MAX_NICK_LEN = 14;
 const HAND_SIZE_INITIAL = 3;     // 시작 손패
 const CARD_MAX_VALUE = 17;       // 0~17 (총 36장 흑+백)
+const DRAW_AUTO_TIMEOUT_SEC = 10; // 카드 뽑기 단계 자동 진행 시간
 const TEAM_SIZE_BY_MODE = { "ffa": 0, "1v1": 1, "2v2": 2, "2v2v2": 2, "2v2v2v2": 2 };
 const TEAM_COUNT_BY_MODE = { "ffa": 0, "1v1": 2, "2v2": 2, "2v2v2": 3, "2v2v2v2": 4 };
 const TEAM_LABELS = ["A", "B", "C", "D"];
@@ -41,6 +42,13 @@ function clearEmptyRoomTimer(room) {
 }
 function clearGuessTimer(room) {
   if (room?.guessTimer) { clearTimeout(room.guessTimer); room.guessTimer = null; }
+}
+function clearDrawTimer(room) {
+  if (room?.drawTimer) { clearTimeout(room.drawTimer); room.drawTimer = null; }
+}
+function clearAllTimers(room) {
+  clearGuessTimer(room);
+  clearDrawTimer(room);
 }
 
 // 카드 ID: 색-숫자 (예: "B-7", "W-12"). 정렬 키: 숫자*2 + (흑=0/백=1)
@@ -138,7 +146,7 @@ function broadcastRoomState(io, room) {
 
 function deleteRoom(io, room, reason) {
   clearEmptyRoomTimer(room);
-  clearGuessTimer(room);
+  clearAllTimers(room);
   scRooms.delete(room.id);
   scInvites.delete(room.inviteCode);
   for (const uid of room.playerOrder) {
@@ -265,13 +273,74 @@ function startTurn(io, room, playerId) {
   room.turnPhase = "draw";
   room.guessTargetPlayerId = null;
   room.guessTargetCardIdx = null;
-  clearGuessTimer(room);
+  clearAllTimers(room);
   io.to(socketRoomName(room.id)).emit("suspect:turnStart", {
     playerId,
     nickname: room.players.get(playerId)?.name || "?",
     phase: "draw",
+    drawTimeoutSec: DRAW_AUTO_TIMEOUT_SEC,
   });
   broadcastRoomState(io, room);
+  // 카드 뽑기 자동 타이머 — 10초 안에 안 뽑으면 서버가 자동 뽑기
+  room.drawTimer = setTimeout(() => {
+    const r = drawRooms.get(room.id);
+    if (!r || r.status !== "playing" || r.currentTurnPlayerId !== playerId) return;
+    if (r.turnPhase !== "draw") return;
+    performDraw(io, r, playerId, true);
+  }, DRAW_AUTO_TIMEOUT_SEC * 1000);
+}
+
+// 실제 뽑기 동작 (수동/자동 공용)
+function performDraw(io, room, userId, isAuto) {
+  clearDrawTimer(room);
+  if (room.turnPhase !== "draw") return false;
+  if (!room.deck.length) {
+    // 더미 비었음 — 추리 phase로 바로 진입
+    room.turnPhase = "guess";
+    io.to(socketRoomName(room.id)).emit("suspect:drewCard", { playerId: userId, hasCard: false, auto: !!isAuto });
+    broadcastRoomState(io, room);
+    startGuessTimer(io, room, userId);
+    return true;
+  }
+  const card = room.deck.pop();
+  const p = room.players.get(userId);
+  if (!p) return false;
+  p.drawnCardId = card.id;
+  p.hand.push({ ...card, revealed: false });
+  p.hand = sortHand(p.hand);
+  room.turnPhase = "guess";
+  // 본인에게만 카드 정보
+  const sock = io.sockets.sockets.get(p.socketId);
+  if (sock) sock.emit("suspect:drewCard", { playerId: userId, hasCard: true, card, auto: !!isAuto });
+  // 나머지에겐 hasCard만
+  io.in(socketRoomName(room.id)).fetchSockets().then(sockets => {
+    for (const s of sockets) {
+      if (s.id !== p.socketId) {
+        s.emit("suspect:drewCard", { playerId: userId, hasCard: true, auto: !!isAuto });
+      }
+    }
+  }).catch(() => {});
+  broadcastRoomState(io, room);
+  startGuessTimer(io, room, userId);
+  return true;
+}
+
+function startGuessTimer(io, room, userId) {
+  if (room.guessTimeSec <= 0) return;
+  clearGuessTimer(room);
+  room.guessTimer = setTimeout(() => {
+    const r = drawRooms.get(room.id);
+    if (!r || r.status !== "playing" || r.currentTurnPlayerId !== userId) return;
+    const player = r.players.get(userId);
+    if (player && player.drawnCardId) {
+      const idx = player.hand.findIndex(c => c.id === player.drawnCardId);
+      if (idx >= 0) player.hand[idx].revealed = true;
+      player.drawnCardId = null;
+    }
+    io.to(socketRoomName(r.id)).emit("suspect:turnTimeout", { playerId: userId });
+    checkPlayerDead(io, r, userId);
+    if (!checkWinCondition(io, r)) advanceTurn(io, r);
+  }, room.guessTimeSec * 1000);
 }
 
 function advanceTurn(io, room) {
@@ -305,7 +374,7 @@ function checkWinCondition(io, room) {
 function finishGame(io, room, reason) {
   if (room.status === "ended") return;
   room.status = "ended";
-  clearGuessTimer(room);
+  clearAllTimers(room);
 
   // 순위: alive 우선, 그 다음 hand 가려진 카드 많은 순(=오래 버틴 정도)
   const ranking = room.playerOrder.map(uid => {
@@ -488,52 +557,15 @@ export function registerSuspect(io, supabaseAdmin) {
       startTurn(io, room, room.playerOrder[0]);
     });
 
-    // ----- 카드 뽑기 -----
+    // ----- 카드 뽑기 (수동) -----
     socket.on("suspect:drawCard", (_payload, cb) => {
       const roomId = scUserRoom.get(me.id);
       const room = roomId ? scRooms.get(roomId) : null;
       if (!room || room.status !== "playing") return cb?.({ ok: false, error: "NOT_PLAYING" });
       if (room.currentTurnPlayerId !== me.id) return cb?.({ ok: false, error: "NOT_YOUR_TURN" });
       if (room.turnPhase !== "draw") return cb?.({ ok: false, error: "ALREADY_DRAWN" });
-      if (!room.deck.length) {
-        // 더미 비었음 — 뽑기 단계 스킵
-        room.turnPhase = "guess";
-        cb?.({ ok: true, drawn: null });
-        io.to(socketRoomName(room.id)).emit("suspect:drewCard", { playerId: me.id, hasCard: false });
-        return;
-      }
-      const card = room.deck.pop();
-      const p = room.players.get(me.id);
-      p.drawnCardId = card.id;
-      p.hand.push({ ...card, revealed: false });
-      p.hand = sortHand(p.hand);
-      room.turnPhase = "guess";
-
-      // 본인에게만 실제 카드 정보, 다른 사람에겐 hasCard만
-      const sock = io.sockets.sockets.get(p.socketId);
-      if (sock) sock.emit("suspect:drewCard", { playerId: me.id, hasCard: true, card });
-      socket.to(socketRoomName(room.id)).emit("suspect:drewCard", { playerId: me.id, hasCard: true });
-
-      broadcastRoomState(io, room);
-      // 추리 시간 타이머 시작
-      if (room.guessTimeSec > 0) {
-        clearGuessTimer(room);
-        room.guessTimer = setTimeout(() => {
-          const r = scRooms.get(room.id);
-          if (!r || r.status !== "playing" || r.currentTurnPlayerId !== me.id) return;
-          // 시간 초과 — 방금 뽑은 카드 공개 + 턴 종료
-          const player = r.players.get(me.id);
-          if (player && player.drawnCardId) {
-            const idx = player.hand.findIndex(c => c.id === player.drawnCardId);
-            if (idx >= 0) player.hand[idx].revealed = true;
-            player.drawnCardId = null;
-          }
-          io.to(socketRoomName(r.id)).emit("suspect:turnTimeout", { playerId: me.id });
-          checkPlayerDead(io, r, me.id);
-          if (!checkWinCondition(io, r)) advanceTurn(io, r);
-        }, room.guessTimeSec * 1000);
-      }
-      cb?.({ ok: true, drawn: card });
+      const ok = performDraw(io, room, me.id, false);
+      cb?.({ ok });
     });
 
     // ----- 추리 -----

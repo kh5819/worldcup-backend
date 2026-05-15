@@ -13,7 +13,8 @@ const mergeUserRoom = new Map();   // userId → roomId
 
 const ALLOWED_MAX_PLAYERS = [2, 4, 6, 8];
 const ALLOWED_TIME_LIMIT_SEC = [0, 180, 300, 600]; // 0 = 무제한, 3/5/10분
-const ALLOWED_INTERFERENCE_TYPES = new Set(["shake", "random_next", "deadline_down"]);
+const ALLOWED_INTERFERENCE_TYPES = new Set(["shake", "random_next", "deadline_down", "oil", "cloud"]);
+const DEBUFF_TARGET_COOLDOWN_MS = 5000; // 같은 대상에게 연속 방해 방지
 const EMPTY_ROOM_TTL_MS = 30_000;
 const PEER_UPDATE_THROTTLE_MS = 900;
 const SNAPSHOT_THROTTLE_MS = 1200;
@@ -62,6 +63,7 @@ function newPlayerState(name, isGuest, avatarUrl, socketId) {
     lastScoreEmit: 0,
     lastSnapshotEmit: 0,
     lastInterferenceAt: 0,
+    lastDebuffReceivedAt: 0, // 받은 방해 쿨다운
   };
 }
 
@@ -210,7 +212,10 @@ export function registerMerge(io, supabaseAdmin) {
 
         const maxPlayers = ALLOWED_MAX_PLAYERS.includes(Number(payload?.maxPlayers))
           ? Number(payload.maxPlayers) : 8;
-        const interferenceMode = !!payload?.interferenceMode;
+        // 방해모드 기본 ON (호스트가 로비에서 끌 수 있음)
+        const interferenceMode = payload?.interferenceMode === undefined
+          ? true
+          : !!payload.interferenceMode;
         const requestedTL = Number(payload?.timeLimitSec);
         // 기본: 방해 ON=180s(3분) / OFF=300s(5분). 무제한(0)은 명시적 선택 시만
         const timeLimitSec = ALLOWED_TIME_LIMIT_SEC.includes(requestedTL)
@@ -478,17 +483,24 @@ export function registerMerge(io, supabaseAdmin) {
       sender.lastInterferenceAt = now;
 
       // 타겟: 자기 제외 alive 참가자 랜덤 (클라 입력 신뢰 X)
-      const candidates = [];
+      // 같은 대상 쿨다운(5초) 적용 — 쿨다운 안 끝난 사람 제외, 모두 쿨다운이면 어쩔 수 없이 포함
+      const allCands = [];
+      const freshCands = [];
       for (const uid of room.playerOrder) {
         if (uid === me.id) continue;
         const p = room.players.get(uid);
         if (!p || !p.alive) continue;
-        candidates.push({ uid, p });
+        allCands.push({ uid, p });
+        if (now - (p.lastDebuffReceivedAt || 0) >= DEBUFF_TARGET_COOLDOWN_MS) {
+          freshCands.push({ uid, p });
+        }
       }
+      const candidates = freshCands.length > 0 ? freshCands : allCands;
       if (candidates.length === 0) return cb?.({ ok: false, error: "NO_TARGET" });
       const picked = candidates[Math.floor(Math.random() * candidates.length)];
       const targetId = picked.uid;
       const target = picked.p;
+      target.lastDebuffReceivedAt = now;
 
       // 같은 방 전원에게 broadcast (보낸 사람/받은 사람 모두 누가 누구에게인지 확인 가능)
       io.to(socketRoomName(room.id)).emit("merge:interference", {
