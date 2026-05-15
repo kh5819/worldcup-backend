@@ -27,6 +27,7 @@ import { registerBoardParty } from "./boardparty.js";
 // DUO GAME ZONE — 수라상 멀티 (한식 합성 대회형, 별도 모듈)
 import { registerMerge } from "./merge.js";
 import { registerDraw } from "./draw.js";
+import { registerSuspect } from "./suspect.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -8186,6 +8187,7 @@ registerBoardParty(io, supabaseAdmin);
 // =========================
 registerMerge(io, supabaseAdmin);
 registerDraw(io, supabaseAdmin);
+registerSuspect(io, supabaseAdmin);
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {
