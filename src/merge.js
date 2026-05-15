@@ -12,9 +12,12 @@ const mergeInvites = new Map();    // inviteCode → roomId
 const mergeUserRoom = new Map();   // userId → roomId
 
 const ALLOWED_MAX_PLAYERS = [2, 4, 6, 8];
+const ALLOWED_TIME_LIMIT_SEC = [0, 180, 300, 600]; // 0 = 무제한, 3/5/10분
+const ALLOWED_INTERFERENCE_TYPES = new Set(["shake", "random_next", "deadline_down"]);
 const EMPTY_ROOM_TTL_MS = 30_000;
-const PEER_UPDATE_THROTTLE_MS = 900;  // 같은 유저 동일 이벤트 throttle
+const PEER_UPDATE_THROTTLE_MS = 900;
 const SNAPSHOT_THROTTLE_MS = 1200;
+const INTERFERENCE_THROTTLE_MS = 1500;  // 동일 보낸 사람 방해 연속 발사 방지
 const MAX_NICK_LEN = 14;
 
 // ===== util =====
@@ -58,6 +61,7 @@ function newPlayerState(name, isGuest, avatarUrl, socketId) {
     // throttle
     lastScoreEmit: 0,
     lastSnapshotEmit: 0,
+    lastInterferenceAt: 0,
   };
 }
 
@@ -86,6 +90,8 @@ function publicRoom(room) {
     hostUserId: room.hostUserId,
     status: room.status,
     maxPlayers: room.maxPlayers,
+    interferenceMode: !!room.interferenceMode,
+    timeLimitSec: room.timeLimitSec || 0,
     startedAt: room.startedAt || null,
     endedAt: room.endedAt || null,
     players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
@@ -96,8 +102,16 @@ function broadcastRoomState(io, room) {
   io.to(socketRoomName(room.id)).emit("merge:roomState", publicRoom(room));
 }
 
+function clearGameTimer(room) {
+  if (room?.gameTimer) {
+    clearTimeout(room.gameTimer);
+    room.gameTimer = null;
+  }
+}
+
 function deleteRoom(io, room, reason) {
   clearEmptyRoomTimer(room);
+  clearGameTimer(room);
   mergeRooms.delete(room.id);
   mergeInvites.delete(room.inviteCode);
   for (const uid of room.playerOrder) {
@@ -153,16 +167,21 @@ function finishGame(io, room, reason) {
   if (room.status === "ended") return;
   room.status = "ended";
   room.endedAt = Date.now();
+  clearGameTimer(room);
 
-  // 순위 산정 — alive 우선, score 내림차순, maxStage 내림차순
+  // 순위 산정 — TIME_UP에선 alive 무시(점수 우선), 그 외엔 alive 우선
+  // 1순위: alive (TIME_UP은 무시) / 2: score / 3: maxStage / 4: comboMax / 5: elapsedMs ↑(오래 생존)
+  const ignoreAlive = (reason === "TIME_UP");
   const ranking = room.playerOrder.map(uid => {
     const p = room.players.get(uid);
     return p ? { playerId: uid, ...publicPlayer(uid, p) } : null;
   }).filter(Boolean);
   ranking.sort((a, b) => {
-    if (!!a.alive !== !!b.alive) return a.alive ? -1 : 1;
-    if (b.score !== a.score) return b.score - a.score;
-    return (b.maxStage || 1) - (a.maxStage || 1);
+    if (!ignoreAlive && !!a.alive !== !!b.alive) return a.alive ? -1 : 1;
+    if (b.score !== a.score) return (b.score || 0) - (a.score || 0);
+    if ((b.maxStage || 1) !== (a.maxStage || 1)) return (b.maxStage || 1) - (a.maxStage || 1);
+    if ((b.comboMax || 1) !== (a.comboMax || 1)) return (b.comboMax || 1) - (a.comboMax || 1);
+    return (b.elapsedMs || 0) - (a.elapsedMs || 0);
   });
 
   io.to(socketRoomName(room.id)).emit("merge:gameEnded", { reason, ranking });
@@ -191,6 +210,12 @@ export function registerMerge(io, supabaseAdmin) {
 
         const maxPlayers = ALLOWED_MAX_PLAYERS.includes(Number(payload?.maxPlayers))
           ? Number(payload.maxPlayers) : 8;
+        const interferenceMode = !!payload?.interferenceMode;
+        const requestedTL = Number(payload?.timeLimitSec);
+        // 기본: 방해 ON=180s(3분) / OFF=300s(5분). 무제한(0)은 명시적 선택 시만
+        const timeLimitSec = ALLOWED_TIME_LIMIT_SEC.includes(requestedTL)
+          ? requestedTL
+          : (interferenceMode ? 180 : 300);
 
         const roomId = `mg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const inviteCode = genInviteCode();
@@ -201,12 +226,15 @@ export function registerMerge(io, supabaseAdmin) {
           hostUserId: me.id,
           status: "lobby",
           maxPlayers,
+          interferenceMode,
+          timeLimitSec,
           createdAt: Date.now(),
           startedAt: null,
           endedAt: null,
           players: new Map(),
           playerOrder: [],
           emptyRoomTimer: null,
+          gameTimer: null,
         };
         mergeRooms.set(roomId, room);
         mergeInvites.set(inviteCode, roomId);
@@ -225,7 +253,7 @@ export function registerMerge(io, supabaseAdmin) {
         mergeUserRoom.set(me.id, roomId);
         socket.join(socketRoomName(roomId));
 
-        cb?.({ ok: true, roomId, inviteCode, room: publicRoom(room) });
+        cb?.({ ok: true, roomId, inviteCode, playerId: me.id, room: publicRoom(room) });
         broadcastRoomState(io, room);
         console.log(`[merge] created room ${roomId} by ${me.id} inv=${inviteCode}`);
       } catch (e) {
@@ -251,7 +279,7 @@ export function registerMerge(io, supabaseAdmin) {
           socket.join(socketRoomName(roomId));
           mergeUserRoom.set(me.id, roomId);
           clearEmptyRoomTimer(room);
-          cb?.({ ok: true, roomId, inviteCode: room.inviteCode, room: publicRoom(room), rejoined: true });
+          cb?.({ ok: true, roomId, inviteCode: room.inviteCode, playerId: me.id, room: publicRoom(room), rejoined: true });
           broadcastRoomState(io, room);
           return;
         }
@@ -300,6 +328,24 @@ export function registerMerge(io, supabaseAdmin) {
       cb?.({ ok: true });
     });
 
+    socket.on("merge:setRoomOptions", (payload, cb) => {
+      const roomId = mergeUserRoom.get(me.id);
+      const room = roomId ? mergeRooms.get(roomId) : null;
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
+      if (room.status !== "lobby") return cb?.({ ok: false, error: "NOT_LOBBY" });
+
+      if (typeof payload?.interferenceMode === "boolean") {
+        room.interferenceMode = payload.interferenceMode;
+      }
+      if (payload?.timeLimitSec !== undefined) {
+        const t = Number(payload.timeLimitSec);
+        if (ALLOWED_TIME_LIMIT_SEC.includes(t)) room.timeLimitSec = t;
+      }
+      broadcastRoomState(io, room);
+      cb?.({ ok: true });
+    });
+
     // ----- 게임 시작 -----
     socket.on("merge:startGame", (_payload, cb) => {
       const roomId = mergeUserRoom.get(me.id);
@@ -327,11 +373,23 @@ export function registerMerge(io, supabaseAdmin) {
 
       io.to(socketRoomName(room.id)).emit("merge:roundStart", {
         startedAt: room.startedAt,
+        interferenceMode: !!room.interferenceMode,
+        timeLimitSec: room.timeLimitSec || 0,
         players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
       });
       broadcastRoomState(io, room);
+
+      // 서버 타이머 — 제한시간 도달 시 finishGame
+      clearGameTimer(room);
+      if (room.timeLimitSec > 0) {
+        room.gameTimer = setTimeout(() => {
+          const r = mergeRooms.get(room.id);
+          if (r && r.status === "playing") finishGame(io, r, "TIME_UP");
+        }, room.timeLimitSec * 1000);
+      }
+
       cb?.({ ok: true, startedAt: room.startedAt });
-      console.log(`[merge] room ${room.id} game started, ${room.players.size} players`);
+      console.log(`[merge] room ${room.id} game started, ${room.players.size} players, interference=${room.interferenceMode}, tl=${room.timeLimitSec}s`);
     });
 
     // ----- 점수 업데이트 (1초 throttle) -----
@@ -398,6 +456,54 @@ export function registerMerge(io, supabaseAdmin) {
         playerId: me.id,
         snapshot: safe,
       });
+    });
+
+    // ----- 방해 발사 -----
+    // payload: { type, targetPlayerId? } — targetPlayerId 생략 시 자동 1등 타겟(자기 제외)
+    socket.on("merge:interference", (payload, cb) => {
+      const roomId = mergeUserRoom.get(me.id);
+      const room = roomId ? mergeRooms.get(roomId) : null;
+      if (!room || room.status !== "playing") return cb?.({ ok: false, error: "NOT_PLAYING" });
+      if (!room.interferenceMode) return cb?.({ ok: false, error: "MODE_OFF" });
+      const sender = room.players.get(me.id);
+      if (!sender || !sender.alive) return cb?.({ ok: false, error: "DEAD" });
+
+      const type = String(payload?.type || "");
+      if (!ALLOWED_INTERFERENCE_TYPES.has(type)) return cb?.({ ok: false, error: "INVALID_TYPE" });
+
+      const now = Date.now();
+      if (now - (sender.lastInterferenceAt || 0) < INTERFERENCE_THROTTLE_MS) {
+        return cb?.({ ok: false, error: "THROTTLED" });
+      }
+      sender.lastInterferenceAt = now;
+
+      // 타겟 결정
+      let targetId = payload?.targetPlayerId || null;
+      if (!targetId) {
+        // 자동: 자기 제외 생존자 중 점수 최고
+        let best = null;
+        for (const uid of room.playerOrder) {
+          if (uid === me.id) continue;
+          const p = room.players.get(uid);
+          if (!p || !p.alive) continue;
+          if (!best || p.score > best.p.score) best = { uid, p };
+        }
+        targetId = best?.uid || null;
+      }
+      if (!targetId || targetId === me.id) return cb?.({ ok: false, error: "NO_TARGET" });
+      const target = room.players.get(targetId);
+      if (!target || !target.alive) return cb?.({ ok: false, error: "TARGET_DEAD" });
+
+      // 같은 방 전원에게 broadcast (다른 사람도 누가 누구에게 쏘는지 보이도록)
+      io.to(socketRoomName(room.id)).emit("merge:interference", {
+        type,
+        from: me.id,
+        fromNickname: sender.name,
+        to: targetId,
+        toNickname: target.name,
+        createdAt: now,
+      });
+      cb?.({ ok: true, to: targetId });
     });
 
     // ----- 게임오버 -----
