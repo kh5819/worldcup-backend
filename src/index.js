@@ -10900,6 +10900,11 @@ function normalizeMergeMode(v) {
   const s = String(v || "endless").toLowerCase();
   return MERGE_ALLOWED_MODES.has(s) ? s : "endless";
 }
+const MERGE_ALLOWED_SEASONS = new Set(["classic", "spring", "summer", "autumn", "winter"]);
+function normalizeMergeSeason(v) {
+  const s = String(v || "classic").toLowerCase();
+  return MERGE_ALLOWED_SEASONS.has(s) ? s : "classic";
+}
 
 // 모드별 정렬 — 엔드리스: score DESC / 챌린지: max_stage=11 클리어만, duration_sec ASC, score DESC tiebreak
 async function fetchMergeLeaderboard(supabase, { mode, limit, dailyOnly = false }) {
@@ -10949,6 +10954,7 @@ app.post("/merge/score", async (req, res) => {
     const nickname = String(body.nickname || "익명").slice(0, 14);
     const roomId = body.roomId ? String(body.roomId).slice(0, 32) : null;
     const mode = normalizeMergeMode(body.mode);
+    const season = normalizeMergeSeason(body.season);
     const clientRunId = body.clientRunId ? String(body.clientRunId).slice(0, 64) : null;
 
     if (!Number.isFinite(score) || score < 0)
@@ -10983,6 +10989,7 @@ app.post("/merge/score", async (req, res) => {
       flagged,
       room_id: roomId,
       mode,
+      season,
       client_run_id: clientRunId,
     };
 
