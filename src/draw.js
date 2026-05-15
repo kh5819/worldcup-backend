@@ -158,19 +158,32 @@ function leavePlayer(io, room, userId) {
   broadcastRoomState(io, room);
 }
 
-// 공식 모드 단어 select (랜덤 1개)
+// DB 비어있을 때 fallback 단어풀 (50개)
+const FALLBACK_WORDS = [
+  "김치","떡볶이","비빔밥","짜장면","라면","김밥","수박","사과","딸기","바나나",
+  "강아지","고양이","코끼리","사자","호랑이","곰","토끼","고래","상어","문어",
+  "자동차","비행기","자전거","버스","지하철","우산","신발","모자","안경","시계",
+  "뽀로로","피카츄","도라에몽","짱구","마리오","엘사","스파이더맨","배트맨","헐크","아이언맨",
+  "손흥민","BTS","블랙핑크","뉴진스","카리나","카카오톡","유튜브","넷플릭스","삼성","오징어게임",
+];
+
+// 공식 모드 단어 select — DB 우선, 없으면 hard-coded fallback
 async function pickOfficialWord(supabase, category) {
   try {
-    let q = supabase.from("draw_words").select("word").eq("active", true);
-    if (category && category !== "any") q = q.eq("category", category);
-    const { data, error } = await q.limit(500);
-    if (error || !data?.length) return null;
-    const idx = Math.floor(Math.random() * data.length);
-    return data[idx]?.word || null;
+    if (supabase) {
+      let q = supabase.from("draw_words").select("word").eq("active", true);
+      if (category && category !== "any") q = q.eq("category", category);
+      const { data, error } = await q.limit(500);
+      if (!error && data?.length) {
+        const idx = Math.floor(Math.random() * data.length);
+        if (data[idx]?.word) return data[idx].word;
+      }
+      console.warn(`[draw] DB word fetch empty (category=${category}) → fallback`);
+    }
   } catch (e) {
-    console.error("[draw] pickOfficialWord", e);
-    return null;
+    console.warn("[draw] pickOfficialWord DB error → fallback:", e?.message);
   }
+  return FALLBACK_WORDS[Math.floor(Math.random() * FALLBACK_WORDS.length)];
 }
 
 // ===== 라운드/게임 lifecycle =====
