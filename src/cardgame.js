@@ -1406,7 +1406,10 @@ export function registerCardGame(io, supabaseAdmin) {
       if (room.status !== "playing") return cb?.({ ok: false, error: "NOT_PLAYING" });
       if (room.playerOrder[room.currentTurnIdx] !== me.id) return cb?.({ ok: false, error: "NOT_YOUR_TURN" });
       if (room.actionStack.length > 0) return cb?.({ ok: false, error: "REACTION_PHASE" });
-      if (room.cardsPlayedThisTurn > 0) return cb?.({ ok: false, error: "ALREADY_PLAYED" });
+      // cardsPlayedThisTurn > 0 차단 제거 — 카드 사용 후에도 드로우+턴종료 가능
+      const myP = room.players.get(me.id);
+      if (myP && myP.hand.length >= MAX_HAND) return cb?.({ ok: false, error: "HAND_FULL" });
+      // 덱+버린더미 둘 다 빈 경우 — 드로우는 0장이지만 턴 종료는 허용 (실질 "그냥 endTurn"과 동일)
 
       const drew = drawIntoHand(room, me.id, 1);
       sendHandTo(io, room, me.id);
