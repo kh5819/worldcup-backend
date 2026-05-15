@@ -933,6 +933,7 @@ function generateSeoHtml({ title, description, image, canonical, jsonLd, bodyHtm
       <a href="${SITE_URL}/fibbage-multi.html">🎭 거짓말 매치</a>
       <a href="${SITE_URL}/lifegame.html">🎲 인생게임</a>
       <a href="${SITE_URL}/oxgame-multi.html">⭕ 우리방 OX</a>
+      <a href="${SITE_URL}/merge.html">🍱 수라상 (한식 합성)</a>
     </div>
   </div>
 </body>
@@ -10872,6 +10873,135 @@ app.post("/chat-audience/stop", requireAuth, async (req, res) => {
   } catch (err) {
     console.error("[CHAT_AUD] /stop 예외:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
+// 수라상 (한식 진화형 합성 게임) — 점수 제출 / 리더보드
+// 솔로 + 추후 멀티 모두 동일 엔드포인트 사용 (room_id 옵션)
+// =========================
+async function getOptionalUser(req) {
+  const authHeader = req.headers.authorization || "";
+  let token = null;
+  if (authHeader.startsWith("Bearer ")) token = authHeader.slice(7).trim();
+  if (!token) return null;
+  try { return await verifyJWT(token); } catch { return null; }
+}
+
+app.post("/merge/score", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const score = Number(body.score);
+    const maxStage = Number(body.maxStage);
+    const durationSec = Number(body.durationSec);
+    const comboMax = Number(body.comboMax ?? 1.0);
+    const guestId = body.guestId ? String(body.guestId).slice(0, 64) : null;
+    const nickname = String(body.nickname || "익명").slice(0, 14);
+    const roomId = body.roomId ? String(body.roomId).slice(0, 32) : null;
+
+    if (!Number.isFinite(score) || score < 0)
+      return res.status(400).json({ ok: false, error: "INVALID_SCORE" });
+    if (!Number.isFinite(maxStage) || maxStage < 1 || maxStage > 11)
+      return res.status(400).json({ ok: false, error: "INVALID_STAGE" });
+    if (!Number.isFinite(durationSec) || durationSec < 0)
+      return res.status(400).json({ ok: false, error: "INVALID_DURATION" });
+
+    const user = await getOptionalUser(req);
+    const userId = user?.sub || null;
+
+    // sanity 검증 (위반 시 flagged=true → 랭킹 제외)
+    let flagged = false;
+    if (comboMax > 3.05 || comboMax < 1.0) flagged = true;
+    if (score > durationSec * 200 + 5000) flagged = true;
+    if (durationSec < 3) flagged = true;
+
+    const insertPayload = {
+      user_id: userId,
+      guest_id: userId ? null : guestId,
+      nickname,
+      score: Math.round(score),
+      max_stage: Math.round(maxStage),
+      duration_sec: Math.round(durationSec),
+      combo_max: Math.min(3.0, Math.max(1.0, comboMax)),
+      flagged,
+      room_id: roomId,
+    };
+
+    const { data, error } = await supabaseAdmin
+      .from("merge_scores")
+      .insert(insertPayload)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("[merge/score] insert error:", error);
+      return res.status(500).json({ ok: false, error: "INSERT_FAIL" });
+    }
+
+    // 랭크 계산 (best score 기준, flagged 제외)
+    let globalRank = null, dailyRank = null;
+    if (!flagged) {
+      const { count: g } = await supabaseAdmin
+        .from("merge_top_scores_v")
+        .select("*", { count: "exact", head: true })
+        .gt("score", Math.round(score));
+      globalRank = (g ?? 0) + 1;
+
+      const today = new Date().toISOString().slice(0, 10);
+      const { count: d } = await supabaseAdmin
+        .from("merge_top_scores_v")
+        .select("*", { count: "exact", head: true })
+        .gt("score", Math.round(score))
+        .gte("created_at", today + "T00:00:00Z")
+        .lt("created_at", today + "T23:59:59Z");
+      dailyRank = (d ?? 0) + 1;
+    }
+
+    res.json({ ok: true, id: data.id, flagged, globalRank, dailyRank });
+  } catch (err) {
+    console.error("[merge/score]", err);
+    res.status(500).json({ ok: false, error: "INTERNAL" });
+  }
+});
+
+app.get("/merge/leaderboard/global", async (req, res) => {
+  try {
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const { data, error } = await supabaseAdmin
+      .from("merge_top_scores_v")
+      .select("nickname, score, max_stage, combo_max, created_at")
+      .order("score", { ascending: false })
+      .limit(limit);
+    if (error) {
+      console.error("[merge/leaderboard/global]", error);
+      return res.status(500).json({ ok: false, error: "QUERY_FAIL" });
+    }
+    res.json({ ok: true, rows: data || [] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: "INTERNAL" });
+  }
+});
+
+app.get("/merge/leaderboard/daily", async (req, res) => {
+  try {
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 30));
+    const today = new Date().toISOString().slice(0, 10);
+    const { data, error } = await supabaseAdmin
+      .from("merge_top_scores_v")
+      .select("nickname, score, max_stage, combo_max, created_at")
+      .gte("created_at", today + "T00:00:00Z")
+      .lt("created_at", today + "T23:59:59Z")
+      .order("score", { ascending: false })
+      .limit(limit);
+    if (error) {
+      console.error("[merge/leaderboard/daily]", error);
+      return res.status(500).json({ ok: false, error: "QUERY_FAIL" });
+    }
+    res.json({ ok: true, rows: data || [] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: "INTERNAL" });
   }
 });
 
