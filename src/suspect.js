@@ -195,11 +195,13 @@ function assignTeams(room) {
       const p = room.players.get(uid);
       if (p) p.team = null;
     }
+    // 개인전은 셔플 순서대로
+    room.playerOrder = shuffle(room.playerOrder.slice());
     return;
   }
   const teamCount = TEAM_COUNT_BY_MODE[room.mode] || 0;
   const teamSize = TEAM_SIZE_BY_MODE[room.mode] || 0;
-  // playerOrder shuffle 후 순서대로 팀 배정
+  // playerOrder shuffle 후 순서대로 팀 배정 (랜덤 팀 구성)
   const shuffled = shuffle(room.playerOrder.slice());
   for (let i = 0; i < shuffled.length; i++) {
     const uid = shuffled[i];
@@ -208,15 +210,26 @@ function assignTeams(room) {
     if (i < teamCount * teamSize) {
       p.team = TEAM_LABELS[i % teamCount];
     } else {
-      p.team = null; // 정원 초과 (이론상 startGame에서 이미 정원 체크)
+      p.team = null;
     }
   }
-  // 팀별로 playerOrder 재배열 (A의 모두 → B의 모두 → ...)
-  room.playerOrder.sort((a, b) => {
-    const ta = room.players.get(a)?.team || "Z";
-    const tb = room.players.get(b)?.team || "Z";
-    return ta.localeCompare(tb);
-  });
+  // 팀 번갈아 인터리브 — A1 → B1 → C1 → D1 → A2 → B2 → ...
+  // 같은 팀이 연속으로 차례가 오지 않게.
+  const byTeam = {};
+  for (const uid of shuffled) {
+    const t = room.players.get(uid)?.team || "Z";
+    if (!byTeam[t]) byTeam[t] = [];
+    byTeam[t].push(uid);
+  }
+  const teams = Object.keys(byTeam).filter(t => t !== "Z").sort();
+  const maxSize = Math.max(...teams.map(t => byTeam[t].length));
+  const interleaved = [];
+  for (let i = 0; i < maxSize; i++) {
+    for (const t of teams) {
+      if (byTeam[t][i]) interleaved.push(byTeam[t][i]);
+    }
+  }
+  room.playerOrder = interleaved;
 }
 
 function dealInitial(room) {
