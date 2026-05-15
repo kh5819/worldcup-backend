@@ -305,7 +305,7 @@ export function registerMerge(io, supabaseAdmin) {
         socket.join(socketRoomName(roomId));
         clearEmptyRoomTimer(room);
 
-        cb?.({ ok: true, roomId, inviteCode: room.inviteCode, room: publicRoom(room) });
+        cb?.({ ok: true, roomId, inviteCode: room.inviteCode, playerId: me.id, room: publicRoom(room) });
         broadcastRoomState(io, room);
       } catch (e) {
         console.error("[merge:joinRoom]", e);
@@ -459,7 +459,7 @@ export function registerMerge(io, supabaseAdmin) {
     });
 
     // ----- 방해 발사 -----
-    // payload: { type, targetPlayerId? } — targetPlayerId 생략 시 자동 1등 타겟(자기 제외)
+    // 타겟은 서버에서 결정 (자기 제외 alive 랜덤). 클라이언트 targetPlayerId는 무시.
     socket.on("merge:interference", (payload, cb) => {
       const roomId = mergeUserRoom.get(me.id);
       const room = roomId ? mergeRooms.get(roomId) : null;
@@ -477,24 +477,20 @@ export function registerMerge(io, supabaseAdmin) {
       }
       sender.lastInterferenceAt = now;
 
-      // 타겟 결정
-      let targetId = payload?.targetPlayerId || null;
-      if (!targetId) {
-        // 자동: 자기 제외 생존자 중 점수 최고
-        let best = null;
-        for (const uid of room.playerOrder) {
-          if (uid === me.id) continue;
-          const p = room.players.get(uid);
-          if (!p || !p.alive) continue;
-          if (!best || p.score > best.p.score) best = { uid, p };
-        }
-        targetId = best?.uid || null;
+      // 타겟: 자기 제외 alive 참가자 랜덤 (클라 입력 신뢰 X)
+      const candidates = [];
+      for (const uid of room.playerOrder) {
+        if (uid === me.id) continue;
+        const p = room.players.get(uid);
+        if (!p || !p.alive) continue;
+        candidates.push({ uid, p });
       }
-      if (!targetId || targetId === me.id) return cb?.({ ok: false, error: "NO_TARGET" });
-      const target = room.players.get(targetId);
-      if (!target || !target.alive) return cb?.({ ok: false, error: "TARGET_DEAD" });
+      if (candidates.length === 0) return cb?.({ ok: false, error: "NO_TARGET" });
+      const picked = candidates[Math.floor(Math.random() * candidates.length)];
+      const targetId = picked.uid;
+      const target = picked.p;
 
-      // 같은 방 전원에게 broadcast (다른 사람도 누가 누구에게 쏘는지 보이도록)
+      // 같은 방 전원에게 broadcast (보낸 사람/받은 사람 모두 누가 누구에게인지 확인 가능)
       io.to(socketRoomName(room.id)).emit("merge:interference", {
         type,
         from: me.id,
@@ -503,7 +499,7 @@ export function registerMerge(io, supabaseAdmin) {
         toNickname: target.name,
         createdAt: now,
       });
-      cb?.({ ok: true, to: targetId });
+      cb?.({ ok: true, to: targetId, toNickname: target.name });
     });
 
     // ----- 게임오버 -----
