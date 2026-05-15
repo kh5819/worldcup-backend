@@ -11011,7 +11011,7 @@ app.post("/merge/score", async (req, res) => {
       return res.status(400).json({ ok: false, error: "INVALID_DURATION" });
 
     const user = await getOptionalUser(req);
-    const userId = user?.sub || null;
+    const userId = user?.id || null;
 
     // sanity 검증 (위반 시 flagged=true → 랭킹 제외)
     let flagged = false;
@@ -11145,7 +11145,7 @@ app.get("/merge/leaderboard/me", async (req, res) => {
   try {
     const mode = normalizeMergeMode(req.query.mode);
     const user = await getOptionalUser(req);
-    const userId = user?.sub || null;
+    const userId = user?.id || null;
     if (!userId) return res.json({ ok: true, mode, row: null });
 
     let q = supabaseAdmin
@@ -11222,7 +11222,7 @@ app.post("/dodge/score", async (req, res) => {
     if (!Number.isFinite(durationSec) || durationSec < 0) return res.status(400).json({ ok: false, error: "INVALID_DURATION" });
 
     const user = await getOptionalUser(req);
-    const userId = user?.sub || null;
+    const userId = user?.id || null;
 
     // sanity 검증
     let flagged = false;
@@ -11316,7 +11316,7 @@ app.get("/dodge/leaderboard/daily", async (req, res) => {
 app.get("/dodge/leaderboard/me", async (req, res) => {
   try {
     const user = await getOptionalUser(req);
-    const userId = user?.sub || null;
+    const userId = user?.id || null;
     if (!userId) return res.json({ ok: true, row: null });
     const { data, error } = await supabaseAdmin
       .from("dodge_scores")
