@@ -440,6 +440,22 @@ export function registerDodge(io, supabaseAdmin) {
       cb?.({ ok: true });
     });
 
+    // ----- 호스트 강퇴 (로비 한정) -----
+    socket.on("dodge:kickPlayer", (payload, cb) => {
+      const roomId = dgUserRoom.get(me.id);
+      const room = roomId ? dgRooms.get(roomId) : null;
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
+      if (room.status !== "lobby") return cb?.({ ok: false, error: "NOT_LOBBY" });
+      const targetId = String(payload?.targetUserId || "");
+      if (!targetId || targetId === me.id) return cb?.({ ok: false, error: "INVALID_TARGET" });
+      if (!room.players.has(targetId)) return cb?.({ ok: false, error: "TARGET_NOT_IN_ROOM" });
+      const target = room.players.get(targetId);
+      if (target?.socketId) io.to(target.socketId).emit("dodge:kicked", { reason: "KICKED_BY_HOST" });
+      leavePlayer(io, room, targetId);
+      cb?.({ ok: true });
+    });
+
     // ----- 상태 재요청 -----
     socket.on("dodge:requestState", (_payload, cb) => {
       const roomId = dgUserRoom.get(me.id);

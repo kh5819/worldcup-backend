@@ -717,6 +717,21 @@ export function registerLifegame(io, supabaseAdmin) {
       cb?.({ ok: true });
     });
 
+    socket.on("lifegame:kickPlayer", (payload, cb) => {
+      const roomId = lifegameUserRoom.get(me.id);
+      const room = roomId ? lifegameRooms.get(roomId) : null;
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
+      if (room.status !== "lobby") return cb?.({ ok: false, error: "NOT_LOBBY" });
+      const targetId = String(payload?.targetUserId || "");
+      if (!targetId || targetId === me.id) return cb?.({ ok: false, error: "INVALID_TARGET" });
+      if (!room.players.has(targetId)) return cb?.({ ok: false, error: "TARGET_NOT_IN_ROOM" });
+      const target = room.players.get(targetId);
+      if (target?.socketId) io.to(target.socketId).emit("lifegame:kicked", { reason: "KICKED_BY_HOST" });
+      leavePlayer(io, room, targetId, false);
+      cb?.({ ok: true });
+    });
+
     // ===== requestState (재접속/리프레시) =====
     socket.on("lifegame:requestState", (_payload, cb) => {
       const roomId = lifegameUserRoom.get(me.id);

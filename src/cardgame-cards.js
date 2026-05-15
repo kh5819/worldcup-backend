@@ -122,6 +122,24 @@ export const CARDS = [
     effect: { swapHp: true }, text: "대상과 HP 교환" },
   { id: "x_nuke",    name: "핵폭탄",      emoji: "☢️", type: "special", targeting: "self",   copies: 1,
     effect: { nuke: 5 }, text: "전원(자기 포함) 5 데미지" },
+
+  // ===== v4 신규 카드 (8장) =====
+  { id: "a_dual",    name: "쌍검",        emoji: "⚔️", type: "attack", targeting: "enemy",  copies: 2,
+    effect: { damage: 6, hits: 2 }, text: "쌍검 연타 6 데미지" },
+  { id: "a_frost",   name: "얼음 창",     emoji: "❄️", type: "attack", targeting: "enemy",  copies: 2,
+    effect: { damage: 3, applyStatus: { stun: 1 } }, text: "3 데미지 + 기절(1턴)" },
+  { id: "d_dodge",   name: "회피",        emoji: "💨", type: "defense", reactsTo: ["attack"], copies: 2,
+    effect: { negateDamage: true }, text: "공격 완전 무효" },
+  { id: "r_thorns",  name: "가시 갑옷",   emoji: "🌵", type: "reaction", reactsTo: ["attack"], copies: 2,
+    effect: { halveDamage: true, reflectDamage: 2 }, text: "데미지 절반 + 반사 2" },
+  { id: "s_steal",   name: "강탈",        emoji: "🪙", type: "support", targeting: "enemy", copies: 2,
+    effect: { stealCard: 1 }, text: "적 손패 1장 랜덤 훔치기" },
+  { id: "s_focus",   name: "집중",        emoji: "🧘", type: "support", targeting: "self",  copies: 2,
+    effect: { applyStatus: { rage: 1 } }, text: "다음 공격 +3 데미지" },
+  { id: "x_revival", name: "응급처치",    emoji: "💉", type: "special", targeting: "ally",  copies: 1,
+    effect: { healTarget: 8 }, text: "대상 +8 HP" },
+  { id: "x_chaos",   name: "혼돈의 외침", emoji: "🌀", type: "special", targeting: "self",  copies: 1,
+    effect: { shuffleAllHands: true }, text: "전원 손패 셔플 + 5장 재분배" },
 ];
 
 // === 덱 빌드: copies 만큼 풀어서 1차원 배열 ===

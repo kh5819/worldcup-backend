@@ -87,10 +87,41 @@ function newPlayerState(name, isGuest, avatarUrl) {
     team: 0,
     hp: DEFAULT_HP, maxHp: DEFAULT_HP,
     hand: [],
-    statuses: {},           // { poison: 3, stun: 1, silence: 2, burn: 2 }
+    statuses: {},
     isDown: false, downedAt: null,
-    extraPlays: 0,          // 이번 턴 추가 플레이 횟수 (special 등)
+    extraPlays: 0,
+    gauge: 0,               // 궁극기 게이지 (0~100)
+    invulnTurns: 0,         // 불사신 잔여 턴
+    ultimatesUsed: 0,       // 통계
   };
+}
+
+// ===== 궁극기 정의 =====
+const ULTIMATE_GAUGE_MAX = 100;
+const ULTIMATE_GAIN_DAMAGE_TAKEN = 1;     // 데미지 입음 / HP
+const ULTIMATE_GAIN_DAMAGE_DEALT = 0.5;   // 데미지 줌 / HP
+const ULTIMATE_GAIN_CARD_PLAY = 1;        // 카드 사용 / 장
+const ULTIMATE_GAIN_KILL = 15;            // 처치
+const ULTIMATE_GAIN_TURN_START = 3;       // 자기 턴 시작
+const ULTIMATES = {
+  blast:    { id: "blast",    emoji: "🔥", name: "광역 폭격" },
+  invuln:   { id: "invuln",   emoji: "🛡️", name: "불사신 2턴" },
+  execute:  { id: "execute",  emoji: "💀", name: "사형 선고" },
+  heal:     { id: "heal",     emoji: "❤️", name: "회복의 빛" },
+  chaos:    { id: "chaos",    emoji: "🌪️", name: "카오스 셔플" },
+  timestop: { id: "timestop", emoji: "⏰", name: "시간 정지" },
+};
+const ULTIMATE_IDS = Object.keys(ULTIMATES);
+
+function addGauge(room, userId, amount) {
+  const p = room.players.get(userId);
+  if (!p || p.isDown) return;
+  const prev = p.gauge || 0;
+  p.gauge = Math.min(ULTIMATE_GAUGE_MAX, prev + amount);
+  if (prev < ULTIMATE_GAUGE_MAX && p.gauge >= ULTIMATE_GAUGE_MAX) {
+    // READY 상태 — 클라에 emit (전체에게 알림은 본인 socket만)
+    // 다음 broadcastRoomState에 gauge 포함되니 본인이 알아챔
+  }
 }
 
 // 팀 자동 배정: 입장 순서로 round-robin (팀 수 만큼 회전)
@@ -126,6 +157,9 @@ function publicPlayer(userId, p, includeHandCount = true) {
     handCount: includeHandCount ? (p.hand?.length || 0) : 0,
     statuses: { ...p.statuses },
     isDown: p.isDown,
+    gauge: Math.round(p.gauge || 0),
+    gaugeMax: ULTIMATE_GAUGE_MAX,
+    invulnTurns: p.invulnTurns || 0,
   };
 }
 
@@ -274,6 +308,16 @@ function makeEventCtx(io, room) {
       }
       sendHandTo(io, room, userId);
     },
+    swapRandomCard: (uidA, uidB) => {
+      const pa = room.players.get(uidA), pb = room.players.get(uidB);
+      if (!pa || !pb) return;
+      if (pa.hand.length === 0 || pb.hand.length === 0) return;
+      const ia = Math.floor(Math.random() * pa.hand.length);
+      const ib = Math.floor(Math.random() * pb.hand.length);
+      [pa.hand[ia], pb.hand[ib]] = [pb.hand[ib], pa.hand[ia]];
+      sendHandTo(io, room, uidA);
+      sendHandTo(io, room, uidB);
+    },
     shuffleHands: (userIds) => {
       // 살아있는 플레이어들의 손패를 모두 합쳐서 셔플 후 다시 같은 크기로 분배
       const pile = [];
@@ -297,14 +341,110 @@ function makeEventCtx(io, room) {
 }
 
 // ===== Damage / Down =====
-function applyDamageDirect(io, room, userId, dmg, source) {
+// ===== 궁극기 효과 적용 =====
+function applyUltimate(io, room, userId, ultId, targetUserId) {
+  const me = room.players.get(userId);
+  if (!me) return null;
+  const isTeamMode = modeTeamCount(room.mode) > 0;
+
+  if (ultId === "blast") {
+    // 모든 적 5 데미지
+    const affected = [];
+    for (const uid of room.playerOrder) {
+      if (uid === userId) continue;
+      const t = room.players.get(uid);
+      if (!t || t.isDown) continue;
+      if (isTeamMode && t.team === me.team) continue;
+      applyDamageDirect(io, room, uid, 5, "광역폭격", userId);
+      affected.push(uid);
+    }
+    return { affected, dmg: 5 };
+  }
+
+  if (ultId === "invuln") {
+    me.invulnTurns = 3; // 시작 시 -1 되니까 3 = 다음 2턴 보호
+    return { invulnTurns: 2 };
+  }
+
+  if (ultId === "execute") {
+    const t = room.players.get(targetUserId);
+    if (!t || t.isDown) return null;
+    const hpRatio = t.hp / t.maxHp;
+    if (hpRatio <= 0.35) {
+      // 즉사
+      applyDamageDirect(io, room, targetUserId, t.hp + 999, "사형선고", userId);
+      return { executed: true, targetUserId };
+    } else {
+      applyDamageDirect(io, room, targetUserId, 10, "사형선고-failed", userId);
+      return { executed: false, targetUserId, dmg: 10 };
+    }
+  }
+
+  if (ultId === "heal") {
+    me.hp = Math.min(me.maxHp, me.hp + 30);
+    const healed = [{ uid: userId, amount: 30 }];
+    if (isTeamMode) {
+      for (const uid of room.playerOrder) {
+        if (uid === userId) continue;
+        const t = room.players.get(uid);
+        if (!t || t.isDown || t.team !== me.team) continue;
+        const before = t.hp;
+        t.hp = Math.min(t.maxHp, t.hp + 15);
+        healed.push({ uid, amount: t.hp - before });
+      }
+    }
+    return { healed };
+  }
+
+  if (ultId === "chaos") {
+    // 자기 빼고 모두 손패 버리고 5장 재분배
+    const affected = [];
+    for (const uid of room.playerOrder) {
+      if (uid === userId) continue;
+      const t = room.players.get(uid);
+      if (!t || t.isDown) continue;
+      // 손패 버리기
+      for (const cid of t.hand) discardCard(room, cid);
+      t.hand = [];
+      drawIntoHand(room, uid, 5);
+      sendHandTo(io, room, uid);
+      affected.push(uid);
+    }
+    return { affected };
+  }
+
+  if (ultId === "timestop") {
+    // 이번 턴 카드 1장 추가 사용
+    me.extraPlays = (me.extraPlays || 0) + 1;
+    return { extraPlays: 1 };
+  }
+
+  return null;
+}
+
+function applyDamageDirect(io, room, userId, dmg, source, attackerId = null) {
   const p = room.players.get(userId);
   if (!p || p.isDown) return;
-  p.hp = Math.max(0, p.hp - Math.max(0, Math.floor(dmg)));
+  // 불사신 (invuln) — 받는 데미지 무효
+  if ((p.invulnTurns || 0) > 0) {
+    io.to(socketRoomName(room.id)).emit("cg:invulnBlock", { userId, name: p.name, source });
+    return;
+  }
+  const finalDmg = Math.max(0, Math.floor(dmg));
+  p.hp = Math.max(0, p.hp - finalDmg);
+  // 게이지 충전: 받는 사람 (피해/HP) + 가한 사람 (피해/HP × 0.5)
+  if (finalDmg > 0) {
+    addGauge(room, userId, finalDmg * ULTIMATE_GAIN_DAMAGE_TAKEN);
+    if (attackerId && attackerId !== userId) {
+      addGauge(room, attackerId, finalDmg * ULTIMATE_GAIN_DAMAGE_DEALT);
+    }
+  }
   if (p.hp <= 0) {
     p.isDown = true;
     p.downedAt = Date.now();
     io.to(socketRoomName(room.id)).emit("cg:playerDown", { userId, name: p.name, source });
+    // 처치 보너스 — 공격자에게
+    if (attackerId) addGauge(room, attackerId, ULTIMATE_GAIN_KILL);
   }
 }
 
@@ -438,6 +578,17 @@ function startTurn(io, room) {
   room.turnNumber += 1;
   room.cardsPlayedThisTurn = 0;
   turnP.extraPlays = 0;
+  // 이벤트 보너스: extraPlayNext (다음 턴 카드 +1회)
+  if (turnP.statuses?.extraPlayNext > 0) {
+    turnP.extraPlays += turnP.statuses.extraPlayNext;
+    delete turnP.statuses.extraPlayNext;
+  }
+  addGauge(room, turnUid, ULTIMATE_GAIN_TURN_START); // 턴 시작 게이지
+
+  // 불사신 카운트다운 (이 턴 시작 시 -1)
+  if ((turnP.invulnTurns || 0) > 0) {
+    turnP.invulnTurns -= 1;
+  }
 
   // 상태이상 틱
   const { skip } = tickStatusesAtTurnStart(io, room, turnUid);
@@ -733,6 +884,7 @@ function tryPlayCard(io, room, userId, cardId, targetUserId) {
   p.hand.splice(handIdx, 1);
   discardCard(room, cardId);
   room.cardsPlayedThisTurn += 1;
+  addGauge(room, userId, ULTIMATE_GAIN_CARD_PLAY); // 카드 사용 게이지
 
   // 공격력 보정 (rage: +3, executeBonus: 대상 HP 임계 이하면 추가, selfDamage: 자기도 피해)
   let dmg = card.effect?.damage || 0;
@@ -882,6 +1034,26 @@ function applyImmediateEffect(io, room, actorId, card, targetUserId) {
     const ctx = makeEventCtx(io, room);
     const alive = ctx.alivePlayers();
     alive.forEach(p => ctx.damage(p.userId, ef.nuke, "핵폭탄"));
+  }
+  if (ef.healTarget) {
+    const t = room.players.get(targetUserId);
+    if (t && !t.isDown) {
+      t.hp = Math.min(t.maxHp, t.hp + ef.healTarget);
+    }
+  }
+  if (ef.shuffleAllHands) {
+    const ctx = makeEventCtx(io, room);
+    const alive = ctx.alivePlayers();
+    // 자기 자신은 제외 (special 카드라 사용자에게 손해 X)
+    for (const p of alive) {
+      if (p.userId === actorId) continue;
+      const pp = room.players.get(p.userId);
+      if (!pp) continue;
+      for (const cid of pp.hand) discardCard(room, cid);
+      pp.hand = [];
+      drawIntoHand(room, p.userId, 5);
+      sendHandTo(io, room, p.userId);
+    }
   }
   if (ef.triggerEvent === "random") fireRandomEvent(io, room);
 }
@@ -1254,12 +1426,64 @@ export function registerCardGame(io, supabaseAdmin) {
       endTurn(io, room, me.id, "MANUAL");
     });
 
+    // ===== 궁극기 사용 =====
+    socket.on("cg:useUltimate", (payload, cb) => {
+      const roomId = cgUserRoom.get(me.id);
+      const room = roomId ? cgRooms.get(roomId) : null;
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.status !== "playing") return cb?.({ ok: false, error: "NOT_PLAYING" });
+      if (room.playerOrder[room.currentTurnIdx] !== me.id) return cb?.({ ok: false, error: "NOT_YOUR_TURN" });
+      if (room.actionStack.length > 0) return cb?.({ ok: false, error: "REACTION_PHASE" });
+      const p = room.players.get(me.id);
+      if (!p || p.isDown) return cb?.({ ok: false, error: "DOWNED" });
+      if ((p.gauge || 0) < ULTIMATE_GAUGE_MAX) return cb?.({ ok: false, error: "GAUGE_NOT_FULL" });
+      const ultId = String(payload?.ultimateId || "");
+      if (!ULTIMATES[ultId]) return cb?.({ ok: false, error: "UNKNOWN_ULTIMATE" });
+      // execute는 타깃 필요
+      let targetUserId = payload?.targetUserId ? String(payload.targetUserId) : null;
+      if (ultId === "execute") {
+        if (!targetUserId) return cb?.({ ok: false, error: "TARGET_REQUIRED" });
+        const tp = room.players.get(targetUserId);
+        if (!tp || tp.isDown) return cb?.({ ok: false, error: "INVALID_TARGET" });
+        // 적팀만
+        if (modeTeamCount(room.mode) > 0 && tp.team === p.team) return cb?.({ ok: false, error: "TARGET_NOT_ENEMY" });
+        if (modeTeamCount(room.mode) === 0 && targetUserId === me.id) return cb?.({ ok: false, error: "TARGET_NOT_ENEMY" });
+      }
+      // 게이지 소모
+      p.gauge = 0;
+      p.ultimatesUsed = (p.ultimatesUsed || 0) + 1;
+      const result = applyUltimate(io, room, me.id, ultId, targetUserId);
+      io.to(socketRoomName(room.id)).emit("cg:ultimateFired", {
+        userId: me.id, name: p.name, ultimateId: ultId,
+        emoji: ULTIMATES[ultId].emoji, label: ULTIMATES[ultId].name,
+        result: result || null,
+      });
+      broadcastRoomState(io, room);
+      if (checkWinCondition(io, room)) return cb?.({ ok: true });
+      cb?.({ ok: true });
+    });
+
     socket.on("cg:leaveRoom", (_payload, cb) => {
       const roomId = cgUserRoom.get(me.id);
       const room = roomId ? cgRooms.get(roomId) : null;
       if (!room) return cb?.({ ok: false });
       leavePlayer(io, room, me.id, true);
       socket.leave(socketRoomName(room.id));
+      cb?.({ ok: true });
+    });
+
+    socket.on("cg:kickPlayer", (payload, cb) => {
+      const roomId = cgUserRoom.get(me.id);
+      const room = roomId ? cgRooms.get(roomId) : null;
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
+      if (room.status !== "lobby") return cb?.({ ok: false, error: "NOT_LOBBY" });
+      const targetId = String(payload?.targetUserId || "");
+      if (!targetId || targetId === me.id) return cb?.({ ok: false, error: "INVALID_TARGET" });
+      if (!room.players.has(targetId)) return cb?.({ ok: false, error: "TARGET_NOT_IN_ROOM" });
+      const target = room.players.get(targetId);
+      if (target?.socketId) io.to(target.socketId).emit("cg:kicked", { reason: "KICKED_BY_HOST" });
+      leavePlayer(io, room, targetId, true);
       cb?.({ ok: true });
     });
 

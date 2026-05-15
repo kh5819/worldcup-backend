@@ -10986,6 +10986,22 @@ async function fetchMergeLeaderboard(supabase, { mode, limit, dailyOnly = false 
     rows.push(r);
     if (rows.length >= limit) break;
   }
+
+  // profiles batch join — 최신 닉네임 + 아바타
+  if (rows.length > 0) {
+    const userIds = rows.map(r => r.user_id);
+    const { data: profiles } = await supabase
+      .from("profiles").select("id, nickname, avatar_url").in("id", userIds);
+    const profMap = new Map((profiles || []).map(p => [p.id, p]));
+    for (const r of rows) {
+      const p = profMap.get(r.user_id);
+      if (p) {
+        if (p.nickname) r.nickname = p.nickname; // 최신 닉네임으로 덮어쓰기
+        r.avatar_url = p.avatar_url || null;
+      }
+    }
+  }
+
   return { rows };
 }
 
@@ -11162,7 +11178,16 @@ app.get("/merge/leaderboard/me", async (req, res) => {
       console.error("[merge/leaderboard/me]", error);
       return res.status(500).json({ ok: false, error: "QUERY_FAIL" });
     }
-    res.json({ ok: true, mode, row: data?.[0] || null });
+    let row = data?.[0] || null;
+    if (row) {
+      const { data: prof } = await supabaseAdmin
+        .from("profiles").select("nickname, avatar_url").eq("id", userId).maybeSingle();
+      if (prof) {
+        if (prof.nickname) row.nickname = prof.nickname;
+        row.avatar_url = prof.avatar_url || null;
+      }
+    }
+    res.json({ ok: true, mode, row });
   } catch (err) {
     console.error(err);
     res.status(500).json({ ok: false, error: "INTERNAL" });
@@ -11203,6 +11228,22 @@ async function fetchDodgeLeaderboard(supabase, { limit, dailyOnly = false }) {
     rows.push(r);
     if (rows.length >= limit) break;
   }
+
+  // profiles batch join — 최신 닉네임 + 아바타
+  if (rows.length > 0) {
+    const userIds = rows.map(r => r.user_id);
+    const { data: profiles } = await supabase
+      .from("profiles").select("id, nickname, avatar_url").in("id", userIds);
+    const profMap = new Map((profiles || []).map(p => [p.id, p]));
+    for (const r of rows) {
+      const p = profMap.get(r.user_id);
+      if (p) {
+        if (p.nickname) r.nickname = p.nickname;
+        r.avatar_url = p.avatar_url || null;
+      }
+    }
+  }
+
   return { rows };
 }
 
@@ -11324,7 +11365,16 @@ app.get("/dodge/leaderboard/me", async (req, res) => {
       .eq("flagged", false).eq("user_id", userId)
       .order("score", { ascending: false }).limit(1);
     if (error) { console.error("[dodge/leaderboard/me]", error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
-    res.json({ ok: true, row: data?.[0] || null });
+    let row = data?.[0] || null;
+    if (row) {
+      const { data: prof } = await supabaseAdmin
+        .from("profiles").select("nickname, avatar_url").eq("id", userId).maybeSingle();
+      if (prof) {
+        if (prof.nickname) row.nickname = prof.nickname;
+        row.avatar_url = prof.avatar_url || null;
+      }
+    }
+    res.json({ ok: true, row });
   } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
 });
 

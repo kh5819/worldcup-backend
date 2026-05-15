@@ -153,6 +153,101 @@ export const EVENTS = [
       return { affected: alive.map(p => p.userId), msg: "🧨 누군가 자폭 버튼을 누름! 전원 2 데미지" };
     },
   },
+  {
+    id: "ev_cardrain",
+    emoji: "🃏",
+    title: "카드 비",
+    desc: "전원 카드 +2",
+    apply: (ctx) => {
+      const alive = ctx.alivePlayers();
+      alive.forEach(p => ctx.drawCards(p.userId, 2));
+      return { affected: alive.map(p => p.userId), msg: "🃏 카드 비가 쏟아진다! 전원 카드 +2" };
+    },
+  },
+  {
+    id: "ev_swap",
+    emoji: "🔄",
+    title: "교환의 신",
+    desc: "옆 사람과 손패 1장 교환",
+    apply: (ctx) => {
+      const alive = ctx.alivePlayers();
+      if (alive.length < 2) return { affected: [], msg: "" };
+      const affected = [];
+      // 짝수 페어만 처리 (홀수 인원 마지막 한 명은 스킵 — 자기 자신과 swap 방지)
+      for (let i = 0; i + 1 < alive.length; i += 2) {
+        const a = alive[i], b = alive[i + 1];
+        ctx.swapRandomCard(a.userId, b.userId);
+        affected.push(a.userId, b.userId);
+      }
+      return { affected, msg: "🔄 교환의 신이 손패를 섞는다!" };
+    },
+  },
+  {
+    id: "ev_mist",
+    emoji: "☠️",
+    title: "독안개",
+    desc: "전원 즉시 -2 데미지",
+    apply: (ctx) => {
+      const alive = ctx.alivePlayers();
+      alive.forEach(p => ctx.damage(p.userId, 2, "독안개"));
+      return { affected: alive.map(p => p.userId), msg: "☠️ 자욱한 독안개! 전원 -2" };
+    },
+  },
+  {
+    id: "ev_opportunity",
+    emoji: "✨",
+    title: "기회의 빛",
+    desc: "전원 다음 턴 카드 사용 +1회",
+    apply: (ctx) => {
+      const alive = ctx.alivePlayers();
+      alive.forEach(p => ctx.applyStatus(p.userId, { extraPlayNext: 1 }));
+      return { affected: alive.map(p => p.userId), msg: "✨ 기회의 빛! 다음 턴 카드 +1회 사용" };
+    },
+  },
+  {
+    id: "ev_coinflip",
+    emoji: "🪙",
+    title: "운명의 동전",
+    desc: "랜덤 1명: 50% 회복 / 50% 데미지",
+    apply: (ctx) => {
+      const alive = ctx.alivePlayers();
+      if (alive.length === 0) return { affected: [], msg: "" };
+      const tgt = alive[Math.floor(Math.random() * alive.length)];
+      if (Math.random() < 0.5) {
+        ctx.heal(tgt.userId, 6);
+        return { affected: [tgt.userId], msg: `🪙 동전 앞면: ${tgt.name} +6 HP` };
+      } else {
+        ctx.damage(tgt.userId, 6, "운명");
+        return { affected: [tgt.userId], msg: `🪙 동전 뒷면: ${tgt.name} -6 데미지` };
+      }
+    },
+  },
+  {
+    id: "ev_silence_all",
+    emoji: "🤐",
+    title: "침묵의 시간",
+    desc: "전원 1턴 특수 카드 봉인",
+    apply: (ctx) => {
+      const alive = ctx.alivePlayers();
+      alive.forEach(p => ctx.applyStatus(p.userId, { silence: 1 }));
+      return { affected: alive.map(p => p.userId), msg: "🤐 침묵! 1턴 동안 특수 카드 X" };
+    },
+  },
+  {
+    id: "ev_treasure",
+    emoji: "💎",
+    title: "보물 상자",
+    desc: "HP 최하 1명 +8 HP + 카드 +1",
+    apply: (ctx) => {
+      const alive = ctx.alivePlayers();
+      if (alive.length === 0) return { affected: [], msg: "" };
+      alive.sort((a, b) => a.hp - b.hp);
+      const target = alive[0];
+      ctx.heal(target.userId, 8);
+      ctx.drawCards(target.userId, 1);
+      return { affected: [target.userId], msg: `💎 ${target.name}이(가) 보물 상자를 열었다! +8 HP, 카드 +1` };
+    },
+  },
 ];
 
 const EV_MAP = new Map(EVENTS.map(e => [e.id, e]));
