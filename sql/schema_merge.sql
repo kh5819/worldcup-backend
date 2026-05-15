@@ -1,7 +1,8 @@
 -- ============================================================
 -- 수라상 (한식 진화형 합성 게임) — 점수 / 랭킹 스키마
 -- 2026-05-15
--- 솔로 + (추후) 멀티 모두 이 테이블 사용
+-- 솔로(엔드리스/챌린지) + (추후) 멀티 모두 이 테이블 사용
+-- 2026-05-15 (v2): mode 컬럼 추가 (엔드리스/챌린지 랭킹 분리)
 -- ============================================================
 
 create table if not exists merge_scores (
@@ -19,6 +20,16 @@ create table if not exists merge_scores (
   created_at      timestamptz default now()
 );
 
+-- mode 컬럼 추가 (재실행 안전)
+alter table merge_scores add column if not exists mode text not null default 'endless';
+alter table merge_scores drop constraint if exists merge_scores_mode_check;
+alter table merge_scores add constraint merge_scores_mode_check check (mode in ('endless', 'challenge'));
+
+-- client_run_id: 클라이언트 1회 게임 식별자 — pending score 중복 제출 방어
+alter table merge_scores add column if not exists client_run_id text;
+create unique index if not exists ux_merge_scores_client_run_id
+  on merge_scores (client_run_id) where client_run_id is not null;
+
 -- 인덱스
 create index if not exists idx_merge_scores_score_desc
   on merge_scores (score desc, created_at desc) where flagged = false;
@@ -32,6 +43,9 @@ create index if not exists idx_merge_scores_user_id
 create index if not exists idx_merge_scores_room_id
   on merge_scores (room_id) where room_id is not null;
 
+create index if not exists idx_merge_scores_mode_score
+  on merge_scores (mode, score desc, created_at desc) where flagged = false;
+
 -- RLS: service_role만 INSERT/SELECT
 alter table merge_scores enable row level security;
 
@@ -44,12 +58,12 @@ create policy "merge_scores insert service" on merge_scores
   for insert with check (auth.role() = 'service_role');
 
 -- 사용자별 BEST 점수 view (리더보드용)
--- distinct on (식별자) + score desc → 한 명당 한 행
+-- distinct on (mode, 식별자) + score desc → 한 모드/한 명당 한 행
 create or replace view merge_top_scores_v as
-select distinct on (coalesce(user_id::text, guest_id))
+select distinct on (mode, coalesce(user_id::text, guest_id))
   id, user_id, guest_id, nickname, score, max_stage,
-  combo_max, duration_sec, season, room_id, created_at
+  combo_max, duration_sec, season, room_id, mode, created_at
 from merge_scores
 where flagged = false
   and (user_id is not null or guest_id is not null)
-order by coalesce(user_id::text, guest_id), score desc, created_at asc;
+order by mode, coalesce(user_id::text, guest_id), score desc, created_at asc;

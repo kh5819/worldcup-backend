@@ -10895,6 +10895,49 @@ async function getOptionalUser(req) {
   try { return await verifyJWT(token); } catch { return null; }
 }
 
+const MERGE_ALLOWED_MODES = new Set(["endless", "challenge"]);
+function normalizeMergeMode(v) {
+  const s = String(v || "endless").toLowerCase();
+  return MERGE_ALLOWED_MODES.has(s) ? s : "endless";
+}
+
+// 모드별 정렬 — 엔드리스: score DESC / 챌린지: max_stage=11 클리어만, duration_sec ASC, score DESC tiebreak
+async function fetchMergeLeaderboard(supabase, { mode, limit, dailyOnly = false }) {
+  const base = supabase
+    .from("merge_scores")
+    .select("user_id, nickname, score, max_stage, combo_max, duration_sec, created_at, mode")
+    .eq("mode", mode)
+    .eq("flagged", false)
+    .not("user_id", "is", null); // 로그인 유저만 공식 랭킹
+
+  if (dailyOnly) {
+    const today = new Date().toISOString().slice(0, 10);
+    base.gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
+  }
+  if (mode === "challenge") base.eq("max_stage", 11);
+
+  // 더 많이 가져와서 user_id 기준 dedupe (best per user) — over-fetch 후 클라이언트 dedupe
+  const overFetch = Math.min(limit * 8, 200);
+  const q = mode === "challenge"
+    ? base.order("duration_sec", { ascending: true }).order("score", { ascending: false }).limit(overFetch)
+    : base.order("score", { ascending: false }).order("duration_sec", { ascending: true }).limit(overFetch);
+
+  const { data, error } = await q;
+  if (error) return { error };
+
+  // user_id 기준 best 1개만 (이미 sorted 상태)
+  const seen = new Set();
+  const rows = [];
+  for (const r of data || []) {
+    if (!r.user_id) continue;
+    if (seen.has(r.user_id)) continue;
+    seen.add(r.user_id);
+    rows.push(r);
+    if (rows.length >= limit) break;
+  }
+  return { rows };
+}
+
 app.post("/merge/score", async (req, res) => {
   try {
     const body = req.body || {};
@@ -10905,6 +10948,8 @@ app.post("/merge/score", async (req, res) => {
     const guestId = body.guestId ? String(body.guestId).slice(0, 64) : null;
     const nickname = String(body.nickname || "익명").slice(0, 14);
     const roomId = body.roomId ? String(body.roomId).slice(0, 32) : null;
+    const mode = normalizeMergeMode(body.mode);
+    const clientRunId = body.clientRunId ? String(body.clientRunId).slice(0, 64) : null;
 
     if (!Number.isFinite(score) || score < 0)
       return res.status(400).json({ ok: false, error: "INVALID_SCORE" });
@@ -10921,6 +10966,11 @@ app.post("/merge/score", async (req, res) => {
     if (comboMax > 3.05 || comboMax < 1.0) flagged = true;
     if (score > durationSec * 200 + 5000) flagged = true;
     if (durationSec < 3) flagged = true;
+    // 챌린지 모드는 11단계 + 최소 60초 (너무 빠른 클리어 의심)
+    if (mode === "challenge") {
+      if (maxStage !== 11) flagged = true;
+      if (durationSec < 60) flagged = true;
+    }
 
     const insertPayload = {
       user_id: userId,
@@ -10932,6 +10982,8 @@ app.post("/merge/score", async (req, res) => {
       combo_max: Math.min(3.0, Math.max(1.0, comboMax)),
       flagged,
       room_id: roomId,
+      mode,
+      client_run_id: clientRunId,
     };
 
     const { data, error } = await supabaseAdmin
@@ -10941,30 +10993,62 @@ app.post("/merge/score", async (req, res) => {
       .single();
 
     if (error) {
+      // client_run_id UNIQUE 충돌 = 중복 제출
+      if (String(error.code) === "23505") {
+        return res.status(409).json({ ok: false, error: "DUPLICATE_RUN" });
+      }
       console.error("[merge/score] insert error:", error);
       return res.status(500).json({ ok: false, error: "INSERT_FAIL" });
     }
 
-    // 랭크 계산 (best score 기준, flagged 제외)
-    let globalRank = null, dailyRank = null;
-    if (!flagged) {
-      const { count: g } = await supabaseAdmin
-        .from("merge_top_scores_v")
-        .select("*", { count: "exact", head: true })
-        .gt("score", Math.round(score));
-      globalRank = (g ?? 0) + 1;
+    // 랭크 계산: 로그인 유저만 공식 랭킹. 게스트는 rank null.
+    let globalRank = null, dailyRank = null, official = false;
+    if (!flagged && userId) {
+      official = true;
+      // 챌린지: duration_sec 빠를수록 상위. 엔드리스: score 높을수록 상위.
+      if (mode === "challenge") {
+        const dur = Math.round(durationSec);
+        const { count: g } = await supabaseAdmin
+          .from("merge_scores")
+          .select("user_id", { count: "exact", head: true })
+          .eq("mode", "challenge").eq("flagged", false).eq("max_stage", 11)
+          .not("user_id", "is", null)
+          .lt("duration_sec", dur);
+        globalRank = (g ?? 0) + 1;
 
-      const today = new Date().toISOString().slice(0, 10);
-      const { count: d } = await supabaseAdmin
-        .from("merge_top_scores_v")
-        .select("*", { count: "exact", head: true })
-        .gt("score", Math.round(score))
-        .gte("created_at", today + "T00:00:00Z")
-        .lt("created_at", today + "T23:59:59Z");
-      dailyRank = (d ?? 0) + 1;
+        const today = new Date().toISOString().slice(0, 10);
+        const { count: d } = await supabaseAdmin
+          .from("merge_scores")
+          .select("user_id", { count: "exact", head: true })
+          .eq("mode", "challenge").eq("flagged", false).eq("max_stage", 11)
+          .not("user_id", "is", null)
+          .lt("duration_sec", dur)
+          .gte("created_at", today + "T00:00:00Z")
+          .lt("created_at", today + "T23:59:59Z");
+        dailyRank = (d ?? 0) + 1;
+      } else {
+        const { count: g } = await supabaseAdmin
+          .from("merge_scores")
+          .select("user_id", { count: "exact", head: true })
+          .eq("mode", "endless").eq("flagged", false)
+          .not("user_id", "is", null)
+          .gt("score", Math.round(score));
+        globalRank = (g ?? 0) + 1;
+
+        const today = new Date().toISOString().slice(0, 10);
+        const { count: d } = await supabaseAdmin
+          .from("merge_scores")
+          .select("user_id", { count: "exact", head: true })
+          .eq("mode", "endless").eq("flagged", false)
+          .not("user_id", "is", null)
+          .gt("score", Math.round(score))
+          .gte("created_at", today + "T00:00:00Z")
+          .lt("created_at", today + "T23:59:59Z");
+        dailyRank = (d ?? 0) + 1;
+      }
     }
 
-    res.json({ ok: true, id: data.id, flagged, globalRank, dailyRank });
+    res.json({ ok: true, id: data.id, flagged, mode, official, globalRank, dailyRank });
   } catch (err) {
     console.error("[merge/score]", err);
     res.status(500).json({ ok: false, error: "INTERNAL" });
@@ -10973,17 +11057,14 @@ app.post("/merge/score", async (req, res) => {
 
 app.get("/merge/leaderboard/global", async (req, res) => {
   try {
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
-    const { data, error } = await supabaseAdmin
-      .from("merge_top_scores_v")
-      .select("nickname, score, max_stage, combo_max, created_at")
-      .order("score", { ascending: false })
-      .limit(limit);
-    if (error) {
-      console.error("[merge/leaderboard/global]", error);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const mode = normalizeMergeMode(req.query.mode);
+    const result = await fetchMergeLeaderboard(supabaseAdmin, { mode, limit, dailyOnly: false });
+    if (result.error) {
+      console.error("[merge/leaderboard/global]", result.error);
       return res.status(500).json({ ok: false, error: "QUERY_FAIL" });
     }
-    res.json({ ok: true, rows: data || [] });
+    res.json({ ok: true, mode, rows: result.rows });
   } catch (err) {
     console.error(err);
     res.status(500).json({ ok: false, error: "INTERNAL" });
@@ -10992,20 +11073,43 @@ app.get("/merge/leaderboard/global", async (req, res) => {
 
 app.get("/merge/leaderboard/daily", async (req, res) => {
   try {
-    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 30));
-    const today = new Date().toISOString().slice(0, 10);
-    const { data, error } = await supabaseAdmin
-      .from("merge_top_scores_v")
-      .select("nickname, score, max_stage, combo_max, created_at")
-      .gte("created_at", today + "T00:00:00Z")
-      .lt("created_at", today + "T23:59:59Z")
-      .order("score", { ascending: false })
-      .limit(limit);
-    if (error) {
-      console.error("[merge/leaderboard/daily]", error);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const mode = normalizeMergeMode(req.query.mode);
+    const result = await fetchMergeLeaderboard(supabaseAdmin, { mode, limit, dailyOnly: true });
+    if (result.error) {
+      console.error("[merge/leaderboard/daily]", result.error);
       return res.status(500).json({ ok: false, error: "QUERY_FAIL" });
     }
-    res.json({ ok: true, rows: data || [] });
+    res.json({ ok: true, mode, rows: result.rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: "INTERNAL" });
+  }
+});
+
+// 내 최고 — 로그인 필수. 게스트는 client localStorage 사용.
+app.get("/merge/leaderboard/me", async (req, res) => {
+  try {
+    const mode = normalizeMergeMode(req.query.mode);
+    const user = await getOptionalUser(req);
+    const userId = user?.sub || null;
+    if (!userId) return res.json({ ok: true, mode, row: null });
+
+    let q = supabaseAdmin
+      .from("merge_scores")
+      .select("nickname, score, max_stage, combo_max, duration_sec, created_at, mode")
+      .eq("mode", mode).eq("flagged", false).eq("user_id", userId)
+      .limit(1);
+    q = mode === "challenge"
+      ? q.eq("max_stage", 11).order("duration_sec", { ascending: true }).order("score", { ascending: false })
+      : q.order("score", { ascending: false });
+
+    const { data, error } = await q;
+    if (error) {
+      console.error("[merge/leaderboard/me]", error);
+      return res.status(500).json({ ok: false, error: "QUERY_FAIL" });
+    }
+    res.json({ ok: true, mode, row: data?.[0] || null });
   } catch (err) {
     console.error(err);
     res.status(500).json({ ok: false, error: "INTERNAL" });
