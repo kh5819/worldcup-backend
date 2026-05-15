@@ -24,6 +24,8 @@ import { registerOmok } from "./omok.js";
 import { registerCardGame } from "./cardgame.js";
 // DUO GAME ZONE — 보드파티 (별도 모듈)
 import { registerBoardParty } from "./boardparty.js";
+// DUO GAME ZONE — 수라상 멀티 (한식 합성 대회형, 별도 모듈)
+import { registerMerge } from "./merge.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -8177,6 +8179,11 @@ registerCardGame(io, supabaseAdmin);
 // 보드파티 — 독립 모듈 등록 (bp:* 이벤트 prefix)
 // =========================
 registerBoardParty(io, supabaseAdmin);
+
+// =========================
+// 수라상 멀티 — 독립 모듈 등록 (merge:* 이벤트 prefix)
+// =========================
+registerMerge(io, supabaseAdmin);
 
 // =========================
 // Socket 연결 핸들러
