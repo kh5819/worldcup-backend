@@ -908,9 +908,13 @@ export function registerOmok(io, supabaseAdmin) {
       // 카드 소모
       player.cards.splice(cardIdx, 1);
       emitMyCards(io, room, me.id);
+      // 보드 변경된 카드 (폭탄/뒤집기/이동/밀기/번개) — 클라 보드 동기화
+      const boardChangingCards = new Set(["bomb", "flip", "move", "push", "lightning"]);
+      const includeBoard = boardChangingCards.has(cardId);
       io.to(socketRoomName(room.id)).emit("omok:cardUsed", {
         userId: me.id, name: player.name, cardId,
         effect: result.effect || null,
+        board: includeBoard ? Array.from(room.board) : null,
       });
 
       // 카드 사용 = 한 액션 = 그 턴 종료 (재행동만 예외)
