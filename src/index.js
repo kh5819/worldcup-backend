@@ -26,6 +26,7 @@ import { registerCardGame } from "./cardgame.js";
 import { registerBoardParty } from "./boardparty.js";
 // DUO GAME ZONE — 수라상 멀티 (한식 합성 대회형, 별도 모듈)
 import { registerMerge } from "./merge.js";
+import { registerDraw } from "./draw.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -8184,6 +8185,45 @@ registerBoardParty(io, supabaseAdmin);
 // 수라상 멀티 — 독립 모듈 등록 (merge:* 이벤트 prefix)
 // =========================
 registerMerge(io, supabaseAdmin);
+registerDraw(io, supabaseAdmin);
+
+// ============= 그려봐 신고 admin =============
+app.get("/admin/draw-reports", requireAdmin, async (req, res) => {
+  try {
+    const status = String(req.query.status || "pending");
+    let q = supabaseAdmin
+      .from("draw_reports")
+      .select("id, room_id, round_no, drawer_user_id, reporter_user_id, word, status, created_at, reviewed_at, reason")
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (status !== "all") q = q.eq("status", status);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ ok: false, error: "QUERY_FAIL" });
+    res.json({ ok: true, rows: data || [] });
+  } catch (e) {
+    console.error("[admin/draw-reports]", e);
+    res.status(500).json({ ok: false, error: "INTERNAL" });
+  }
+});
+
+app.patch("/admin/draw-reports/:id/status", requireAdmin, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const newStatus = String(req.body?.status || "");
+    if (!["pending", "reviewed", "dismissed", "sanctioned"].includes(newStatus)) {
+      return res.status(400).json({ ok: false, error: "INVALID_STATUS" });
+    }
+    const { error } = await supabaseAdmin
+      .from("draw_reports")
+      .update({ status: newStatus, reviewed_at: new Date().toISOString(), reviewer_user_id: req.adminUserId || null })
+      .eq("id", id);
+    if (error) return res.status(500).json({ ok: false, error: "UPDATE_FAIL" });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[admin/draw-reports patch]", e);
+    res.status(500).json({ ok: false, error: "INTERNAL" });
+  }
+});
 
 // =========================
 // Socket 연결 핸들러
