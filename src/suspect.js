@@ -283,7 +283,7 @@ function startTurn(io, room, playerId) {
   broadcastRoomState(io, room);
   // 카드 뽑기 자동 타이머 — 10초 안에 안 뽑으면 서버가 자동 뽑기
   room.drawTimer = setTimeout(() => {
-    const r = drawRooms.get(room.id);
+    const r = scRooms.get(room.id);
     if (!r || r.status !== "playing" || r.currentTurnPlayerId !== playerId) return;
     if (r.turnPhase !== "draw") return;
     performDraw(io, r, playerId, true);
@@ -329,7 +329,7 @@ function startGuessTimer(io, room, userId) {
   if (room.guessTimeSec <= 0) return;
   clearGuessTimer(room);
   room.guessTimer = setTimeout(() => {
-    const r = drawRooms.get(room.id);
+    const r = scRooms.get(room.id);
     if (!r || r.status !== "playing" || r.currentTurnPlayerId !== userId) return;
     const player = r.players.get(userId);
     if (player && player.drawnCardId) {
