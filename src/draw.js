@@ -298,6 +298,9 @@ function beginDrawing(io, room, word) {
 }
 
 function endRound(io, room, reason) {
+  // 중복 호출 방지 (TIME_UP + ALL_CORRECT + DRAWER_LEFT 레이스 차단)
+  if (room._roundEnding) return;
+  room._roundEnding = true;
   clearRoundTimer(room);
   const word = room.currentWord;
   io.to(socketRoomName(room.id)).emit("draw:roundEnd", {
@@ -317,6 +320,7 @@ function endRound(io, room, reason) {
   setTimeout(() => {
     const r = drawRooms.get(room.id);
     if (!r || r.status !== "playing") return;
+    r._roundEnding = false;
     startRound(io, r, _supabaseRef);
   }, 3000);
 }

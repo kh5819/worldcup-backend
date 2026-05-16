@@ -699,9 +699,11 @@ async function performRoll(io, room, userId, isAuto = false) {
     return { ok: true };
   }
 
-  // 턴 종료 → 다음 턴 (잠시 대기)
+  // 턴 종료 → 다음 턴 (잠시 대기). 그 사이 disconnect 등으로 턴이 이미 넘어갔다면 무시.
+  const turnSnapshot = userId;
   setTimeout(() => {
     if (room.status !== "playing") return;
+    if (room.playerOrder[room.currentTurnIdx] !== turnSnapshot) return;
     advanceTurn(room);
     room.pendingDice = null;
     room.extraRollUsed = false;
@@ -1039,10 +1041,12 @@ function endMinigame(io, room, reason) {
   room.minigame = null;
   broadcastRoomState(io, room);
 
-  // 승리 체크 후 다음 턴 (잠시 대기)
+  // 승리 체크 후 다음 턴 (잠시 대기). 그 사이 disconnect 등으로 턴이 이미 넘어갔다면 무시.
   if (checkWinCondition(io, room)) return;
+  const turnSnapshot = room.playerOrder[room.currentTurnIdx];
   setTimeout(() => {
     if (room.status !== "playing") return;
+    if (room.playerOrder[room.currentTurnIdx] !== turnSnapshot) return;
     advanceTurn(room);
     room.pendingDice = null;
     room.extraRollUsed = false;

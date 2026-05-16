@@ -615,8 +615,12 @@ function startTurn(io, room) {
 
   clearTurnTimer(room);
   if (skip) {
-    // 기절: 자동 턴 종료
-    setTimeout(() => endTurn(io, room, turnUid, "STUN"), 1200);
+    // 기절: 자동 턴 종료 (다른 경로로 턴이 먼저 끝났으면 무시)
+    setTimeout(() => {
+      if (room.status !== "playing") return;
+      if (room.playerOrder[room.currentTurnIdx] !== turnUid) return;
+      endTurn(io, room, turnUid, "STUN");
+    }, 1200);
     return;
   }
   room.turnTimer = setTimeout(() => {
