@@ -1332,7 +1332,9 @@ export function registerCardGame(io, supabaseAdmin) {
       const room = roomId ? cgRooms.get(roomId) : null;
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
-      if (room.status !== "lobby") return cb?.({ ok: false, error: "ALREADY_STARTED" });
+      if (room.status === "playing") return cb?.({ ok: false, error: "ALREADY_PLAYING" });
+      // rematch: ended 상태에서 새 게임 허용
+      if (room.status === "ended") { room.endedAt = null; }
       const minNeeded = modeMinPlayers(room.mode);
       if (room.players.size < minNeeded) return cb?.({ ok: false, error: "NOT_ENOUGH_PLAYERS", needed: minNeeded });
       // 팀전: 각 팀이 정확히 perTeam 명이어야 시작 가능 (ffa는 검사 X)

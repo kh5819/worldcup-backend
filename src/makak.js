@@ -570,7 +570,9 @@ export function registerMakak(io, supabaseAdmin) {
       const room = roomId ? mkRooms.get(roomId) : null;
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
-      if (room.status !== "lobby") return cb?.({ ok: false, error: "NOT_LOBBY" });
+      if (room.status === "playing") return cb?.({ ok: false, error: "ALREADY_PLAYING" });
+      // rematch: ended 상태에서 새 게임 허용
+      if (room.status === "ended") { room.endedAt = null; }
       const required = MODE_PLAYER_COUNT[room.mode];
       if (room.players.size !== required) return cb?.({ ok: false, error: "MODE_PLAYER_COUNT_MISMATCH" });
       startGame(room);

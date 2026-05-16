@@ -347,7 +347,9 @@ export function registerFit(io, supabaseAdmin) {
       const room = roomId ? fitRooms.get(roomId) : null;
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
-      if (room.status !== "lobby") return cb?.({ ok: false, error: "NOT_LOBBY" });
+      if (room.status === "playing") return cb?.({ ok: false, error: "ALREADY_PLAYING" });
+      // rematch: ended 상태에서 새 게임 허용 (finishGame이 이미 timer 정리)
+      if (room.status === "ended") { clearGameTimer(room); room.endedAt = null; }
       if (room.players.size < 2) return cb?.({ ok: false, error: "NEED_AT_LEAST_2" });
 
       // 5라운드 seed 생성

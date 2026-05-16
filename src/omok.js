@@ -832,7 +832,9 @@ export function registerOmok(io, supabaseAdmin) {
       const room = roomId ? omokRooms.get(roomId) : null;
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
-      if (room.status !== "lobby") return cb?.({ ok: false, error: "ALREADY_STARTED" });
+      if (room.status === "playing") return cb?.({ ok: false, error: "ALREADY_PLAYING" });
+      // rematch: ended 상태에서 새 게임 허용
+      if (room.status === "ended") { room.endedAt = null; }
       const minNeeded = room.mode === "ffa" ? 2 : MODE_INFO[room.mode].players;
       if (room.players.size < minNeeded) return cb?.({ ok: false, error: "NOT_ENOUGH_PLAYERS", needed: minNeeded });
 

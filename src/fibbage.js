@@ -679,7 +679,9 @@ export function registerFibbage(io, supabaseAdmin) {
       const room = roomId ? fbRooms.get(roomId) : null;
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
-      if (room.status !== "lobby") return cb?.({ ok: false, error: "ALREADY_STARTED" });
+      if (room.status === "playing") return cb?.({ ok: false, error: "ALREADY_PLAYING" });
+      // rematch: ended 상태에서 새 게임 허용
+      if (room.status === "ended") { room.endedAt = null; }
       if (room.players.size < MIN_PLAYERS) return cb?.({ ok: false, error: "NOT_ENOUGH_PLAYERS", min: MIN_PLAYERS });
 
       for (const p of room.players.values()) p.score = 0;
