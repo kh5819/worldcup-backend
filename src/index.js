@@ -9255,7 +9255,8 @@ io.on("connection", (socket) => {
     if (!room.players.has(me.id)) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
 
     const t = room.tier;
-    if (t.tierPhase !== "board_updated" && t.tierPhase !== "final_review") {
+    // 재검토 투표 중이거나, 게임 종료/로비 상태에서는 불가
+    if (t.tierPhase === "review_voting" || t.tierPhase === "completed" || t.tierPhase === "lobby") {
       return cb?.({ ok: false, error: "WRONG_PHASE" });
     }
     // 쿨다운 체크 (스팸 방지)
@@ -9263,6 +9264,10 @@ io.on("connection", (socket) => {
     if (now - (t.lastReviewAt || 0) < TIER_REVIEW_COOLDOWN_MS) {
       return cb?.({ ok: false, error: "REVIEW_COOLDOWN" });
     }
+    // 진행 중 카드 투표 타이머/투표 데이터 정리 (재검토 후엔 board_updated로 복귀, 호스트가 다시 진행)
+    if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
+    room.roundEndsAt = null;
+    if (t.votes && typeof t.votes.clear === "function") t.votes.clear();
 
     const cardId = payload?.cardId;
     if (!cardId || !t.cardMap[cardId]) {
