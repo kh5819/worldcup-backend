@@ -11378,6 +11378,191 @@ app.get("/dodge/leaderboard/me", async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
 });
 
+// ============================================================
+// 지켜라 (가챠 TD) — 솔로 랭킹 (피해피해 패턴 차용)
+// 2026-05-16
+// ============================================================
+async function fetchGachatdLeaderboard(supabase, { limit, dailyOnly = false }) {
+  const base = supabase
+    .from("gachatd_scores")
+    .select("user_id, nickname, score, wave_max, kills, leader_key, endless, created_at")
+    .eq("flagged", false)
+    .not("user_id", "is", null);
+
+  if (dailyOnly) {
+    const today = new Date().toISOString().slice(0, 10);
+    base.gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
+  }
+
+  const overFetch = Math.min(limit * 8, 200);
+  const { data, error } = await base
+    .order("score", { ascending: false })
+    .order("created_at", { ascending: true })
+    .limit(overFetch);
+  if (error) return { error };
+
+  // user_id 기준 best 1개만 (이미 score DESC sorted)
+  const seen = new Set();
+  const rows = [];
+  for (const r of data || []) {
+    if (!r.user_id) continue;
+    if (seen.has(r.user_id)) continue;
+    seen.add(r.user_id);
+    rows.push(r);
+    if (rows.length >= limit) break;
+  }
+
+  // profiles batch join
+  if (rows.length > 0) {
+    const userIds = rows.map(r => r.user_id);
+    const { data: profiles } = await supabase
+      .from("profiles").select("id, nickname, avatar_url").in("id", userIds);
+    const profMap = new Map((profiles || []).map(p => [p.id, p]));
+    for (const r of rows) {
+      const p = profMap.get(r.user_id);
+      if (p) {
+        if (p.nickname) r.nickname = p.nickname;
+        r.avatar_url = p.avatar_url || null;
+      }
+    }
+  }
+
+  return { rows };
+}
+
+app.post("/gachatd/score", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const score = Number(body.score);
+    const waveMax = Number(body.waveMax ?? 0);
+    const kills = Number(body.kills ?? 0);
+    const pulls = Number(body.pulls ?? 0);
+    const durationSec = Number(body.durationSec ?? 0);
+    const leaderKey = body.leaderKey ? String(body.leaderKey).slice(0, 20) : null;
+    const endless = !!body.endless;
+    const guestId = body.guestId ? String(body.guestId).slice(0, 64) : null;
+    const nickname = String(body.nickname || "익명").slice(0, 14);
+    const clientRunId = body.clientRunId ? String(body.clientRunId).slice(0, 64) : null;
+
+    if (!Number.isFinite(score) || score < 0) return res.status(400).json({ ok: false, error: "INVALID_SCORE" });
+    if (!Number.isFinite(waveMax) || waveMax < 0) return res.status(400).json({ ok: false, error: "INVALID_WAVE" });
+
+    const user = await getOptionalUser(req);
+    const userId = user?.id || null;
+
+    // sanity 검증
+    let flagged = false;
+    if (durationSec > 0 && durationSec < 5) flagged = true;
+    if (score > waveMax * 2000 + 10000) flagged = true;
+    if (kills > waveMax * 50 + 100) flagged = true;
+    if (waveMax > 100) flagged = true;
+
+    const insertPayload = {
+      user_id: userId,
+      guest_id: userId ? null : guestId,
+      nickname,
+      score: Math.round(score),
+      wave_max: Math.max(0, Math.round(waveMax)),
+      kills: Math.max(0, Math.round(kills)),
+      pulls: Math.max(0, Math.round(pulls)),
+      leader_key: leaderKey,
+      endless,
+      duration_sec: Math.max(0, Math.round(durationSec)),
+      flagged,
+      client_run_id: clientRunId,
+    };
+
+    const { data, error } = await supabaseAdmin
+      .from("gachatd_scores")
+      .insert(insertPayload)
+      .select()
+      .single();
+
+    if (error) {
+      if (String(error.code) === "23505") return res.status(409).json({ ok: false, error: "DUPLICATE_RUN" });
+      console.error("[gachatd/score] insert error:", error);
+      return res.status(500).json({ ok: false, error: "INSERT_FAIL" });
+    }
+
+    // 랭크 계산 (로그인 유저 only)
+    let globalRank = null, dailyRank = null, official = false;
+    if (!flagged && userId) {
+      official = true;
+      const { data: myBestRow } = await supabaseAdmin
+        .from("gachatd_scores")
+        .select("score")
+        .eq("user_id", userId).eq("flagged", false)
+        .order("score", { ascending: false }).limit(1).maybeSingle();
+      const myBest = myBestRow?.score ?? Math.round(score);
+
+      const { data: higher } = await supabaseAdmin
+        .from("gachatd_scores")
+        .select("user_id, score")
+        .eq("flagged", false).not("user_id", "is", null).gt("score", myBest);
+      const higherUsers = new Set();
+      for (const r of higher || []) higherUsers.add(r.user_id);
+      globalRank = higherUsers.size + 1;
+
+      const today = new Date().toISOString().slice(0, 10);
+      const { data: higherDaily } = await supabaseAdmin
+        .from("gachatd_scores")
+        .select("user_id, score")
+        .eq("flagged", false).not("user_id", "is", null).gt("score", myBest)
+        .gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
+      const higherUsersDaily = new Set();
+      for (const r of higherDaily || []) higherUsersDaily.add(r.user_id);
+      dailyRank = higherUsersDaily.size + 1;
+    }
+
+    res.json({ ok: true, id: data.id, flagged, official, globalRank, dailyRank });
+  } catch (err) {
+    console.error("[gachatd/score]", err);
+    res.status(500).json({ ok: false, error: "INTERNAL" });
+  }
+});
+
+app.get("/gachatd/leaderboard/global", async (req, res) => {
+  try {
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const result = await fetchGachatdLeaderboard(supabaseAdmin, { limit, dailyOnly: false });
+    if (result.error) { console.error("[gachatd/leaderboard/global]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
+    res.json({ ok: true, rows: result.rows });
+  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+});
+
+app.get("/gachatd/leaderboard/daily", async (req, res) => {
+  try {
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const result = await fetchGachatdLeaderboard(supabaseAdmin, { limit, dailyOnly: true });
+    if (result.error) { console.error("[gachatd/leaderboard/daily]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
+    res.json({ ok: true, rows: result.rows });
+  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+});
+
+app.get("/gachatd/leaderboard/me", async (req, res) => {
+  try {
+    const user = await getOptionalUser(req);
+    const userId = user?.id || null;
+    if (!userId) return res.json({ ok: true, row: null });
+    const { data, error } = await supabaseAdmin
+      .from("gachatd_scores")
+      .select("nickname, score, wave_max, kills, leader_key, endless, created_at")
+      .eq("flagged", false).eq("user_id", userId)
+      .order("score", { ascending: false }).limit(1);
+    if (error) { console.error("[gachatd/leaderboard/me]", error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
+    let row = data?.[0] || null;
+    if (row) {
+      const { data: prof } = await supabaseAdmin
+        .from("profiles").select("nickname, avatar_url").eq("id", userId).maybeSingle();
+      if (prof) {
+        if (prof.nickname) row.nickname = prof.nickname;
+        row.avatar_url = prof.avatar_url || null;
+      }
+    }
+    res.json({ ok: true, row });
+  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+});
+
 server.listen(process.env.PORT || 3001, () => {
   console.log(`Backend listening on http://localhost:${process.env.PORT || 3001}`);
 });
