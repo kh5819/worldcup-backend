@@ -307,19 +307,19 @@ export function registerDodge(io, supabaseAdmin) {
       if (!sender || !sender.alive) return cb?.({ ok: false, error: "DEAD_OR_NOT_PLAYER" });
       const allowedEffects = ["darken", "invert", "slow", "bulletStorm"];
       const effect = allowedEffects.includes(payload?.effect) ? payload.effect : "darken";
-      // 살아있는 다른 플레이어 중 랜덤 1명
+      // 살아있는 다른 플레이어 중 랜덤 1명 (자기 자신 제외 — Map의 키 사용)
       const others = [];
-      for (const p of room.players.values()) {
-        if (p.userId !== me.id && p.alive) others.push(p);
+      for (const [uid, p] of room.players.entries()) {
+        if (uid !== me.id && p.alive) others.push({ uid, ...p });
       }
       if (others.length === 0) return cb?.({ ok: false, error: "NO_TARGET" });
       const target = others[Math.floor(Math.random() * others.length)];
-      const senderName = sender.nickname || "익명";
+      const senderName = sender.name || sender.nickname || "익명";
       io.to(target.socketId).emit("dodge:interfered", { effect, fromNickname: senderName });
       // 다른 모두에게 발동 알림 (토스트)
       io.to(roomId).emit("dodge:interfereSent", {
         fromUserId: me.id, fromNickname: senderName,
-        toUserId: target.userId, toNickname: target.nickname || "익명",
+        toUserId: target.uid, toNickname: target.name || target.nickname || "익명",
         effect,
       });
       cb?.({ ok: true });

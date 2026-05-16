@@ -605,6 +605,24 @@ export function registerGachatd(io, supabaseAdmin) {
       }
     });
 
+    // ----- 플레이어 snapshot relay (관전용) -----
+    socket.on("gt:peerSnapshot", (payload) => {
+      try {
+        const roomId = gtUserRoom.get(me.id);
+        const room = roomId ? gtRooms.get(roomId) : null;
+        if (!room || room.status !== "playing") return;
+        // 본인 제외 broadcast — 데이터 검증은 가볍게
+        const snap = payload?.snapshot;
+        if (!snap || typeof snap !== "object") return;
+        socket.to(socketRoomName(room.id)).emit("gt:peerSnapshot", {
+          playerId: me.id,
+          snapshot: snap,
+        });
+      } catch (e) {
+        // silent — snapshot 실패는 게임에 영향 X
+      }
+    });
+
     // ----- 보스 본진 도달 (해당 라인 player가 알림) — 미스 처리 -----
     socket.on("gt:bossMissedSelf", (payload, cb) => {
       try {
