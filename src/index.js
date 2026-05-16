@@ -30,6 +30,7 @@ import { registerDraw } from "./draw.js";
 import { registerSuspect } from "./suspect.js";
 import { registerMakak } from "./makak.js";
 import { registerDodge } from "./dodge.js";
+import { registerGachatd } from "./gachatd.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -8192,6 +8193,7 @@ registerDraw(io, supabaseAdmin);
 registerSuspect(io, supabaseAdmin);
 registerMakak(io, supabaseAdmin);
 registerDodge(io, supabaseAdmin);
+registerGachatd(io, supabaseAdmin);
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {
