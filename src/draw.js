@@ -168,22 +168,32 @@ const FALLBACK_WORDS = [
 ];
 
 // 공식 모드 단어 select — DB 우선, 없으면 hard-coded fallback
-async function pickOfficialWord(supabase, category) {
+// 같은 게임 내 중복 방지 — room.usedWords Set 사용
+async function pickOfficialWord(supabase, category, usedWords) {
+  const used = usedWords || new Set();
   try {
     if (supabase) {
       let q = supabase.from("draw_words").select("word").eq("active", true);
       if (category && category !== "any") q = q.eq("category", category);
       const { data, error } = await q.limit(500);
       if (!error && data?.length) {
-        const idx = Math.floor(Math.random() * data.length);
-        if (data[idx]?.word) return data[idx].word;
+        // 안 쓴 단어만 필터
+        const fresh = data.filter((d) => d.word && !used.has(d.word));
+        const pool = fresh.length > 0 ? fresh : data; // 다 썼으면 풀 리셋
+        if (fresh.length === 0 && pool.length > 0) used.clear();
+        const idx = Math.floor(Math.random() * pool.length);
+        if (pool[idx]?.word) return pool[idx].word;
       }
       console.warn(`[draw] DB word fetch empty (category=${category}) → fallback`);
     }
   } catch (e) {
     console.warn("[draw] pickOfficialWord DB error → fallback:", e?.message);
   }
-  return FALLBACK_WORDS[Math.floor(Math.random() * FALLBACK_WORDS.length)];
+  // fallback도 중복 방지
+  const freshFb = FALLBACK_WORDS.filter((w) => !used.has(w));
+  const fbPool = freshFb.length > 0 ? freshFb : FALLBACK_WORDS;
+  if (freshFb.length === 0) used.clear();
+  return fbPool[Math.floor(Math.random() * fbPool.length)];
 }
 
 // ===== 라운드/게임 lifecycle =====
@@ -226,7 +236,9 @@ async function startRound(io, room, supabase) {
 
   // 공식 모드: 서버가 단어 자동 select → 즉시 beginDrawing
   if (room.wordMode === "official" && supabase) {
-    const word = await pickOfficialWord(supabase, room.wordCategory);
+    if (!room.usedWords) room.usedWords = new Set();
+    const word = await pickOfficialWord(supabase, room.wordCategory, room.usedWords);
+    if (word) room.usedWords.add(word);
     if (!word) {
       // 실패 시 manual fallback
       console.warn(`[draw] official word fetch fail, fallback to manual`);
