@@ -27,18 +27,20 @@ const MIN_PLAYERS = 2;
 const MAX_PLAYERS_HARD_CAP = 8;
 const ALLOWED_BOARD_SIZES = [15, 19, 25];
 const ALLOWED_TURN_SECS = [10, 30, 60, 90, 120, 180];
-const ALLOWED_MODES = ["1v1", "2v2", "3v3", "4v4", "ffa"];
+const ALLOWED_MODES = ["1v1", "2v2", "3v3", "4v4", "2v2v2", "2v2v2v2", "ffa"];
 const ALLOWED_WIN_LENGTHS = [3, 4, 5]; // 호스트가 인원·보드에 맞게 승리 조건 조정
 const EMPTY_ROOM_TTL_MS = 30_000;
 const ENDED_ROOM_TTL_MS = 10 * 60_000;
 
 // 모드별 인원 (ffa는 가변)
 const MODE_INFO = {
-  "1v1": { players: 2, teams: 0 },
-  "2v2": { players: 4, teams: 2 },
-  "3v3": { players: 6, teams: 2 },
-  "4v4": { players: 8, teams: 2 },
-  "ffa": { players: null, teams: 0 },
+  "1v1":     { players: 2, teams: 0 },
+  "2v2":     { players: 4, teams: 2 },
+  "3v3":     { players: 6, teams: 2 },
+  "4v4":     { players: 8, teams: 2 },
+  "2v2v2":   { players: 6, teams: 3 },
+  "2v2v2v2": { players: 8, teams: 4 },
+  "ffa":     { players: null, teams: 0 },
 };
 
 // 색상 팔레트 (1~8) — 클라이언트도 동일 매핑
@@ -126,6 +128,8 @@ function shuffleArr(arr) {
 }
 
 // 팀 자동 배정: 입장 순서대로 좌우 인터리브, 색은 팀당 고정
+// 팀별 색 매핑: 0=빨강(1), 1=파랑(2), 2=초록(3), 3=노랑(4)
+const TEAM_COLOR_MAP = [1, 2, 3, 4];
 function reassignColorsAndTeams(room) {
   const m = room.mode;
   const info = MODE_INFO[m];
@@ -137,14 +141,15 @@ function reassignColorsAndTeams(room) {
       p.color = i === 0 ? 1 : 2; // red, blue
       p.team = null;
     });
-  } else if (info?.teams === 2) {
-    // 팀A=1, 팀B=2 (색은 빨강/파랑 고정)
+  } else if (info && info.teams >= 2) {
+    // N팀 인터리브: i % teams로 팀 배정, 팀별 고정색 (빨/파/초/노)
+    const teams = info.teams;
     order.forEach((uid, i) => {
       const p = room.players.get(uid);
       if (!p) return;
-      const team = i % 2; // 0: A, 1: B
+      const team = i % teams;
       p.team = team;
-      p.color = team === 0 ? 1 : 2;
+      p.color = TEAM_COLOR_MAP[team];
     });
   } else if (m === "ffa") {
     order.forEach((uid, i) => {
@@ -1027,14 +1032,24 @@ export function registerOmok(io, supabaseAdmin) {
           p.color = other.color;
           other.color = tmp;
         }
-      } else if (["2v2","3v3","4v4"].includes(room.mode)) {
-        const targetTeam = p.team === 0 ? 1 : 0;
-        const cap = MODE_INFO[room.mode].players / 2;
+      } else if (MODE_INFO[room.mode] && MODE_INFO[room.mode].teams >= 2) {
+        // 일반화: 2~4팀 모두 지원
+        const info = MODE_INFO[room.mode];
+        const N = info.teams;
+        const capPerTeam = info.players / N;
+        // payload.team이 명시되면 그 팀으로, 아니면 다음 팀(순환)
+        let targetTeam;
+        const requested = Number(payload?.team);
+        if (Number.isInteger(requested) && requested >= 0 && requested < N && requested !== p.team) {
+          targetTeam = requested;
+        } else {
+          targetTeam = (p.team + 1) % N;
+        }
         const targetCount = countTeam(room, targetTeam);
-        if (targetCount < cap) {
+        if (targetCount < capPerTeam) {
           // 정원 여유 — 그냥 이동
           p.team = targetTeam;
-          p.color = targetTeam === 0 ? 1 : 2;
+          p.color = TEAM_COLOR_MAP[targetTeam];
         } else {
           // 정원 꽉 참 — 같은 팀 마지막 들어온 사람과 swap
           const targetMembers = room.playerOrder.filter(u => room.players.get(u)?.team === targetTeam);
@@ -1042,8 +1057,8 @@ export function registerOmok(io, supabaseAdmin) {
           if (!swapUid) return cb?.({ ok: false, error: "TEAM_FULL_NO_SWAP" });
           const swapP = room.players.get(swapUid);
           const myOrigTeam = p.team;
-          p.team = targetTeam;       p.color = targetTeam === 0 ? 1 : 2;
-          swapP.team = myOrigTeam;   swapP.color = myOrigTeam === 0 ? 1 : 2;
+          p.team = targetTeam;       p.color = TEAM_COLOR_MAP[targetTeam];
+          swapP.team = myOrigTeam;   swapP.color = TEAM_COLOR_MAP[myOrigTeam];
         }
       } else if (room.mode === "ffa") {
         const newColor = Number(payload?.color);
