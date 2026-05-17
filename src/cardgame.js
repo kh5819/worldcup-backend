@@ -450,10 +450,11 @@ function applyDamageDirect(io, room, userId, dmg, source, attackerId = null) {
 
 // ===== Turn flow =====
 function teamsAlive(room) {
+  // 살아있고 connected인 사람만 카운트 — disconnect만 된 채로 게임이 안 끝나는 멈춤 방지
   const set = new Set();
   for (const uid of room.playerOrder) {
     const p = room.players.get(uid);
-    if (p && !p.isDown) set.add(p.team);
+    if (p && !p.isDown && p.connected) set.add(p.team);
   }
   return set;
 }
@@ -467,8 +468,11 @@ function checkWinCondition(io, room) {
     room.winnerTeam = teams.values().next().value ?? null;
     room.winnerUserId = null;
   } else {
-    // 개인전: 마지막 생존자
-    const winnerUid = room.playerOrder.find(uid => !room.players.get(uid).isDown) || null;
+    // 개인전: 마지막 alive+connected 생존자
+    const winnerUid = room.playerOrder.find(uid => {
+      const p = room.players.get(uid);
+      return p && !p.isDown && p.connected;
+    }) || null;
     const winnerP = winnerUid ? room.players.get(winnerUid) : null;
     room.winnerTeam = winnerP?.team ?? null;
     room.winnerUserId = winnerUid;

@@ -306,6 +306,7 @@ function finishGame(io, room, result) {
     return {
       playerId: uid,
       nickname: p.name,
+      avatar_url: p.avatar_url || null,
       lives: p.lives,
       bossDamage: p.bossDamage || 0,
       kills: p.kills || 0,

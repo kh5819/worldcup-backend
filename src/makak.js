@@ -352,6 +352,14 @@ function shuffle(arr) {
 function nextAlivePlayerId(room, fromUserId) {
   const order = room.playerOrder;
   const startIdx = fromUserId ? order.indexOf(fromUserId) : -1;
+  // 1차: alive + connected
+  for (let i = 1; i <= order.length; i++) {
+    const idx = (startIdx + i + order.length) % order.length;
+    const uid = order[idx];
+    const p = room.players.get(uid);
+    if (p?.alive && p?.connected) return uid;
+  }
+  // 2차 (모두 끊긴 경우 대비): alive만 — 진행 안 되지만 turnTimeout이 자동 발동되어 결국 NO_ALIVE 종료
   for (let i = 1; i <= order.length; i++) {
     const idx = (startIdx + i + order.length) % order.length;
     const uid = order[idx];
@@ -438,7 +446,7 @@ function finishGame(io, room, reason, winnerUserId = null) {
     if (!p) return null;
     const isWinner = !!(winnerUserId && (winnerUserId === uid || (winnerTeam && p.team === winnerTeam)));
     return {
-      playerId: uid, nickname: p.name, team: p.team,
+      playerId: uid, nickname: p.name, avatar_url: p.avatar_url || null, team: p.team,
       winner: isWinner, row: p.row, col: p.col,
     };
   }).filter(Boolean).sort((a, b) => (b.winner ? 1 : 0) - (a.winner ? 1 : 0));
@@ -666,6 +674,27 @@ export function registerMakak(io, supabaseAdmin) {
       else {
         io.to(socketRoomName(room.id)).emit("makak:peerDisconnect", { playerId: me.id });
         maybeScheduleEmptyRoomDelete(io, room);
+        // 30초 후 재접속 안 했으면 alive=false 처리 — 본인 차례면 자동 턴 패스
+        const expectedRoomId = roomId;
+        setTimeout(() => {
+          const r = mkRooms.get(expectedRoomId);
+          if (!r || r.status !== "playing") return;
+          const pp = r.players.get(me.id);
+          if (!pp || pp.connected) return;
+          pp.alive = false;
+          io.to(socketRoomName(r.id)).emit("makak:peerEliminated", { playerId: me.id, nickname: pp.name, reason: "DISCONNECT_TIMEOUT" });
+          // 끊긴 사람이 현재 턴이면 다음으로 진행
+          if (r.currentTurnPlayerId === me.id) {
+            advanceTurn(io, r);
+          } else {
+            // 살아있는 사람 1명 이하이면 즉시 종료
+            const aliveCount = [...r.players.values()].filter(x => x.alive).length;
+            if (aliveCount <= 1) {
+              const winner = [...r.players.entries()].find(([, x]) => x.alive)?.[0] || null;
+              finishGame(io, r, winner ? "LAST_STANDING" : "NO_ALIVE", winner);
+            }
+          }
+        }, 30_000);
       }
     });
   });

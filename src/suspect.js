@@ -354,15 +354,16 @@ function advanceTurn(io, room) {
 
 function checkWinCondition(io, room) {
   if (room.status !== "playing") return false;
-  const alive = [...room.players.values()].filter(p => p.alive);
+  // alive + connected만 카운트 — disconnect만으로 게임 진행 불가 상태 멈춤 방지
+  const aliveConnected = [...room.players.values()].filter(p => p.alive && p.connected);
   if (room.mode === "ffa") {
-    if (alive.length <= 1) {
+    if (aliveConnected.length <= 1) {
       finishGame(io, room, "LAST_STANDING");
       return true;
     }
   } else {
-    // 팀전: 살아있는 팀이 1개만 남으면 승
-    const aliveTeams = new Set(alive.map(p => p.team).filter(Boolean));
+    // 팀전: 살아있고 connected인 팀이 1개만 남으면 승
+    const aliveTeams = new Set(aliveConnected.map(p => p.team).filter(Boolean));
     if (aliveTeams.size <= 1) {
       finishGame(io, room, "LAST_TEAM");
       return true;
@@ -384,6 +385,7 @@ function finishGame(io, room, reason) {
     return {
       playerId: uid,
       nickname: p.name,
+      avatar_url: p.avatar_url || null,
       team: p.team,
       alive: p.alive,
       hiddenCards: hiddenCount,
@@ -726,6 +728,19 @@ export function registerSuspect(io, supabaseAdmin) {
       } else {
         io.to(socketRoomName(room.id)).emit("suspect:peerDisconnect", { playerId: me.id });
         maybeScheduleEmptyRoomDelete(io, room);
+        // 30초 후 재접속 안 했으면 alive=false 처리 후 승리 조건 재검사 — 멈춤 방지
+        const expectedRoomId = roomId;
+        setTimeout(() => {
+          const r = scRooms.get(expectedRoomId);
+          if (!r || r.status !== "playing") return;
+          const pp = r.players.get(me.id);
+          if (!pp || pp.connected) return;
+          pp.alive = false;
+          io.to(socketRoomName(r.id)).emit("suspect:playerEliminated", {
+            playerId: me.id, nickname: pp.name, reason: "DISCONNECT_TIMEOUT",
+          });
+          checkWinCondition(io, r);
+        }, 30_000);
       }
     });
   });
