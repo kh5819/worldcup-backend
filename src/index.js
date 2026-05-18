@@ -33,6 +33,7 @@ import { registerDodge } from "./dodge.js";
 import { registerGachatd } from "./gachatd.js";
 import { registerFit } from "./fit.js";
 import { registerGolf } from "./golf.js";
+import { registerDodogo } from "./dodogo.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -8198,6 +8199,7 @@ registerDodge(io, supabaseAdmin);
 registerGachatd(io, supabaseAdmin);
 registerFit(io, supabaseAdmin);
 registerGolf(io, supabaseAdmin);
+registerDodogo(io, supabaseAdmin);
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {
