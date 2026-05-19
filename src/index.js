@@ -1292,6 +1292,213 @@ app.get("/t/:id", async (req, res) => {
   }
 });
 
+// /b/:id — 빙고 SSR (카톡/네이버 공유용 단축 URL)
+async function buildBingoSeoHtml(bingoId) {
+  const { data: b } = await supabaseAdmin
+    .from("bingos")
+    .select("id, title, description, thumbnail_url, cells, creator_id, play_count, complete_count, size, created_at, updated_at, visibility, status, is_hidden, tags")
+    .eq("id", bingoId)
+    .eq("is_hidden", false)
+    .is("deleted_at", null)
+    .maybeSingle();
+  if (!b) return null;
+  if (b.visibility !== "public" || b.status !== "published") return null;
+
+  let creatorName = "";
+  if (b.creator_id) {
+    const { data: profile } = await supabaseAdmin
+      .from("profiles").select("nickname").eq("id", b.creator_id).maybeSingle();
+    creatorName = profile?.nickname || "";
+  }
+
+  const cells = Array.isArray(b.cells) ? b.cells : [];
+  let description = (b.description || "").trim();
+  if (!description || description.length < 20) {
+    description = `${b.title} — ${b.size || 25}칸 빙고. ${creatorName ? creatorName + "이(가) 만든 " : ""}빙고를 풀고 다른 사람들의 결과를 비교해보세요.`;
+  }
+  if (description.length > 160) description = description.slice(0, 157) + "...";
+
+  let ogImage = b.thumbnail_url || cells.find(c => c?.image_url)?.image_url || DEFAULT_OG_IMAGE;
+  if (ogImage && !ogImage.startsWith("http")) {
+    ogImage = `${process.env.SUPABASE_URL}/storage/v1/object/public/thumbnails/${ogImage}`;
+  }
+
+  const canonical = `${SITE_URL}/b/${b.id}`;
+  const playUrl = `${SITE_URL}/bingo-play.html?id=${b.id}`;
+  const title = `${b.title} — 빙고 | DUO`;
+
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "Game",
+    "name": b.title,
+    "description": description,
+    "url": canonical,
+    "image": ogImage,
+    "datePublished": b.created_at,
+    "dateModified": b.updated_at || b.created_at,
+    "author": creatorName ? { "@type": "Person", "name": creatorName } : { "@type": "Organization", "name": "DUO" },
+    "publisher": { "@type": "Organization", "name": "DUO (PlayDuo)", "url": SITE_URL },
+    "interactionStatistic": {
+      "@type": "InteractionCounter",
+      "interactionType": "https://schema.org/PlayAction",
+      "userInteractionCount": b.play_count || 0,
+    },
+  };
+  const breadcrumb = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "DUO", "item": SITE_URL },
+      { "@type": "ListItem", "position": 2, "name": "빙고", "item": canonical },
+    ],
+  };
+
+  const previewHtml = cells.length > 0
+    ? `<div class="seo-section"><h2>빙고 칸 미리보기</h2><ol>${cells.slice(0, 8).map(c => `<li>${escHtml(c.text || "")}</li>`).join("")}</ol></div>`
+    : "";
+
+  const bodyHtml = `
+    <nav class="seo-bc" aria-label="breadcrumb">
+      <a href="${SITE_URL}">DUO</a> · 빙고
+    </nav>
+    <h1 class="seo-title">🎯 ${escHtml(b.title)}</h1>
+    <div class="seo-meta">
+      <span class="seo-chip">빙고</span>
+      <span class="seo-chip">${b.size || 25}칸</span>
+      <span class="seo-chip">💯 ${(b.play_count || 0).toLocaleString()}회 플레이</span>
+      ${creatorName ? `<span class="seo-chip">👤 ${escHtml(creatorName)}</span>` : ""}
+    </div>
+    ${ogImage ? `<img class="seo-thumb" src="${escHtml(ogImage)}" alt="${escHtml(b.title)}" loading="lazy" />` : ""}
+    <div class="seo-desc">${escHtml(description)}</div>
+    ${previewHtml}
+  `;
+
+  return generateSeoHtml({ title, description, image: ogImage, canonical, jsonLd, breadcrumb, bodyHtml, playUrl });
+}
+
+app.get("/b/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const html = await buildBingoSeoHtml(id);
+    if (!html) return res.status(404).send(generateOgHtml({
+      title: "콘텐츠를 찾을 수 없습니다 — DUO",
+      description: "비공개되었거나 삭제된 빙고입니다.",
+      image: DEFAULT_OG_IMAGE, url: SITE_URL, redirectUrl: SITE_URL,
+    }));
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=600, s-maxage=3600, stale-while-revalidate=600");
+    res.send(html);
+  } catch (e) {
+    console.error("[GET /b/:id]", e);
+    res.status(500).send("Internal");
+  }
+});
+
+// /p/:id — 심리테스트 SSR
+async function buildPtestSeoHtml(testId) {
+  const { data: t } = await supabaseAdmin
+    .from("personality_tests")
+    .select("id, title, description, thumbnail_url, questions, results, creator_id, play_count, complete_count, created_at, updated_at, visibility, status, is_hidden, tags")
+    .eq("id", testId)
+    .eq("is_hidden", false)
+    .is("deleted_at", null)
+    .maybeSingle();
+  if (!t) return null;
+  if (t.visibility !== "public" || t.status !== "published") return null;
+
+  let creatorName = "";
+  if (t.creator_id) {
+    const { data: profile } = await supabaseAdmin
+      .from("profiles").select("nickname").eq("id", t.creator_id).maybeSingle();
+    creatorName = profile?.nickname || "";
+  }
+
+  const questions = Array.isArray(t.questions) ? t.questions : [];
+  const results = Array.isArray(t.results) ? t.results : [];
+
+  let description = (t.description || "").trim();
+  if (!description || description.length < 20) {
+    description = `${t.title} — ${questions.length}문제, ${results.length}가지 결과. ${creatorName ? creatorName + "이(가) 만든 " : ""}심리테스트를 풀고 친구들과 결과를 공유하세요.`;
+  }
+  if (description.length > 160) description = description.slice(0, 157) + "...";
+
+  let ogImage = t.thumbnail_url || results.find(r => r?.image_url)?.image_url || DEFAULT_OG_IMAGE;
+  if (ogImage && !ogImage.startsWith("http")) {
+    ogImage = `${process.env.SUPABASE_URL}/storage/v1/object/public/thumbnails/${ogImage}`;
+  }
+
+  const canonical = `${SITE_URL}/p/${t.id}`;
+  const playUrl = `${SITE_URL}/ptest-play.html?id=${t.id}`;
+  const title = `${t.title} — 심리테스트 | DUO`;
+
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "Quiz",
+    "name": t.title,
+    "description": description,
+    "url": canonical,
+    "image": ogImage,
+    "datePublished": t.created_at,
+    "dateModified": t.updated_at || t.created_at,
+    "author": creatorName ? { "@type": "Person", "name": creatorName } : { "@type": "Organization", "name": "DUO" },
+    "publisher": { "@type": "Organization", "name": "DUO (PlayDuo)", "url": SITE_URL },
+    "interactionStatistic": {
+      "@type": "InteractionCounter",
+      "interactionType": "https://schema.org/PlayAction",
+      "userInteractionCount": t.play_count || 0,
+    },
+  };
+  const breadcrumb = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "DUO", "item": SITE_URL },
+      { "@type": "ListItem", "position": 2, "name": "심리테스트", "item": canonical },
+    ],
+  };
+
+  const previewHtml = results.length > 0
+    ? `<div class="seo-section"><h2>결과 미리보기</h2><ol>${results.slice(0, 8).map(r => `<li>${escHtml(r.title || "")}</li>`).join("")}</ol></div>`
+    : "";
+
+  const bodyHtml = `
+    <nav class="seo-bc" aria-label="breadcrumb">
+      <a href="${SITE_URL}">DUO</a> · 심리테스트
+    </nav>
+    <h1 class="seo-title">💭 ${escHtml(t.title)}</h1>
+    <div class="seo-meta">
+      <span class="seo-chip">심리테스트</span>
+      <span class="seo-chip">${questions.length}문제</span>
+      <span class="seo-chip">${results.length}가지 결과</span>
+      <span class="seo-chip">💯 ${(t.play_count || 0).toLocaleString()}회 플레이</span>
+      ${creatorName ? `<span class="seo-chip">👤 ${escHtml(creatorName)}</span>` : ""}
+    </div>
+    ${ogImage ? `<img class="seo-thumb" src="${escHtml(ogImage)}" alt="${escHtml(t.title)}" loading="lazy" />` : ""}
+    <div class="seo-desc">${escHtml(description)}</div>
+    ${previewHtml}
+  `;
+
+  return generateSeoHtml({ title, description, image: ogImage, canonical, jsonLd, breadcrumb, bodyHtml, playUrl });
+}
+
+app.get("/p/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const html = await buildPtestSeoHtml(id);
+    if (!html) return res.status(404).send(generateOgHtml({
+      title: "콘텐츠를 찾을 수 없습니다 — DUO",
+      description: "비공개되었거나 삭제된 심리테스트입니다.",
+      image: DEFAULT_OG_IMAGE, url: SITE_URL, redirectUrl: SITE_URL,
+    }));
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=600, s-maxage=3600, stale-while-revalidate=600");
+    res.send(html);
+  } catch (e) {
+    console.error("[GET /p/:id]", e);
+    res.status(500).send("Internal");
+  }
+});
+
 // =========================
 // 동적 sitemap — UGC 전체 색인
 // /sitemap-content.xml: 월드컵+퀴즈
