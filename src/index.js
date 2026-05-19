@@ -1825,6 +1825,74 @@ app.post("/api/proxy-image", requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/storage-cleanup
+// 콘텐츠 수정/삭제 시 더 이상 참조되지 않는 이전 이미지 파일을 Storage에서 정리.
+// - body: { urls: string[] } (삭제 대상 public URL)
+// - JWT 검증 + path에 user_id 포함 검증 (RLS-equivalent)
+// - service_role로 storage.remove
+app.post("/api/storage-cleanup", requireAuth, async (req, res) => {
+  try {
+    const { urls } = req.body || {};
+    if (!Array.isArray(urls)) {
+      return res.status(400).json({ ok: false, error: "urls 배열 필수" });
+    }
+    if (urls.length === 0) {
+      return res.json({ ok: true, deleted: 0, skipped: 0 });
+    }
+    if (urls.length > 500) {
+      return res.status(400).json({ ok: false, error: "한 번에 500개 초과 불가" });
+    }
+
+    const userId = req.user.sub || req.user.id || null;
+    if (!userId) return res.status(401).json({ ok: false, error: "user_id 없음" });
+
+    // 추출 정규식: .../storage/v1/object/public/{bucket}/{path}
+    const STORAGE_RE = /\/storage\/v1\/object\/public\/([^\/]+)\/([^?#]+)/;
+    const bucketPaths = {}; // { bucket: Set<path> }
+    let skipped = 0;
+
+    for (const raw of urls) {
+      if (typeof raw !== "string" || !raw) { skipped++; continue; }
+      if (!raw.includes(".supabase.co/storage/")) { skipped++; continue; }
+      const m = raw.match(STORAGE_RE);
+      if (!m) { skipped++; continue; }
+      const bucket = m[1];
+      const path = decodeURIComponent(m[2]);
+      // 권한: path에 user_id가 포함되어야 함 (RLS path 규칙 준수)
+      if (!path.includes(userId)) {
+        skipped++;
+        continue;
+      }
+      if (!bucketPaths[bucket]) bucketPaths[bucket] = new Set();
+      bucketPaths[bucket].add(path);
+    }
+
+    let deleted = 0;
+    let failed = 0;
+    for (const [bucket, pathSet] of Object.entries(bucketPaths)) {
+      const paths = Array.from(pathSet);
+      try {
+        const { data, error } = await supabaseAdmin.storage.from(bucket).remove(paths);
+        if (error) {
+          console.warn(`[storage-cleanup] bucket=${bucket} err:`, error.message);
+          failed += paths.length;
+        } else {
+          deleted += (data || []).length;
+        }
+      } catch (e) {
+        console.warn(`[storage-cleanup] bucket=${bucket} ex:`, e.message);
+        failed += paths.length;
+      }
+    }
+
+    console.log(`[storage-cleanup] user=${userId.slice(0, 8)} deleted=${deleted} failed=${failed} skipped=${skipped}`);
+    return res.json({ ok: true, deleted, failed, skipped });
+  } catch (err) {
+    console.error("[storage-cleanup] error:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
 // GET /api/og-thumb/debug — CHZZK 썸네일 디버그 (배포 후 확인용)
 app.get("/api/og-thumb/debug", async (req, res) => {
   const url = req.query.url;
