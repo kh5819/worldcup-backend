@@ -1606,6 +1606,72 @@ app.get("/sitemap-tier.xml", async (req, res) => {
   }
 });
 
+// /sitemap-bingo.xml — 빙고 sitemap (Google·네이버 자동 색인용)
+app.get("/sitemap-bingo.xml", async (req, res) => {
+  try {
+    const xml = await _withSitemapCache("bingo", async () => {
+      const { data: rows, error } = await supabaseAdmin
+        .from("bingos")
+        .select("id, updated_at, visibility, status, is_hidden, deleted_at")
+        .eq("is_hidden", false)
+        .eq("status", "published")
+        .eq("visibility", "public")
+        .is("deleted_at", null)
+        .order("updated_at", { ascending: false })
+        .limit(50000);
+      if (error) { console.error("[sitemap-bingo query]", error); }
+      const items = (rows || [])
+        .filter(r => r && _isValidId(r.id))
+        .map(r => {
+          const lastmod = _formatLastmod(r.updated_at);
+          return `<url><loc>${SITE_URL}/b/${escapeXml(r.id)}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}<changefreq>weekly</changefreq><priority>0.6</priority></url>`;
+        })
+        .filter(Boolean)
+        .join("");
+      return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${items || `<url><loc>${SITE_URL}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`}</urlset>`;
+    });
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
+    res.send(xml);
+  } catch (e) {
+    console.error("[sitemap-bingo]", e);
+    res.status(500).type("text/plain").send("Internal");
+  }
+});
+
+// /sitemap-ptest.xml — 심리테스트 sitemap
+app.get("/sitemap-ptest.xml", async (req, res) => {
+  try {
+    const xml = await _withSitemapCache("ptest", async () => {
+      const { data: rows, error } = await supabaseAdmin
+        .from("personality_tests")
+        .select("id, updated_at, visibility, status, is_hidden, deleted_at")
+        .eq("is_hidden", false)
+        .eq("status", "published")
+        .eq("visibility", "public")
+        .is("deleted_at", null)
+        .order("updated_at", { ascending: false })
+        .limit(50000);
+      if (error) { console.error("[sitemap-ptest query]", error); }
+      const items = (rows || [])
+        .filter(r => r && _isValidId(r.id))
+        .map(r => {
+          const lastmod = _formatLastmod(r.updated_at);
+          return `<url><loc>${SITE_URL}/p/${escapeXml(r.id)}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}<changefreq>weekly</changefreq><priority>0.7</priority></url>`;
+        })
+        .filter(Boolean)
+        .join("");
+      return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${items || `<url><loc>${SITE_URL}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`}</urlset>`;
+    });
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
+    res.send(xml);
+  } catch (e) {
+    console.error("[sitemap-ptest]", e);
+    res.status(500).type("text/plain").send("Internal");
+  }
+});
+
 // sitemap 캐시 즉시 무효화 (개발/admin용, 토큰 옵션)
 app.get("/sitemap-bust", (req, res) => {
   SITEMAP_CACHE.clear();
@@ -1627,6 +1693,14 @@ app.get("/sitemap-index.xml", async (req, res) => {
   </sitemap>
   <sitemap>
     <loc>${SITE_URL}/sitemap-tier.xml</loc>
+    <lastmod>${today}</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>${SITE_URL}/sitemap-bingo.xml</loc>
+    <lastmod>${today}</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>${SITE_URL}/sitemap-ptest.xml</loc>
     <lastmod>${today}</lastmod>
   </sitemap>
 </sitemapindex>`;
