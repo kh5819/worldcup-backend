@@ -2476,6 +2476,58 @@ app.post("/reports", requireAuth, async (req, res) => {
 });
 
 // =========================
+// 빙고 신고 API
+// =========================
+app.post("/bingo-reports", requireAuth, async (req, res) => {
+  try {
+    const { bingoId, reason, detail } = req.body;
+    if (!bingoId || !reason) {
+      return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+    }
+    const { error } = await supabaseAdmin.from("bingo_reports").insert({
+      bingo_id: bingoId,
+      reporter_user_id: req.user.id,
+      reason,
+      detail: detail || null,
+    });
+    if (error) {
+      console.error("POST /bingo-reports error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /bingo-reports internal:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
+// 심리테스트 신고 API
+// =========================
+app.post("/ptest-reports", requireAuth, async (req, res) => {
+  try {
+    const { testId, reason, detail } = req.body;
+    if (!testId || !reason) {
+      return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
+    }
+    const { error } = await supabaseAdmin.from("ptest_reports").insert({
+      test_id: testId,
+      reporter_user_id: req.user.id,
+      reason,
+      detail: detail || null,
+    });
+    if (error) {
+      console.error("POST /ptest-reports error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /ptest-reports internal:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 티어 신고 API
 // =========================
 app.post("/tier-reports", requireAuth, async (req, res) => {
@@ -3440,6 +3492,219 @@ app.get("/admin/contents/:id/reports", requireAdmin, async (req, res) => {
     return res.json({ ok: true, items: data || [] });
   } catch (err) {
     console.error("GET /admin/contents/:id/reports:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// ============================================================
+// /admin/bingos — 빙고 관리 (목록 + 차단 + 삭제 + 신고)
+// ============================================================
+app.get("/admin/bingos", requireAdmin, async (req, res) => {
+  try {
+    const { q, sort, hidden, reported, page = 1, limit = 20 } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    const offset = (pageNum - 1) * limitNum;
+
+    let query = supabaseAdmin
+      .from("bingos")
+      .select("id, title, description, visibility, status, is_hidden, hidden_reason, report_count, creator_id, play_count, complete_count, thumbnail_url, size, tags, created_at, updated_at, deleted_at", { count: "exact" })
+      .is("deleted_at", null);
+
+    if (hidden === "true") query = query.eq("is_hidden", true);
+    else if (hidden === "false") query = query.eq("is_hidden", false);
+    if (reported === "true") query = query.gt("report_count", 0);
+    if (q && q.trim()) {
+      const s = q.trim();
+      query = query.or(`title.ilike.%${s}%,description.ilike.%${s}%`);
+    }
+    if (sort === "popular") query = query.order("complete_count", { ascending: false });
+    else if (sort === "reports") query = query.order("report_count", { ascending: false });
+    else query = query.order("created_at", { ascending: false });
+    query = query.range(offset, offset + limitNum - 1);
+
+    const { data, error, count } = await query;
+    if (error) {
+      console.error("GET /admin/bingos error:", error);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+
+    const ownerIds = [...new Set((data || []).map(c => c.creator_id).filter(Boolean))];
+    let profilesMap = {};
+    if (ownerIds.length > 0) {
+      const { data: profiles } = await supabaseAdmin
+        .from("profiles").select("id, nickname").in("id", ownerIds);
+      if (profiles) profiles.forEach(p => { profilesMap[p.id] = p.nickname; });
+    }
+    const items = (data || []).map(c => ({
+      ...c,
+      type: "bingo",
+      owner_id: c.creator_id,
+      creator_name: profilesMap[c.creator_id] || c.creator_id?.slice(0, 8) || "(알 수 없음)",
+    }));
+
+    return res.json({ ok: true, items, pagination: {
+      page: pageNum, limit: limitNum, total: count || 0, totalPages: Math.ceil((count || 0) / limitNum)
+    }});
+  } catch (err) {
+    console.error("GET /admin/bingos:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.patch("/admin/bingos/:id/hide", requireAdmin, async (req, res) => {
+  try {
+    const { hidden, is_hidden, hidden_reason } = req.body;
+    const update = { is_hidden: !!(hidden ?? is_hidden) };
+    if (typeof hidden_reason === "string") update.hidden_reason = hidden_reason || null;
+    const { error } = await supabaseAdmin.from("bingos").update(update).eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /admin/bingos/:id/hide:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.delete("/admin/bingos/:id", requireAdmin, async (req, res) => {
+  try {
+    const { error } = await supabaseAdmin.from("bingos")
+      .update({ deleted_at: new Date().toISOString() }).eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/bingos/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.post("/admin/bingos/:id/reset-reports", requireAdmin, async (req, res) => {
+  try {
+    await supabaseAdmin.from("bingo_reports").delete().eq("bingo_id", req.params.id);
+    const { error } = await supabaseAdmin.from("bingos").update({ report_count: 0 }).eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /admin/bingos/:id/reset-reports:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.get("/admin/bingos/:id/reports", requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("bingo_reports").select("*").eq("bingo_id", req.params.id)
+      .order("created_at", { ascending: false }).limit(100);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.json({ ok: true, items: data || [] });
+  } catch (err) {
+    console.error("GET /admin/bingos/:id/reports:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// ============================================================
+// /admin/ptests — 심리테스트 관리
+// ============================================================
+app.get("/admin/ptests", requireAdmin, async (req, res) => {
+  try {
+    const { q, sort, hidden, reported, page = 1, limit = 20 } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    const offset = (pageNum - 1) * limitNum;
+
+    let query = supabaseAdmin
+      .from("personality_tests")
+      .select("id, title, description, visibility, status, is_hidden, hidden_reason, report_count, creator_id, play_count, complete_count, thumbnail_url, tags, questions, results, created_at, updated_at, deleted_at", { count: "exact" })
+      .is("deleted_at", null);
+
+    if (hidden === "true") query = query.eq("is_hidden", true);
+    else if (hidden === "false") query = query.eq("is_hidden", false);
+    if (reported === "true") query = query.gt("report_count", 0);
+    if (q && q.trim()) {
+      const s = q.trim();
+      query = query.or(`title.ilike.%${s}%,description.ilike.%${s}%`);
+    }
+    if (sort === "popular") query = query.order("complete_count", { ascending: false });
+    else if (sort === "reports") query = query.order("report_count", { ascending: false });
+    else query = query.order("created_at", { ascending: false });
+    query = query.range(offset, offset + limitNum - 1);
+
+    const { data, error, count } = await query;
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+
+    const ownerIds = [...new Set((data || []).map(c => c.creator_id).filter(Boolean))];
+    let profilesMap = {};
+    if (ownerIds.length > 0) {
+      const { data: profiles } = await supabaseAdmin
+        .from("profiles").select("id, nickname").in("id", ownerIds);
+      if (profiles) profiles.forEach(p => { profilesMap[p.id] = p.nickname; });
+    }
+    const items = (data || []).map(c => ({
+      ...c,
+      type: "ptest",
+      owner_id: c.creator_id,
+      q_count: Array.isArray(c.questions) ? c.questions.length : 0,
+      r_count: Array.isArray(c.results) ? c.results.length : 0,
+      creator_name: profilesMap[c.creator_id] || c.creator_id?.slice(0, 8) || "(알 수 없음)",
+    }));
+
+    return res.json({ ok: true, items, pagination: {
+      page: pageNum, limit: limitNum, total: count || 0, totalPages: Math.ceil((count || 0) / limitNum)
+    }});
+  } catch (err) {
+    console.error("GET /admin/ptests:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.patch("/admin/ptests/:id/hide", requireAdmin, async (req, res) => {
+  try {
+    const { hidden, is_hidden, hidden_reason } = req.body;
+    const update = { is_hidden: !!(hidden ?? is_hidden) };
+    if (typeof hidden_reason === "string") update.hidden_reason = hidden_reason || null;
+    const { error } = await supabaseAdmin.from("personality_tests").update(update).eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("PATCH /admin/ptests/:id/hide:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.delete("/admin/ptests/:id", requireAdmin, async (req, res) => {
+  try {
+    const { error } = await supabaseAdmin.from("personality_tests")
+      .update({ deleted_at: new Date().toISOString() }).eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/ptests/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.post("/admin/ptests/:id/reset-reports", requireAdmin, async (req, res) => {
+  try {
+    await supabaseAdmin.from("ptest_reports").delete().eq("test_id", req.params.id);
+    const { error } = await supabaseAdmin.from("personality_tests").update({ report_count: 0 }).eq("id", req.params.id);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /admin/ptests/:id/reset-reports:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.get("/admin/ptests/:id/reports", requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("ptest_reports").select("*").eq("test_id", req.params.id)
+      .order("created_at", { ascending: false }).limit(100);
+    if (error) return res.status(500).json({ ok: false, error: error.message });
+    return res.json({ ok: true, items: data || [] });
+  } catch (err) {
+    console.error("GET /admin/ptests/:id/reports:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
 });
