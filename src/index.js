@@ -6548,8 +6548,86 @@ app.get("/explore/popular", async (req, res) => {
       }
     }
 
-    // 3) Merge + enrich with 7d metrics
-    let items = [...contentItems, ...tierItems];
+    // 3) bingo
+    let bingoItems = [];
+    if (type === "all" || type === "bingo") {
+      const { data } = await supabaseAdmin
+        .from("bingos")
+        .select("id, title, thumbnail_url, cells, play_count, complete_count, like_count, created_at, creator_id, size")
+        .eq("visibility", "public")
+        .eq("status", "published")
+        .eq("is_hidden", false)
+        .is("deleted_at", null)
+        .order("complete_count", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      const bingos = data || [];
+      if (bingos.length > 0) {
+        const cids = [...new Set(bingos.map(b => b.creator_id).filter(Boolean))];
+        let pm = {};
+        if (cids.length > 0) {
+          const { data: profiles } = await supabaseAdmin.from("profiles").select("id, nickname").in("id", cids);
+          for (const p of (profiles || [])) pm[p.id] = p.nickname;
+        }
+        bingoItems = bingos.map(b => ({
+          id: b.id,
+          type: "bingo",
+          title: b.title,
+          thumbnail_url: b.thumbnail_url || b.cells?.find(c => c?.image_url)?.image_url || null,
+          auto_thumbnail_url: null,
+          auto_thumb_media_type: null,
+          creator_name: pm[b.creator_id] || null,
+          play_count: b.play_count || 0,
+          complete_count: b.complete_count || 0,
+          like_count: b.like_count || 0,
+          item_count: b.size || 0,
+          created_at: b.created_at,
+          _source: "bingo",
+        }));
+      }
+    }
+
+    // 4) ptest
+    let ptestItems = [];
+    if (type === "all" || type === "ptest") {
+      const { data } = await supabaseAdmin
+        .from("personality_tests")
+        .select("id, title, thumbnail_url, questions, results, play_count, complete_count, like_count, created_at, creator_id")
+        .eq("visibility", "public")
+        .eq("status", "published")
+        .eq("is_hidden", false)
+        .is("deleted_at", null)
+        .order("complete_count", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      const tests = data || [];
+      if (tests.length > 0) {
+        const cids = [...new Set(tests.map(t => t.creator_id).filter(Boolean))];
+        let pm = {};
+        if (cids.length > 0) {
+          const { data: profiles } = await supabaseAdmin.from("profiles").select("id, nickname").in("id", cids);
+          for (const p of (profiles || [])) pm[p.id] = p.nickname;
+        }
+        ptestItems = tests.map(t => ({
+          id: t.id,
+          type: "ptest",
+          title: t.title,
+          thumbnail_url: t.thumbnail_url || t.results?.find(r => r?.image_url)?.image_url || null,
+          auto_thumbnail_url: null,
+          auto_thumb_media_type: null,
+          creator_name: pm[t.creator_id] || null,
+          play_count: t.play_count || 0,
+          complete_count: t.complete_count || 0,
+          like_count: t.like_count || 0,
+          item_count: Array.isArray(t.questions) ? t.questions.length : 0,
+          created_at: t.created_at,
+          _source: "ptest",
+        }));
+      }
+    }
+
+    // 5) Merge + enrich with 7d metrics
+    let items = [...contentItems, ...tierItems, ...bingoItems, ...ptestItems];
     if (items.length > 0) {
       const ids = items.map(i => i.id);
       const { data: metrics } = await supabaseAdmin
