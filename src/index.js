@@ -6548,9 +6548,9 @@ app.get("/explore/popular", async (req, res) => {
       }
     }
 
-    // 3) bingo — type=all에선 제외 (멀티 미지원 솔로 콘텐츠)
+    // 3) bingo
     let bingoItems = [];
-    if (type === "bingo") {
+    if (type === "all" || type === "bingo") {
       const { data } = await supabaseAdmin
         .from("bingos")
         .select("id, title, thumbnail_url, cells, play_count, complete_count, like_count, created_at, creator_id, size")
@@ -6587,9 +6587,9 @@ app.get("/explore/popular", async (req, res) => {
       }
     }
 
-    // 4) ptest — type=all에선 제외 (멀티 미지원 솔로 콘텐츠)
+    // 4) ptest
     let ptestItems = [];
-    if (type === "ptest") {
+    if (type === "all" || type === "ptest") {
       const { data } = await supabaseAdmin
         .from("personality_tests")
         .select("id, title, thumbnail_url, questions, results, play_count, complete_count, like_count, created_at, creator_id")
@@ -6662,37 +6662,20 @@ app.get("/explore/popular", async (req, res) => {
 // GET /explore/trending — 급상승 (48h 비교)
 // 빙고/심리는 content_events에 데이터가 없어서 RPC로 못 잡으므로,
 // 자체 테이블에서 "최근 7일 생성 + complete_count 높음" 기반으로 fallback 보충
-// ★ type=all에선 빙고/심리 제외 (멀티 미지원 솔로 콘텐츠).
-// ★ type=bingo/ptest일 때만 fallback 노출
 app.get("/explore/trending", async (req, res) => {
   try {
-    const type = String(req.query.type || "all");
     const limitRaw = parseInt(req.query.limit) || 10;
     const limit = Math.min(20, Math.max(1, limitRaw));
 
-    // 빙고/심리만 보기 모드: RPC 결과(wcq+tier) skip, 자체 테이블 fallback만 사용
-    const soloOnly = (type === "bingo" || type === "ptest");
-
-    let trending = [];
-    if (!soloOnly) {
-      const { data, error } = await supabaseAdmin.rpc("get_trending_contents", { p_limit: limit });
-      if (error) {
-        console.error("[GET /explore/trending] rpc error:", error.message);
-        return res.status(500).json({ ok: false, error: "RPC_FAIL" });
-      }
-      trending = data || [];
-    }
-
-    // 카테고리 필터 적용 (RPC는 type 미지원 → 서버 클라이언트 단에서 필터)
-    if (type === "worldcup" || type === "quiz") {
-      trending = trending.filter(t => t.content_type === type);
-    } else if (type === "tier") {
-      trending = trending.filter(t => t.content_type === "tier");
+    const { data: trending, error } = await supabaseAdmin.rpc("get_trending_contents", { p_limit: limit });
+    if (error) {
+      console.error("[GET /explore/trending] rpc error:", error.message);
+      return res.status(500).json({ ok: false, error: "RPC_FAIL" });
     }
 
     // enrich with content metadata
-    const wcqIds = trending.filter(t => t.content_type !== "tier").map(t => t.content_id);
-    const tierIds = trending.filter(t => t.content_type === "tier").map(t => t.content_id);
+    const wcqIds = (trending || []).filter(t => t.content_type !== "tier").map(t => t.content_id);
+    const tierIds = (trending || []).filter(t => t.content_type === "tier").map(t => t.content_id);
 
     let contentMap = {};
     if (wcqIds.length > 0) {
@@ -6732,7 +6715,7 @@ app.get("/explore/trending", async (req, res) => {
       }
     }
 
-    let items = trending.map(t => {
+    let items = (trending || []).map(t => {
       const meta = contentMap[t.content_id] || tierMap[t.content_id];
       if (!meta) return null;
       return {
@@ -6743,14 +6726,10 @@ app.get("/explore/trending", async (req, res) => {
       };
     }).filter(Boolean);
 
-    // ── 빙고/심리 fallback: type=bingo/ptest일 때만 노출 ──
-    // (type=all 또는 worldcup/quiz/tier에선 솔로 콘텐츠 노출 안 함)
+    // ── 빙고/심리 fallback: 최근 7일 + complete_count >= 1, complete_count 순 ──
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-    const wantBingo = (type === "bingo");
-    const wantPtest = (type === "ptest");
-
-    const { data: bData } = wantBingo ? await supabaseAdmin
+    const { data: bData } = await supabaseAdmin
       .from("bingos")
       .select("id, title, thumbnail_url, cells, play_count, complete_count, like_count, created_at, creator_id, size")
       .eq("visibility", "public")
@@ -6760,8 +6739,8 @@ app.get("/explore/trending", async (req, res) => {
       .gte("created_at", since)
       .gte("complete_count", 1)
       .order("complete_count", { ascending: false })
-      .limit(limit) : { data: [] };
-    const { data: pData } = wantPtest ? await supabaseAdmin
+      .limit(limit);
+    const { data: pData } = await supabaseAdmin
       .from("personality_tests")
       .select("id, title, thumbnail_url, questions, results, play_count, complete_count, like_count, created_at, creator_id")
       .eq("visibility", "public")
@@ -6771,7 +6750,7 @@ app.get("/explore/trending", async (req, res) => {
       .gte("created_at", since)
       .gte("complete_count", 1)
       .order("complete_count", { ascending: false })
-      .limit(limit) : { data: [] };
+      .limit(limit);
 
     const fallbackCreatorIds = [
       ...new Set([
@@ -6828,38 +6807,29 @@ app.get("/explore/trending", async (req, res) => {
 });
 
 // GET /explore/rising — 새로 뜨는 (7일 이내 생성 + 반응 있음)
-// ★ type=all에선 빙고/심리 제외, type=bingo/ptest일 때만 해당 카테고리 노출
 app.get("/explore/rising", async (req, res) => {
   try {
-    const type = String(req.query.type || "all");
     const limitRaw = parseInt(req.query.limit) || 10;
     const limit = Math.min(20, Math.max(1, limitRaw));
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-    const wantWcq = (type === "all" || type === "worldcup" || type === "quiz");
-    const wantTier = (type === "all" || type === "tier");
-    const wantBingo = (type === "bingo");
-    const wantPtest = (type === "ptest");
-
     // 1) Recent worldcup/quiz
-    let cQuery = wantWcq ? supabaseAdmin
+    const { data: cData } = await supabaseAdmin
       .from("public_contents_list")
       .select("id, type, title, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, creator_name, play_count, complete_count, like_count, item_count, created_at")
       .gte("created_at", since)
       .order("complete_count", { ascending: false })
-      .limit(limit) : null;
-    if (cQuery && (type === "worldcup" || type === "quiz")) cQuery = cQuery.eq("type", type);
-    const { data: cData } = cQuery ? await cQuery : { data: [] };
+      .limit(limit);
 
     // 2) Recent tier
-    const { data: tData } = wantTier ? await supabaseAdmin
+    const { data: tData } = await supabaseAdmin
       .from("tier_templates")
       .select("id, title, cards, play_count, complete_count, like_count, created_at, creator_id")
       .eq("is_public", true)
       .is("deleted_at", null)
       .gte("created_at", since)
       .order("complete_count", { ascending: false })
-      .limit(limit) : { data: [] };
+      .limit(limit);
 
     const tiers = tData || [];
     let tierItems = [];
@@ -6882,7 +6852,7 @@ app.get("/explore/rising", async (req, res) => {
     }
 
     // 3) Recent bingo
-    const { data: bData } = wantBingo ? await supabaseAdmin
+    const { data: bData } = await supabaseAdmin
       .from("bingos")
       .select("id, title, thumbnail_url, cells, play_count, complete_count, like_count, created_at, creator_id, size")
       .eq("visibility", "public")
@@ -6891,7 +6861,7 @@ app.get("/explore/rising", async (req, res) => {
       .is("deleted_at", null)
       .gte("created_at", since)
       .order("complete_count", { ascending: false })
-      .limit(limit) : { data: [] };
+      .limit(limit);
     const bingos = bData || [];
     let bingoItems = [];
     if (bingos.length > 0) {
@@ -6913,7 +6883,7 @@ app.get("/explore/rising", async (req, res) => {
     }
 
     // 4) Recent ptest
-    const { data: pData } = wantPtest ? await supabaseAdmin
+    const { data: pData } = await supabaseAdmin
       .from("personality_tests")
       .select("id, title, thumbnail_url, questions, results, play_count, complete_count, like_count, created_at, creator_id")
       .eq("visibility", "public")
@@ -6922,7 +6892,7 @@ app.get("/explore/rising", async (req, res) => {
       .is("deleted_at", null)
       .gte("created_at", since)
       .order("complete_count", { ascending: false })
-      .limit(limit) : { data: [] };
+      .limit(limit);
     const tests = pData || [];
     let ptestItems = [];
     if (tests.length > 0) {
@@ -6958,24 +6928,15 @@ app.get("/explore/rising", async (req, res) => {
 });
 
 // GET /explore/featured — 추천 콘텐츠 (운영자 선정)
-// ★ type=all에선 빙고/심리 제외, type=bingo/ptest일 때만 해당 카테고리 노출
 app.get("/explore/featured", async (req, res) => {
   try {
-    const type = String(req.query.type || "all");
     const limitRaw = parseInt(req.query.limit) || 10;
     const limit = Math.min(20, Math.max(1, limitRaw));
 
-    let fq = supabaseAdmin
+    const { data: featured, error } = await supabaseAdmin
       .from("featured_contents")
       .select("content_id, content_type, sort_order")
-      .eq("is_active", true);
-    if (type === "all") {
-      // 멀티 가능 콘텐츠만
-      fq = fq.in("content_type", ["worldcup", "quiz", "tier"]);
-    } else {
-      fq = fq.eq("content_type", type);
-    }
-    const { data: featured, error } = await fq
+      .eq("is_active", true)
       .order("sort_order", { ascending: false })
       .order("created_at", { ascending: false })
       .limit(limit);
