@@ -12,6 +12,7 @@ const bbUserRoom = new Map();
 
 const ALLOWED_MAX_PLAYERS = [2, 4, 6, 8];
 const ALLOWED_GAME_TIME = [300, 600, 0]; // 5분/10분/무제한
+const ALLOWED_BLOCK_TIME = [0, 15, 30, 60]; // 자유/15/30/60초 — 한 세트(3블록)
 const EMPTY_ROOM_TTL_MS = 30_000;
 const PROGRESS_THROTTLE_MS = 700;
 const SNAPSHOT_THROTTLE_MS = 1500;
@@ -93,6 +94,7 @@ function publicRoom(room) {
     status: room.status,
     maxPlayers: room.maxPlayers,
     gameTimeSec: room.gameTimeSec,
+    blockTimeSec: room.blockTimeSec ?? 30,
     seed: room.seed || null,
     gameDeadline: room.gameDeadline || null,
     startedAt: room.startedAt || null,
@@ -144,8 +146,13 @@ function leavePlayer(io, room, userId) {
     if (idx >= 0) room.playerOrder.splice(idx, 1);
   }
   if (bbUserRoom.get(userId) === room.id) bbUserRoom.delete(userId);
+  // 새 호스트는 left/disconnected 아닌 사람 우선
   if (wasHost && room.playerOrder.length > 0) {
-    room.hostUserId = room.playerOrder[0];
+    const activeFirst = room.playerOrder.find(uid => {
+      const pp = room.players.get(uid);
+      return pp && pp.connected && pp.status !== "left";
+    });
+    room.hostUserId = activeFirst || room.playerOrder[0];
   }
   io.to(socketRoomName(room.id)).emit("blockblast:peerLeave", { playerId: userId });
 
@@ -220,12 +227,14 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
           ? Number(payload.maxPlayers) : 4;
         const gameTimeSec = ALLOWED_GAME_TIME.includes(Number(payload?.gameTimeSec))
           ? Number(payload.gameTimeSec) : 600;
+        const blockTimeSec = ALLOWED_BLOCK_TIME.includes(Number(payload?.blockTimeSec))
+          ? Number(payload.blockTimeSec) : 30;
 
         const roomId = `bb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const inviteCode = genInviteCode();
         const room = {
           id: roomId, inviteCode, hostUserId: me.id,
-          status: "lobby", maxPlayers, gameTimeSec,
+          status: "lobby", maxPlayers, gameTimeSec, blockTimeSec,
           seed: null,
           gameDeadline: null,
           createdAt: Date.now(), startedAt: null, endedAt: null,
@@ -324,6 +333,10 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
         const t = Number(payload.gameTimeSec);
         if (ALLOWED_GAME_TIME.includes(t)) room.gameTimeSec = t;
       }
+      if (payload?.blockTimeSec !== undefined) {
+        const bt = Number(payload.blockTimeSec);
+        if (ALLOWED_BLOCK_TIME.includes(bt)) room.blockTimeSec = bt;
+      }
       broadcastRoomState(io, room);
       cb?.({ ok: true });
     });
@@ -334,7 +347,25 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
       if (room.status === "playing") return cb?.({ ok: false, error: "ALREADY_PLAYING" });
-      if (room.status === "ended") { clearGameTimer(room); room.endedAt = null; }
+      if (room.status === "ended") {
+        clearGameTimer(room);
+        room.endedAt = null;
+        // rematch: 떠난 사람(left) + 끊긴 사람 제거 → 새 사람이 들어올 자리 확보
+        const toRemove = [];
+        for (const [uid, pp] of room.players.entries()) {
+          if (pp.status === "left" || !pp.connected) toRemove.push(uid);
+        }
+        for (const uid of toRemove) {
+          room.players.delete(uid);
+          const idx = room.playerOrder.indexOf(uid);
+          if (idx >= 0) room.playerOrder.splice(idx, 1);
+          if (bbUserRoom.get(uid) === room.id) bbUserRoom.delete(uid);
+        }
+        // 호스트가 정리된 경우 (자기 자신이 정리되진 않음 — startGame 호출자라 connected)
+        if (!room.players.has(room.hostUserId)) {
+          room.hostUserId = room.playerOrder[0];
+        }
+      }
       if (room.players.size < 2) return cb?.({ ok: false, error: "NEED_AT_LEAST_2" });
 
       room.seed = genSeed();
@@ -359,6 +390,7 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
         seed: room.seed,
         gameTimeSec: room.gameTimeSec,
         gameDeadline: room.gameDeadline,
+        blockTimeSec: room.blockTimeSec ?? 30,
         players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
       });
       broadcastRoomState(io, room);
