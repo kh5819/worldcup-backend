@@ -621,6 +621,31 @@ export function registerMemoryMulti(io, supabaseAdmin) {
         leavePlayer(io, room, me.id);
       } else {
         io.to(socketRoomName(room.id)).emit("memory:peerUpdate", { playerId: me.id, connected: false });
+        // 무제한 시간 + 차례인 사람 끊김 → 15초 후 차례 강제 넘김 (게임 멈춤 방지)
+        if (room.currentTurnId === me.id && room.turnTimeSec === 0) {
+          setTimeout(() => {
+            const r = memoryRooms.get(room.id);
+            if (!r || r.status !== "playing") return;
+            const stillDisc = !r.players.get(me.id)?.connected && r.currentTurnId === me.id;
+            if (stillDisc) {
+              // 뒤집어진 카드 unflip
+              const ids = [];
+              if (r.firstFlipped != null) {
+                const c = r.cards[r.firstFlipped];
+                if (c && !c.matched) { c.flipped = false; ids.push(c.id); }
+              }
+              if (r.secondFlipped != null) {
+                const c = r.cards[r.secondFlipped];
+                if (c && !c.matched) { c.flipped = false; ids.push(c.id); }
+              }
+              if (ids.length > 0) {
+                io.to(socketRoomName(r.id)).emit("memory:cardsUnflipped", { cardIds: ids });
+              }
+              io.to(socketRoomName(r.id)).emit("memory:turnTimeout", { playerId: me.id });
+              nextTurn(io, r);
+            }
+          }, 15000);
+        }
         maybeScheduleEmptyRoomDelete(io, room);
       }
     });
