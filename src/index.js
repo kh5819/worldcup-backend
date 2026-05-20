@@ -12905,6 +12905,205 @@ app.get("/memory/leaderboard/:difficulty/me", async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
 });
 
+// ============================================================
+// 블록 블래스트 (DUO BlockBlast / 1010!) — 솔로 무한 점수 / 랭킹
+// 2026-05-21
+// 로그인 유저만. UPSERT (난이도 X, 한 종류). TOP 10.
+// ============================================================
+const BLOCKBLAST_TOP_LIMIT = 10;
+
+async function fetchBlockBlastLeaderboard(supabase, { dailyOnly = false }) {
+  const base = supabase
+    .from("blockblast_scores")
+    .select("user_id, nickname, score, lines_cleared, blocks_placed, max_combo, duration_sec, created_at")
+    .eq("flagged", false)
+    .not("user_id", "is", null);
+
+  if (dailyOnly) {
+    const today = new Date().toISOString().slice(0, 10);
+    base.gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
+  }
+
+  const { data, error } = await base
+    .order("score", { ascending: false })
+    .order("created_at", { ascending: true })
+    .limit(BLOCKBLAST_TOP_LIMIT);
+  if (error) return { error };
+
+  const rows = data || [];
+  if (rows.length > 0) {
+    const userIds = rows.map(r => r.user_id);
+    const { data: profiles } = await supabase
+      .from("profiles").select("id, nickname, avatar_url").in("id", userIds);
+    const profMap = new Map((profiles || []).map(p => [p.id, p]));
+    for (const r of rows) {
+      const p = profMap.get(r.user_id);
+      if (p) {
+        if (p.nickname) r.nickname = p.nickname;
+        r.avatar_url = p.avatar_url || null;
+      }
+    }
+  }
+  return { rows };
+}
+
+app.post("/blockblast/score", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const score = Number(body.score);
+    const linesCleared = Number(body.linesCleared || 0);
+    const blocksPlaced = Number(body.blocksPlaced || 0);
+    const maxCombo = Number(body.maxCombo || 0);
+    const durationSec = Number(body.durationSec);
+    const seed = body.seed != null ? Number(body.seed) : null;
+    const clientRunId = body.clientRunId ? String(body.clientRunId).slice(0, 64) : null;
+
+    if (!Number.isFinite(score) || score < 0) return res.status(400).json({ ok: false, error: "INVALID_SCORE" });
+    if (!Number.isFinite(durationSec) || durationSec < 0) return res.status(400).json({ ok: false, error: "INVALID_DURATION" });
+
+    const user = await getOptionalUser(req);
+    const userId = user?.id || null;
+    if (!userId) return res.status(401).json({ ok: false, error: "LOGIN_REQUIRED" });
+
+    const { data: prof } = await supabaseAdmin
+      .from("profiles").select("nickname").eq("id", userId).maybeSingle();
+    const nickname = String(prof?.nickname || "익명").slice(0, 14);
+
+    // sanity 검증
+    let flagged = false;
+    if (durationSec < 3) flagged = true;
+    if (durationSec > 7200) flagged = true;
+    if (score > durationSec * 1000 + 1000) flagged = true; // 초당 1000점 이상 = 의심
+    if (blocksPlaced > durationSec * 30 + 100) flagged = true; // 초당 30 블록 이상 = 의심
+    if (maxCombo > 50) flagged = true;
+    if (linesCleared > blocksPlaced * 5 + 50) flagged = true; // 블록당 5줄 이상 = 의심
+
+    const { data: existing } = await supabaseAdmin
+      .from("blockblast_scores")
+      .select("id, score")
+      .eq("user_id", userId).maybeSingle();
+
+    const newScore = Math.round(score);
+    const prevBest = existing?.score ?? -1;
+    const isNewBest = newScore > prevBest;
+
+    const payload = {
+      user_id: userId,
+      nickname,
+      score: newScore,
+      lines_cleared: Math.max(0, Math.min(9999, Math.round(linesCleared))),
+      blocks_placed: Math.max(0, Math.min(9999, Math.round(blocksPlaced))),
+      max_combo: Math.max(0, Math.min(50, Math.round(maxCombo))),
+      duration_sec: Math.max(0, Math.min(7200, Math.round(durationSec))),
+      seed: seed,
+      flagged,
+      client_run_id: clientRunId,
+      created_at: new Date().toISOString(),
+    };
+
+    if (!existing) {
+      const { error } = await supabaseAdmin.from("blockblast_scores").insert(payload);
+      if (error) {
+        if (String(error.code) === "23505") {
+          return res.json({ ok: true, isNewBest: false, bestScore: prevBest });
+        }
+        console.error("[blockblast/score] insert error:", error);
+        return res.status(500).json({ ok: false, error: "INSERT_FAIL" });
+      }
+    } else if (isNewBest) {
+      const { error } = await supabaseAdmin
+        .from("blockblast_scores")
+        .update(payload)
+        .eq("user_id", userId);
+      if (error) {
+        console.error("[blockblast/score] update error:", error);
+        return res.status(500).json({ ok: false, error: "UPDATE_FAIL" });
+      }
+    }
+
+    let globalRank = null, dailyRank = null, official = false;
+    if (!flagged) {
+      official = true;
+      const myBest = isNewBest ? newScore : prevBest;
+
+      const { data: higher } = await supabaseAdmin
+        .from("blockblast_scores")
+        .select("user_id, score")
+        .eq("flagged", false).not("user_id", "is", null).gt("score", myBest);
+      globalRank = (higher?.length || 0) + 1;
+      if (globalRank > BLOCKBLAST_TOP_LIMIT) globalRank = null;
+
+      const today = new Date().toISOString().slice(0, 10);
+      const { data: higherDaily } = await supabaseAdmin
+        .from("blockblast_scores")
+        .select("user_id, score")
+        .eq("flagged", false).not("user_id", "is", null).gt("score", myBest)
+        .gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
+      dailyRank = (higherDaily?.length || 0) + 1;
+      if (dailyRank > BLOCKBLAST_TOP_LIMIT) dailyRank = null;
+    }
+
+    res.json({
+      ok: true,
+      isNewBest,
+      bestScore: isNewBest ? newScore : prevBest,
+      flagged,
+      official,
+      globalRank,
+      dailyRank,
+    });
+  } catch (err) {
+    console.error("[blockblast/score]", err);
+    res.status(500).json({ ok: false, error: "INTERNAL" });
+  }
+});
+
+app.get("/blockblast/leaderboard/global", async (req, res) => {
+  try {
+    const result = await fetchBlockBlastLeaderboard(supabaseAdmin, { dailyOnly: false });
+    if (result.error) { console.error("[blockblast/leaderboard/global]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
+    res.json({ ok: true, rows: result.rows });
+  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+});
+
+app.get("/blockblast/leaderboard/daily", async (req, res) => {
+  try {
+    const result = await fetchBlockBlastLeaderboard(supabaseAdmin, { dailyOnly: true });
+    if (result.error) { console.error("[blockblast/leaderboard/daily]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
+    res.json({ ok: true, rows: result.rows });
+  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+});
+
+app.get("/blockblast/leaderboard/me", async (req, res) => {
+  try {
+    const user = await getOptionalUser(req);
+    const userId = user?.id || null;
+    if (!userId) return res.json({ ok: true, row: null });
+    const { data, error } = await supabaseAdmin
+      .from("blockblast_scores")
+      .select("nickname, score, lines_cleared, blocks_placed, max_combo, duration_sec, created_at")
+      .eq("flagged", false).eq("user_id", userId)
+      .maybeSingle();
+    if (error) { console.error("[blockblast/leaderboard/me]", error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
+    let row = data || null;
+    if (row) {
+      const { data: prof } = await supabaseAdmin
+        .from("profiles").select("nickname, avatar_url").eq("id", userId).maybeSingle();
+      if (prof) {
+        if (prof.nickname) row.nickname = prof.nickname;
+        row.avatar_url = prof.avatar_url || null;
+      }
+      const { data: higher } = await supabaseAdmin
+        .from("blockblast_scores")
+        .select("user_id")
+        .eq("flagged", false).not("user_id", "is", null).gt("score", row.score);
+      let myRank = (higher?.length || 0) + 1;
+      row.global_rank = myRank > BLOCKBLAST_TOP_LIMIT ? null : myRank;
+    }
+    res.json({ ok: true, row });
+  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+});
+
 server.listen(process.env.PORT || 3001, () => {
   console.log(`Backend listening on http://localhost:${process.env.PORT || 3001}`);
 });
