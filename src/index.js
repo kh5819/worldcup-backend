@@ -12465,6 +12465,219 @@ app.get("/gachatd/leaderboard/me", async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
 });
 
+// ============================================================
+// 사과게임 (DUO Apple / Fruit Box) — 솔로 2분 점수 / 랭킹
+// 2026-05-21
+// 로그인 유저만 공식 랭킹. 유저당 1 row UPSERT (최고점만 갱신).
+// 랭킹은 TOP 10만 노출 (하드 캡).
+// ============================================================
+const APPLE_TOP_LIMIT = 10;
+
+async function fetchAppleLeaderboard(supabase, { dailyOnly = false }) {
+  const base = supabase
+    .from("apple_scores")
+    .select("user_id, nickname, score, apples_cleared, max_combo, duration_sec, created_at")
+    .eq("flagged", false)
+    .not("user_id", "is", null);
+
+  if (dailyOnly) {
+    const today = new Date().toISOString().slice(0, 10);
+    base.gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
+  }
+
+  const { data, error } = await base
+    .order("score", { ascending: false })
+    .order("created_at", { ascending: true })
+    .limit(APPLE_TOP_LIMIT);
+  if (error) return { error };
+
+  const rows = data || [];
+
+  // profiles batch join — 최신 닉네임 + 아바타
+  if (rows.length > 0) {
+    const userIds = rows.map(r => r.user_id);
+    const { data: profiles } = await supabase
+      .from("profiles").select("id, nickname, avatar_url").in("id", userIds);
+    const profMap = new Map((profiles || []).map(p => [p.id, p]));
+    for (const r of rows) {
+      const p = profMap.get(r.user_id);
+      if (p) {
+        if (p.nickname) r.nickname = p.nickname;
+        r.avatar_url = p.avatar_url || null;
+      }
+    }
+  }
+
+  return { rows };
+}
+
+app.post("/apple/score", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const score = Number(body.score);
+    const applesCleared = Number(body.applesCleared);
+    const maxCombo = Number(body.maxCombo || 0);
+    const durationSec = Number(body.durationSec);
+    const seed = body.seed != null ? Number(body.seed) : null;
+    const clientRunId = body.clientRunId ? String(body.clientRunId).slice(0, 64) : null;
+
+    if (!Number.isFinite(score) || score < 0) return res.status(400).json({ ok: false, error: "INVALID_SCORE" });
+    if (!Number.isFinite(applesCleared) || applesCleared < 0 || applesCleared > 170) return res.status(400).json({ ok: false, error: "INVALID_APPLES" });
+    if (!Number.isFinite(durationSec) || durationSec < 0) return res.status(400).json({ ok: false, error: "INVALID_DURATION" });
+
+    // 로그인 필수
+    const user = await getOptionalUser(req);
+    const userId = user?.id || null;
+    if (!userId) return res.status(401).json({ ok: false, error: "LOGIN_REQUIRED" });
+
+    // 닉네임은 프로필에서 (스냅샷)
+    const { data: prof } = await supabaseAdmin
+      .from("profiles").select("nickname").eq("id", userId).maybeSingle();
+    const nickname = String(prof?.nickname || "익명").slice(0, 14);
+
+    // sanity 검증
+    let flagged = false;
+    if (durationSec < 5) flagged = true;
+    if (durationSec > 125) flagged = true;
+    if (applesCleared > 170) flagged = true;
+    if (score > applesCleared * 10 + 100) flagged = true; // 콤보 가중 상한 가드
+    if (maxCombo > 50) flagged = true;
+
+    // 기존 row 조회 → 최고점 비교
+    const { data: existing } = await supabaseAdmin
+      .from("apple_scores")
+      .select("id, score")
+      .eq("user_id", userId).maybeSingle();
+
+    const newScore = Math.round(score);
+    const prevBest = existing?.score ?? -1;
+    const isNewBest = newScore > prevBest;
+
+    const payload = {
+      user_id: userId,
+      nickname,
+      score: newScore,
+      apples_cleared: Math.max(0, Math.min(170, Math.round(applesCleared))),
+      max_combo: Math.max(0, Math.min(50, Math.round(maxCombo))),
+      duration_sec: Math.max(0, Math.min(130, Math.round(durationSec))),
+      seed: seed,
+      flagged,
+      client_run_id: clientRunId,
+      created_at: new Date().toISOString(),
+    };
+
+    if (!existing) {
+      // 신규 등록
+      const { error } = await supabaseAdmin.from("apple_scores").insert(payload);
+      if (error) {
+        if (String(error.code) === "23505") {
+          // 동시 INSERT race — 다시 한 번 UPDATE 시도
+          // (다른 탭에서 먼저 등록한 경우)
+          // 무시하고 success로 처리
+          return res.json({ ok: true, isNewBest: false, bestScore: prevBest });
+        }
+        console.error("[apple/score] insert error:", error);
+        return res.status(500).json({ ok: false, error: "INSERT_FAIL" });
+      }
+    } else if (isNewBest) {
+      // 갱신
+      const { error } = await supabaseAdmin
+        .from("apple_scores")
+        .update(payload)
+        .eq("user_id", userId);
+      if (error) {
+        console.error("[apple/score] update error:", error);
+        return res.status(500).json({ ok: false, error: "UPDATE_FAIL" });
+      }
+    }
+    // else: 새 점수 ≤ 기존 → 그대로 두기
+
+    // 랭크 계산 (TOP 10 안에 들면 globalRank, 밖이면 null)
+    let globalRank = null, dailyRank = null, official = false;
+    if (!flagged) {
+      official = true;
+      const myBest = isNewBest ? newScore : prevBest;
+
+      // 나보다 score 높은 distinct user 수 + 1
+      const { data: higher } = await supabaseAdmin
+        .from("apple_scores")
+        .select("user_id, score")
+        .eq("flagged", false).not("user_id", "is", null).gt("score", myBest);
+      globalRank = (higher?.length || 0) + 1;
+      if (globalRank > APPLE_TOP_LIMIT) globalRank = null; // TOP 10 밖이면 미노출
+
+      const today = new Date().toISOString().slice(0, 10);
+      const { data: higherDaily } = await supabaseAdmin
+        .from("apple_scores")
+        .select("user_id, score")
+        .eq("flagged", false).not("user_id", "is", null).gt("score", myBest)
+        .gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
+      dailyRank = (higherDaily?.length || 0) + 1;
+      if (dailyRank > APPLE_TOP_LIMIT) dailyRank = null;
+    }
+
+    res.json({
+      ok: true,
+      isNewBest,
+      bestScore: isNewBest ? newScore : prevBest,
+      flagged,
+      official,
+      globalRank,
+      dailyRank,
+    });
+  } catch (err) {
+    console.error("[apple/score]", err);
+    res.status(500).json({ ok: false, error: "INTERNAL" });
+  }
+});
+
+app.get("/apple/leaderboard/global", async (req, res) => {
+  try {
+    const result = await fetchAppleLeaderboard(supabaseAdmin, { dailyOnly: false });
+    if (result.error) { console.error("[apple/leaderboard/global]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
+    res.json({ ok: true, rows: result.rows });
+  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+});
+
+app.get("/apple/leaderboard/daily", async (req, res) => {
+  try {
+    const result = await fetchAppleLeaderboard(supabaseAdmin, { dailyOnly: true });
+    if (result.error) { console.error("[apple/leaderboard/daily]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
+    res.json({ ok: true, rows: result.rows });
+  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+});
+
+app.get("/apple/leaderboard/me", async (req, res) => {
+  try {
+    const user = await getOptionalUser(req);
+    const userId = user?.id || null;
+    if (!userId) return res.json({ ok: true, row: null });
+    const { data, error } = await supabaseAdmin
+      .from("apple_scores")
+      .select("nickname, score, apples_cleared, max_combo, duration_sec, created_at")
+      .eq("flagged", false).eq("user_id", userId)
+      .maybeSingle();
+    if (error) { console.error("[apple/leaderboard/me]", error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
+    let row = data || null;
+    if (row) {
+      const { data: prof } = await supabaseAdmin
+        .from("profiles").select("nickname, avatar_url").eq("id", userId).maybeSingle();
+      if (prof) {
+        if (prof.nickname) row.nickname = prof.nickname;
+        row.avatar_url = prof.avatar_url || null;
+      }
+      // 내 글로벌 랭크 계산 (TOP 10 안일 때만 노출)
+      const { data: higher } = await supabaseAdmin
+        .from("apple_scores")
+        .select("user_id")
+        .eq("flagged", false).not("user_id", "is", null).gt("score", row.score);
+      let myRank = (higher?.length || 0) + 1;
+      row.global_rank = myRank > APPLE_TOP_LIMIT ? null : myRank;
+    }
+    res.json({ ok: true, row });
+  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+});
+
 server.listen(process.env.PORT || 3001, () => {
   console.log(`Backend listening on http://localhost:${process.env.PORT || 3001}`);
 });
