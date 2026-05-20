@@ -6548,9 +6548,9 @@ app.get("/explore/popular", async (req, res) => {
       }
     }
 
-    // 3) bingo
+    // 3) bingo — type=all에선 제외 (멀티 미지원 솔로 콘텐츠)
     let bingoItems = [];
-    if (type === "all" || type === "bingo") {
+    if (type === "bingo") {
       const { data } = await supabaseAdmin
         .from("bingos")
         .select("id, title, thumbnail_url, cells, play_count, complete_count, like_count, created_at, creator_id, size")
@@ -6587,9 +6587,9 @@ app.get("/explore/popular", async (req, res) => {
       }
     }
 
-    // 4) ptest
+    // 4) ptest — type=all에선 제외 (멀티 미지원 솔로 콘텐츠)
     let ptestItems = [];
-    if (type === "all" || type === "ptest") {
+    if (type === "ptest") {
       const { data } = await supabaseAdmin
         .from("personality_tests")
         .select("id, title, thumbnail_url, questions, results, play_count, complete_count, like_count, created_at, creator_id")
@@ -6641,8 +6641,13 @@ app.get("/explore/popular", async (req, res) => {
         plays_last_7d: metricsMap[i.id]?.plays_last_7d || 0,
         finishes_total: metricsMap[i.id]?.finishes_total || 0,
       }));
-      // sort by 7d plays, then complete_count
-      items.sort((a, b) => (b.plays_last_7d - a.plays_last_7d) || (b.complete_count - a.complete_count));
+      // sort by complete_count (모든 타입 공통), then 7d plays, then created_at
+      // 빙고/심리는 content_events에 데이터가 없어 plays_last_7d=0이므로 complete_count 우선
+      items.sort((a, b) =>
+        (b.complete_count - a.complete_count) ||
+        (b.plays_last_7d - a.plays_last_7d) ||
+        (new Date(b.created_at) - new Date(a.created_at))
+      );
     }
     items = items.slice(0, limit);
     items.forEach(i => delete i._source);
@@ -6655,18 +6660,34 @@ app.get("/explore/popular", async (req, res) => {
 });
 
 // GET /explore/trending — 급상승 (48h 비교)
+// 빙고/심리는 content_events에 데이터가 없어서 RPC로 못 잡으므로,
+// 자체 테이블에서 "최근 7일 생성 + complete_count 높음" 기반으로 fallback 보충
+// ★ type=all에선 빙고/심리 제외 (멀티 미지원 솔로 콘텐츠).
+// ★ type=bingo/ptest일 때만 fallback 노출
 app.get("/explore/trending", async (req, res) => {
   try {
+    const type = String(req.query.type || "all");
     const limitRaw = parseInt(req.query.limit) || 10;
     const limit = Math.min(20, Math.max(1, limitRaw));
 
-    const { data: trending, error } = await supabaseAdmin.rpc("get_trending_contents", { p_limit: limit });
-    if (error) {
-      console.error("[GET /explore/trending] rpc error:", error.message);
-      return res.status(500).json({ ok: false, error: "RPC_FAIL" });
+    // 빙고/심리만 보기 모드: RPC 결과(wcq+tier) skip, 자체 테이블 fallback만 사용
+    const soloOnly = (type === "bingo" || type === "ptest");
+
+    let trending = [];
+    if (!soloOnly) {
+      const { data, error } = await supabaseAdmin.rpc("get_trending_contents", { p_limit: limit });
+      if (error) {
+        console.error("[GET /explore/trending] rpc error:", error.message);
+        return res.status(500).json({ ok: false, error: "RPC_FAIL" });
+      }
+      trending = data || [];
     }
-    if (!trending || trending.length === 0) {
-      return res.json({ ok: true, items: [] });
+
+    // 카테고리 필터 적용 (RPC는 type 미지원 → 서버 클라이언트 단에서 필터)
+    if (type === "worldcup" || type === "quiz") {
+      trending = trending.filter(t => t.content_type === type);
+    } else if (type === "tier") {
+      trending = trending.filter(t => t.content_type === "tier");
     }
 
     // enrich with content metadata
@@ -6711,7 +6732,7 @@ app.get("/explore/trending", async (req, res) => {
       }
     }
 
-    const items = trending.map(t => {
+    let items = trending.map(t => {
       const meta = contentMap[t.content_id] || tierMap[t.content_id];
       if (!meta) return null;
       return {
@@ -6722,6 +6743,83 @@ app.get("/explore/trending", async (req, res) => {
       };
     }).filter(Boolean);
 
+    // ── 빙고/심리 fallback: type=bingo/ptest일 때만 노출 ──
+    // (type=all 또는 worldcup/quiz/tier에선 솔로 콘텐츠 노출 안 함)
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    const wantBingo = (type === "bingo");
+    const wantPtest = (type === "ptest");
+
+    const { data: bData } = wantBingo ? await supabaseAdmin
+      .from("bingos")
+      .select("id, title, thumbnail_url, cells, play_count, complete_count, like_count, created_at, creator_id, size")
+      .eq("visibility", "public")
+      .eq("status", "published")
+      .eq("is_hidden", false)
+      .is("deleted_at", null)
+      .gte("created_at", since)
+      .gte("complete_count", 1)
+      .order("complete_count", { ascending: false })
+      .limit(limit) : { data: [] };
+    const { data: pData } = wantPtest ? await supabaseAdmin
+      .from("personality_tests")
+      .select("id, title, thumbnail_url, questions, results, play_count, complete_count, like_count, created_at, creator_id")
+      .eq("visibility", "public")
+      .eq("status", "published")
+      .eq("is_hidden", false)
+      .is("deleted_at", null)
+      .gte("created_at", since)
+      .gte("complete_count", 1)
+      .order("complete_count", { ascending: false })
+      .limit(limit) : { data: [] };
+
+    const fallbackCreatorIds = [
+      ...new Set([
+        ...(bData || []).map(b => b.creator_id),
+        ...(pData || []).map(t => t.creator_id),
+      ].filter(Boolean)),
+    ];
+    let fbProfileMap = {};
+    if (fallbackCreatorIds.length > 0) {
+      const { data: profiles } = await supabaseAdmin
+        .from("profiles").select("id, nickname").in("id", fallbackCreatorIds);
+      for (const p of (profiles || [])) fbProfileMap[p.id] = p.nickname;
+    }
+
+    const bingoItems = (bData || []).map(b => ({
+      id: b.id, type: "bingo", title: b.title,
+      thumbnail_url: b.thumbnail_url || b.cells?.find(c => c?.image_url)?.image_url || null,
+      auto_thumbnail_url: null, auto_thumb_media_type: null,
+      creator_name: fbProfileMap[b.creator_id] || null,
+      play_count: b.play_count || 0, complete_count: b.complete_count || 0,
+      like_count: b.like_count || 0, item_count: b.size || 0,
+      created_at: b.created_at,
+      recent_count: b.complete_count || 0, prev_count: 0, growth: b.complete_count || 0,
+    }));
+    const ptestItems = (pData || []).map(t => ({
+      id: t.id, type: "ptest", title: t.title,
+      thumbnail_url: t.thumbnail_url || t.results?.find(r => r?.image_url)?.image_url || null,
+      auto_thumbnail_url: null, auto_thumb_media_type: null,
+      creator_name: fbProfileMap[t.creator_id] || null,
+      play_count: t.play_count || 0, complete_count: t.complete_count || 0,
+      like_count: t.like_count || 0,
+      item_count: Array.isArray(t.questions) ? t.questions.length : 0,
+      created_at: t.created_at,
+      recent_count: t.complete_count || 0, prev_count: 0, growth: t.complete_count || 0,
+    }));
+
+    // 머지 후 growth desc 정렬 + 중복 제거 + limit
+    const seen = new Set();
+    items = [...items, ...bingoItems, ...ptestItems]
+      .filter(i => {
+        const k = `${i.type}:${i.id}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .sort((a, b) => (b.growth - a.growth) || (b.complete_count - a.complete_count))
+      .slice(0, limit);
+
     return res.json({ ok: true, items });
   } catch (err) {
     console.error("[GET /explore/trending]", err);
@@ -6730,29 +6828,38 @@ app.get("/explore/trending", async (req, res) => {
 });
 
 // GET /explore/rising — 새로 뜨는 (7일 이내 생성 + 반응 있음)
+// ★ type=all에선 빙고/심리 제외, type=bingo/ptest일 때만 해당 카테고리 노출
 app.get("/explore/rising", async (req, res) => {
   try {
+    const type = String(req.query.type || "all");
     const limitRaw = parseInt(req.query.limit) || 10;
     const limit = Math.min(20, Math.max(1, limitRaw));
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
+    const wantWcq = (type === "all" || type === "worldcup" || type === "quiz");
+    const wantTier = (type === "all" || type === "tier");
+    const wantBingo = (type === "bingo");
+    const wantPtest = (type === "ptest");
+
     // 1) Recent worldcup/quiz
-    const { data: cData } = await supabaseAdmin
+    let cQuery = wantWcq ? supabaseAdmin
       .from("public_contents_list")
       .select("id, type, title, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, creator_name, play_count, complete_count, like_count, item_count, created_at")
       .gte("created_at", since)
       .order("complete_count", { ascending: false })
-      .limit(limit);
+      .limit(limit) : null;
+    if (cQuery && (type === "worldcup" || type === "quiz")) cQuery = cQuery.eq("type", type);
+    const { data: cData } = cQuery ? await cQuery : { data: [] };
 
     // 2) Recent tier
-    const { data: tData } = await supabaseAdmin
+    const { data: tData } = wantTier ? await supabaseAdmin
       .from("tier_templates")
       .select("id, title, cards, play_count, complete_count, like_count, created_at, creator_id")
       .eq("is_public", true)
       .is("deleted_at", null)
       .gte("created_at", since)
       .order("complete_count", { ascending: false })
-      .limit(limit);
+      .limit(limit) : { data: [] };
 
     const tiers = tData || [];
     let tierItems = [];
@@ -6774,7 +6881,70 @@ app.get("/explore/rising", async (req, res) => {
       }));
     }
 
-    let items = [...(cData || []), ...tierItems];
+    // 3) Recent bingo
+    const { data: bData } = wantBingo ? await supabaseAdmin
+      .from("bingos")
+      .select("id, title, thumbnail_url, cells, play_count, complete_count, like_count, created_at, creator_id, size")
+      .eq("visibility", "public")
+      .eq("status", "published")
+      .eq("is_hidden", false)
+      .is("deleted_at", null)
+      .gte("created_at", since)
+      .order("complete_count", { ascending: false })
+      .limit(limit) : { data: [] };
+    const bingos = bData || [];
+    let bingoItems = [];
+    if (bingos.length > 0) {
+      const cids = [...new Set(bingos.map(b => b.creator_id).filter(Boolean))];
+      let pm = {};
+      if (cids.length > 0) {
+        const { data: profiles } = await supabaseAdmin.from("profiles").select("id, nickname").in("id", cids);
+        for (const p of (profiles || [])) pm[p.id] = p.nickname;
+      }
+      bingoItems = bingos.map(b => ({
+        id: b.id, type: "bingo", title: b.title,
+        thumbnail_url: b.thumbnail_url || b.cells?.find(c => c?.image_url)?.image_url || null,
+        auto_thumbnail_url: null, auto_thumb_media_type: null,
+        creator_name: pm[b.creator_id] || null,
+        play_count: b.play_count || 0, complete_count: b.complete_count || 0,
+        like_count: b.like_count || 0, item_count: b.size || 0,
+        created_at: b.created_at,
+      }));
+    }
+
+    // 4) Recent ptest
+    const { data: pData } = wantPtest ? await supabaseAdmin
+      .from("personality_tests")
+      .select("id, title, thumbnail_url, questions, results, play_count, complete_count, like_count, created_at, creator_id")
+      .eq("visibility", "public")
+      .eq("status", "published")
+      .eq("is_hidden", false)
+      .is("deleted_at", null)
+      .gte("created_at", since)
+      .order("complete_count", { ascending: false })
+      .limit(limit) : { data: [] };
+    const tests = pData || [];
+    let ptestItems = [];
+    if (tests.length > 0) {
+      const cids = [...new Set(tests.map(t => t.creator_id).filter(Boolean))];
+      let pm = {};
+      if (cids.length > 0) {
+        const { data: profiles } = await supabaseAdmin.from("profiles").select("id, nickname").in("id", cids);
+        for (const p of (profiles || [])) pm[p.id] = p.nickname;
+      }
+      ptestItems = tests.map(t => ({
+        id: t.id, type: "ptest", title: t.title,
+        thumbnail_url: t.thumbnail_url || t.results?.find(r => r?.image_url)?.image_url || null,
+        auto_thumbnail_url: null, auto_thumb_media_type: null,
+        creator_name: pm[t.creator_id] || null,
+        play_count: t.play_count || 0, complete_count: t.complete_count || 0,
+        like_count: t.like_count || 0,
+        item_count: Array.isArray(t.questions) ? t.questions.length : 0,
+        created_at: t.created_at,
+      }));
+    }
+
+    let items = [...(cData || []), ...tierItems, ...bingoItems, ...ptestItems];
     // filter: must have at least 1 complete
     items = items.filter(i => (i.complete_count || 0) >= 1);
     items.sort((a, b) => (b.complete_count - a.complete_count) || (new Date(b.created_at) - new Date(a.created_at)));
@@ -6788,15 +6958,24 @@ app.get("/explore/rising", async (req, res) => {
 });
 
 // GET /explore/featured — 추천 콘텐츠 (운영자 선정)
+// ★ type=all에선 빙고/심리 제외, type=bingo/ptest일 때만 해당 카테고리 노출
 app.get("/explore/featured", async (req, res) => {
   try {
+    const type = String(req.query.type || "all");
     const limitRaw = parseInt(req.query.limit) || 10;
     const limit = Math.min(20, Math.max(1, limitRaw));
 
-    const { data: featured, error } = await supabaseAdmin
+    let fq = supabaseAdmin
       .from("featured_contents")
       .select("content_id, content_type, sort_order")
-      .eq("is_active", true)
+      .eq("is_active", true);
+    if (type === "all") {
+      // 멀티 가능 콘텐츠만
+      fq = fq.in("content_type", ["worldcup", "quiz", "tier"]);
+    } else {
+      fq = fq.eq("content_type", type);
+    }
+    const { data: featured, error } = await fq
       .order("sort_order", { ascending: false })
       .order("created_at", { ascending: false })
       .limit(limit);
@@ -6809,8 +6988,10 @@ app.get("/explore/featured", async (req, res) => {
       return res.json({ ok: true, items: [] });
     }
 
-    const wcqIds = featured.filter(f => f.content_type !== "tier").map(f => f.content_id);
+    const wcqIds = featured.filter(f => f.content_type === "worldcup" || f.content_type === "quiz").map(f => f.content_id);
     const tierIds = featured.filter(f => f.content_type === "tier").map(f => f.content_id);
+    const bingoIds = featured.filter(f => f.content_type === "bingo").map(f => f.content_id);
+    const ptestIds = featured.filter(f => f.content_type === "ptest").map(f => f.content_id);
 
     let contentMap = {};
     if (wcqIds.length > 0) {
@@ -6849,10 +7030,65 @@ app.get("/explore/featured", async (req, res) => {
         }
       }
     }
+    let bingoMap = {};
+    if (bingoIds.length > 0) {
+      const { data } = await supabaseAdmin
+        .from("bingos")
+        .select("id, title, thumbnail_url, cells, play_count, complete_count, like_count, created_at, creator_id, size")
+        .in("id", bingoIds);
+      const bingos = data || [];
+      if (bingos.length > 0) {
+        const cids = [...new Set(bingos.map(b => b.creator_id).filter(Boolean))];
+        let pm = {};
+        if (cids.length > 0) {
+          const { data: profiles } = await supabaseAdmin.from("profiles").select("id, nickname").in("id", cids);
+          for (const p of (profiles || [])) pm[p.id] = p.nickname;
+        }
+        for (const b of bingos) {
+          bingoMap[b.id] = {
+            id: b.id, type: "bingo", title: b.title,
+            thumbnail_url: b.thumbnail_url || b.cells?.find(c => c?.image_url)?.image_url || null,
+            auto_thumbnail_url: null, auto_thumb_media_type: null,
+            creator_name: pm[b.creator_id] || null,
+            play_count: b.play_count || 0, complete_count: b.complete_count || 0,
+            like_count: b.like_count || 0, item_count: b.size || 0,
+            created_at: b.created_at,
+          };
+        }
+      }
+    }
+    let ptestMap = {};
+    if (ptestIds.length > 0) {
+      const { data } = await supabaseAdmin
+        .from("personality_tests")
+        .select("id, title, thumbnail_url, questions, results, play_count, complete_count, like_count, created_at, creator_id")
+        .in("id", ptestIds);
+      const tests = data || [];
+      if (tests.length > 0) {
+        const cids = [...new Set(tests.map(t => t.creator_id).filter(Boolean))];
+        let pm = {};
+        if (cids.length > 0) {
+          const { data: profiles } = await supabaseAdmin.from("profiles").select("id, nickname").in("id", cids);
+          for (const p of (profiles || [])) pm[p.id] = p.nickname;
+        }
+        for (const t of tests) {
+          ptestMap[t.id] = {
+            id: t.id, type: "ptest", title: t.title,
+            thumbnail_url: t.thumbnail_url || t.results?.find(r => r?.image_url)?.image_url || null,
+            auto_thumbnail_url: null, auto_thumb_media_type: null,
+            creator_name: pm[t.creator_id] || null,
+            play_count: t.play_count || 0, complete_count: t.complete_count || 0,
+            like_count: t.like_count || 0,
+            item_count: Array.isArray(t.questions) ? t.questions.length : 0,
+            created_at: t.created_at,
+          };
+        }
+      }
+    }
 
     // preserve featured sort_order
     const items = featured.map(f => {
-      const meta = contentMap[f.content_id] || tierMap[f.content_id];
+      const meta = contentMap[f.content_id] || tierMap[f.content_id] || bingoMap[f.content_id] || ptestMap[f.content_id];
       if (!meta) return null;
       return { ...meta, featured_order: f.sort_order };
     }).filter(Boolean);
