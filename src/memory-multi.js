@@ -177,6 +177,9 @@ function nextTurn(io, room) {
   const curIdx = active.indexOf(room.currentTurnId);
   const nextIdx = curIdx >= 0 ? (curIdx + 1) % active.length : 0;
   room.currentTurnId = active[nextIdx];
+  // 새 차례 사람 콤보 리셋 (차례가 진짜 바뀐 시점에만)
+  const p = room.players.get(room.currentTurnId);
+  if (p) p.combo = 1;
   startTurn(io, room);
 }
 
@@ -186,10 +189,7 @@ function startTurn(io, room) {
   room.firstFlipped = null;
   room.secondFlipped = null;
   room.actionLocked = false;
-  // 현재 차례 player의 콤보는 자기 차례 시작 시 1로 리셋
-  // (콤보는 한 차례 안에서만 누적)
-  const p = room.players.get(room.currentTurnId);
-  if (p) p.combo = 1;
+  // 콤보 리셋은 nextTurn에서만 (매칭 성공 후 같은 사람 한 번 더 시 콤보 누적 유지)
 
   if (room.turnTimeSec > 0) {
     room.turnDeadline = Date.now() + room.turnTimeSec * 1000;
