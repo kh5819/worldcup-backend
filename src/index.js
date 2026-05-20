@@ -37,6 +37,7 @@ import { registerDodogo } from "./dodogo.js";
 import { registerAppleMulti } from "./apple-multi.js";
 import { registerMemoryMulti } from "./memory-multi.js";
 import { registerBlockBlastMulti } from "./blockblast-multi.js";
+import { registerYachtMulti } from "./yacht-multi.js";
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -9095,6 +9096,7 @@ registerDodogo(io, supabaseAdmin);
 registerAppleMulti(io, supabaseAdmin);
 registerMemoryMulti(io, supabaseAdmin);
 registerBlockBlastMulti(io, supabaseAdmin);
+registerYachtMulti(io, supabaseAdmin);
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {
