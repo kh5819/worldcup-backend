@@ -9520,6 +9520,34 @@ io.on("connection", (socket) => {
   });
 
   // =========================
+  // 짧은 채팅 (멀티 공통)
+  // =========================
+  safeOn(socket, "room:chat", (payload, cb) => {
+    const roomId = userRoomMap.get(me.id);
+    if (!roomId) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+    const room = rooms.get(roomId);
+    if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
+    const raw = typeof payload?.text === "string" ? payload.text : "";
+    // 줄바꿈 → 공백, 양 끝 trim, 최대 120자
+    const text = raw.replace(/[\r\n]+/g, " ").trim().slice(0, 120);
+    if (!text) return cb?.({ ok: false, error: "EMPTY" });
+    // Rate limit: 1초당 1회
+    const now = Date.now();
+    if (!room._chatLastMap) room._chatLastMap = new Map();
+    const last = room._chatLastMap.get(me.id) || 0;
+    if (now - last < 1000) return cb?.({ ok: false, error: "COOLDOWN" });
+    room._chatLastMap.set(me.id, now);
+    const playerName = room.players.get(me.id)?.name || "?";
+    io.to(roomId).emit("room:chat-msg", {
+      userId: me.id,
+      name: playerName,
+      text,
+      ts: now,
+    });
+    cb?.({ ok: true });
+  });
+
+  // =========================
   // 월드컵 이벤트 (기존 그대로)
   // =========================
 
