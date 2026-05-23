@@ -9795,19 +9795,25 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ── quiz:set-team (호스트가 참가자 팀 변경, 게임 시작 전까지만) ──
+  // ── quiz:set-team (팀 변경, 게임 시작 전까지만) ──
+  //   본인 팀 변경: 누구나 가능 (자기 색깔은 자유롭게)
+  //   타인 팀 변경: 호스트만 가능
   safeOn(socket, "quiz:set-team", (payload, cb) => {
     const room = rooms.get(payload?.roomId);
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
     if (room.mode !== "quiz") return cb?.({ ok: false, error: "NOT_QUIZ_ROOM" });
     if (!room.teamMode) return cb?.({ ok: false, error: "NOT_TEAM_MODE" });
-    if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
     if (room.quiz) return cb?.({ ok: false, error: "ALREADY_STARTED" });
 
     const targetId = payload?.playerId;
     const team = payload?.team;
     if (!targetId) return cb?.({ ok: false, error: "MISSING_PLAYER_ID" });
     if (team !== "blue" && team !== "red") return cb?.({ ok: false, error: "INVALID_TEAM" });
+
+    // 본인이 아니면 호스트만 허용
+    const isSelf = targetId === me.id;
+    if (!isSelf && room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+
     const target = room.players.get(targetId);
     if (!target) return cb?.({ ok: false, error: "PLAYER_NOT_FOUND" });
 
@@ -9815,7 +9821,7 @@ io.on("connection", (socket) => {
     target.team = team;
 
     io.to(room.id).emit("room:state", publicRoom(room));
-    console.log(`[quiz:set-team] roomId=${room.id} ${targetId} → ${team}`);
+    console.log(`[quiz:set-team] roomId=${room.id} ${targetId} → ${team} (by ${me.id}${isSelf ? ", self" : ", host"})`);
     cb?.({ ok: true });
   });
 
