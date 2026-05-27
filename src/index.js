@@ -9457,7 +9457,8 @@ io.on("connection", (socket) => {
 
     // 전원 제출/committed 체크 (강퇴 후 자동 진행)
     // 월드컵: 남은 전원 committed → 자동 reveal (tier는 별도 처리)
-    if (room.mode === "worldcup" && room.phase === "playing" && room.players.size > 0
+    // (revoting = 동률 재투표 단계도 포함 — 타이머 OFF + 미투표자 이탈 시 정지 방지)
+    if (room.mode === "worldcup" && (room.phase === "playing" || room.phase === "revoting") && room.players.size > 0
         && room.committed.size === room.players.size) {
       doReveal(room);
     }
@@ -10388,7 +10389,8 @@ io.on("connection", (socket) => {
       io.to(roomId).emit("room:state", publicRoom(room));
 
       // 월드컵: 남은 전원 committed → 자동 reveal (tier는 별도 처리)
-      if (room.mode === "worldcup" && room.phase === "playing" && room.players.size > 0
+      // (revoting = 동률 재투표 단계도 포함 — 타이머 OFF + 미투표자 이탈 시 정지 방지)
+      if (room.mode === "worldcup" && (room.phase === "playing" || room.phase === "revoting") && room.players.size > 0
           && room.committed.size === room.players.size) {
         doReveal(room);
       }
