@@ -4,7 +4,13 @@
 // 'ox:*' 이벤트 prefix, 별도 Map (oxRooms)
 // =========================
 
-import { OX_CATEGORIES, OX_QUESTIONS, pickRandomQuestion } from "./oxgame-questions.js";
+import {
+  OX_CATEGORIES,
+  OX_QUESTIONS,
+  pickRandomQuestion,
+  getOxCategoriesByLang,
+  getOxQuestionsByLang,
+} from "./oxgame-questions.js";
 
 const oxRooms = new Map();
 const oxInvites = new Map();
@@ -13,6 +19,7 @@ const oxUserRoom = new Map();
 const ALLOWED_INPUT_SECS = [30, 45, 60, 90, 120];
 const ALLOWED_ROUNDS = [3, 5, 7];
 const ALLOWED_MAX_PLAYERS = [2, 4, 6, 8];
+const ALLOWED_LANGS = ["ko", "ja", "en"];
 const MIN_PLAYERS = 2;
 const RESULT_DELAY_MS = 6500;
 const ROUND_INTRO_MS = 1500;
@@ -20,6 +27,7 @@ const EMPTY_ROOM_TTL_MS = 30_000;
 
 const CATEGORY_IDS = Object.keys(OX_QUESTIONS);
 function isValidCategory(c) { return c === "random" || !!OX_QUESTIONS[c]; }
+function isValidLang(lang) { return ALLOWED_LANGS.includes(lang); }
 function resolveCategory(roomCat) {
   if (roomCat !== "random") return roomCat;
   return CATEGORY_IDS[Math.floor(Math.random() * CATEGORY_IDS.length)];
@@ -86,6 +94,7 @@ function publicRoom(room) {
     totalRounds: room.totalRounds,
     inputSec: room.inputSec,
     category: room.category,
+    lang: room.lang || "ko",
     effectiveCategory: room.roundData?.effectiveCategory || null,
     currentRoundIdx: room.currentRoundIdx,
     phase: room.roundData?.phase || (room.status === "lobby" ? "lobby" : null),
@@ -120,7 +129,7 @@ function startNextRound(io, room) {
   if (room.currentRoundIdx >= room.totalRounds) return endGame(io, room);
 
   const effectiveCat = resolveCategory(room.category);
-  const picked = pickRandomQuestion(effectiveCat, room.seenQuestionIds);
+  const picked = pickRandomQuestion(effectiveCat, room.seenQuestionIds, room.lang);
   if (!picked) return endGame(io, room);
   room.seenQuestionIds.add(picked.id);
 
@@ -136,7 +145,7 @@ function startNextRound(io, room) {
     timer: null,
   };
 
-  const catLabel = OX_CATEGORIES.find(c => c.id === effectiveCat)?.label || effectiveCat;
+  const catLabel = getOxCategoriesByLang(room.lang).find(c => c.id === effectiveCat)?.label || effectiveCat;
 
   io.to(socketRoomName(room.id)).emit("ox:roundStart", {
     roundIdx: room.currentRoundIdx,
@@ -373,6 +382,7 @@ export function registerOxGame(io, supabaseAdmin) {
         const maxPlayers = ALLOWED_MAX_PLAYERS.includes(Number(payload?.maxPlayers))
           ? Number(payload.maxPlayers) : 6;
         const category = isValidCategory(payload?.category) ? payload.category : "random";
+        const lang = isValidLang(payload?.lang) ? payload.lang : "ko";
 
         const roomId = `ox_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const inviteCode = genInviteCode();
@@ -386,6 +396,7 @@ export function registerOxGame(io, supabaseAdmin) {
           totalRounds,
           inputSec,
           category,
+          lang,
           createdAt: Date.now(),
           players: new Map(),
           playerOrder: [],
@@ -480,6 +491,9 @@ export function registerOxGame(io, supabaseAdmin) {
       }
       if (payload?.category && isValidCategory(payload.category)) {
         room.category = payload.category;
+      }
+      if (payload?.lang && isValidLang(payload.lang)) {
+        room.lang = payload.lang;
       }
       cb?.({ ok: true });
       broadcastRoomState(io, room);
