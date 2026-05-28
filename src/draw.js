@@ -91,6 +91,7 @@ function publicRoom(room) {
     drawTimeSec: room.drawTimeSec,
     wordMode: room.wordMode,
     wordCategory: room.wordCategory,
+    lang: room.lang || "ko",
     useChoseongHint: !!room.useChoseongHint,
     currentRound: room.currentRound,
     currentDrawerId: room.currentDrawerId,
@@ -158,23 +159,45 @@ function leavePlayer(io, room, userId) {
   broadcastRoomState(io, room);
 }
 
-// DB 비어있을 때 fallback 단어풀 (50개)
-const FALLBACK_WORDS = [
-  "김치","떡볶이","비빔밥","짜장면","라면","김밥","수박","사과","딸기","바나나",
-  "강아지","고양이","코끼리","사자","호랑이","곰","토끼","고래","상어","문어",
-  "자동차","비행기","자전거","버스","지하철","우산","신발","모자","안경","시계",
-  "뽀로로","피카츄","도라에몽","짱구","마리오","엘사","스파이더맨","배트맨","헐크","아이언맨",
-  "손흥민","BTS","블랙핑크","뉴진스","카리나","카카오톡","유튜브","넷플릭스","삼성","오징어게임",
-];
+// DB 비어있을 때 fallback 단어풀 (50개 × 3언어)
+const FALLBACK_WORDS_BY_LANG = {
+  ko: [
+    "김치","떡볶이","비빔밥","짜장면","라면","김밥","수박","사과","딸기","바나나",
+    "강아지","고양이","코끼리","사자","호랑이","곰","토끼","고래","상어","문어",
+    "자동차","비행기","자전거","버스","지하철","우산","신발","모자","안경","시계",
+    "뽀로로","피카츄","도라에몽","짱구","마리오","엘사","스파이더맨","배트맨","헐크","아이언맨",
+    "손흥민","BTS","블랙핑크","뉴진스","카리나","카카오톡","유튜브","넷플릭스","삼성","오징어게임",
+  ],
+  ja: [
+    "キムチ","トッポッキ","ビビンバ","ジャージャー麺","ラーメン","キンパ","スイカ","りんご","いちご","バナナ",
+    "犬","猫","象","ライオン","トラ","クマ","ウサギ","クジラ","サメ","タコ",
+    "車","飛行機","自転車","バス","地下鉄","傘","靴","帽子","メガネ","時計",
+    "ポロロ","ピカチュウ","ドラえもん","しんちゃん","マリオ","エルサ","スパイダーマン","バットマン","ハルク","アイアンマン",
+    "ソン・フンミン","BTS","BLACKPINK","NewJeans","カリナ","カカオトーク","YouTube","Netflix","Samsung","イカゲーム",
+  ],
+  en: [
+    "Kimchi","Tteokbokki","Bibimbap","Jajangmyeon","Ramen","Kimbap","Watermelon","Apple","Strawberry","Banana",
+    "Dog","Cat","Elephant","Lion","Tiger","Bear","Rabbit","Whale","Shark","Octopus",
+    "Car","Airplane","Bicycle","Bus","Subway","Umbrella","Shoes","Hat","Glasses","Clock",
+    "Pororo","Pikachu","Doraemon","Shin-chan","Mario","Elsa","Spider-Man","Batman","Hulk","Iron Man",
+    "Son Heung-min","BTS","BLACKPINK","NewJeans","Karina","KakaoTalk","YouTube","Netflix","Samsung","Squid Game",
+  ],
+};
+// 하위호환: 기존 FALLBACK_WORDS 참조 보존
+const FALLBACK_WORDS = FALLBACK_WORDS_BY_LANG.ko;
 
 // 공식 모드 단어 select — DB 우선, 없으면 hard-coded fallback
 // 같은 게임 내 중복 방지 — room.usedWords Set 사용
-async function pickOfficialWord(supabase, category, usedWords) {
+async function pickOfficialWord(supabase, category, usedWords, lang = "ko") {
   const used = usedWords || new Set();
   try {
     if (supabase) {
       let q = supabase.from("draw_words").select("word").eq("active", true);
       if (category && category !== "any") q = q.eq("category", category);
+      // DB에 lang 컬럼이 있을 때만 적용. 없으면 ko 데이터만 반환되므로 ja/en은 fallback으로.
+      if (lang && lang !== "ko") {
+        q = q.eq("lang", lang);
+      }
       const { data, error } = await q.limit(500);
       if (!error && data?.length) {
         // 안 쓴 단어만 필터
@@ -184,14 +207,15 @@ async function pickOfficialWord(supabase, category, usedWords) {
         const idx = Math.floor(Math.random() * pool.length);
         if (pool[idx]?.word) return pool[idx].word;
       }
-      console.warn(`[draw] DB word fetch empty (category=${category}) → fallback`);
+      console.warn(`[draw] DB word fetch empty (category=${category}, lang=${lang}) → fallback`);
     }
   } catch (e) {
     console.warn("[draw] pickOfficialWord DB error → fallback:", e?.message);
   }
-  // fallback도 중복 방지
-  const freshFb = FALLBACK_WORDS.filter((w) => !used.has(w));
-  const fbPool = freshFb.length > 0 ? freshFb : FALLBACK_WORDS;
+  // fallback도 중복 방지 + lang별 풀
+  const langPool = FALLBACK_WORDS_BY_LANG[lang] || FALLBACK_WORDS_BY_LANG.ko;
+  const freshFb = langPool.filter((w) => !used.has(w));
+  const fbPool = freshFb.length > 0 ? freshFb : langPool;
   if (freshFb.length === 0) used.clear();
   return fbPool[Math.floor(Math.random() * fbPool.length)];
 }
@@ -237,7 +261,7 @@ async function startRound(io, room, supabase) {
   // 공식 모드: 서버가 단어 자동 select → 즉시 beginDrawing
   if (room.wordMode === "official" && supabase) {
     if (!room.usedWords) room.usedWords = new Set();
-    const word = await pickOfficialWord(supabase, room.wordCategory, room.usedWords);
+    const word = await pickOfficialWord(supabase, room.wordCategory, room.usedWords, room.lang || "ko");
     if (word) room.usedWords.add(word);
     if (!word) {
       // 실패 시 manual fallback
@@ -397,6 +421,7 @@ export function registerDraw(io, supabaseAdmin) {
           ? Number(payload.drawTimeSec) : 90;
         const wordMode = ALLOWED_WORD_MODES.has(payload?.wordMode) ? payload.wordMode : "manual";
         const wordCategory = ALLOWED_CATEGORIES.has(payload?.wordCategory) ? payload.wordCategory : "any";
+        const lang = ["ko","ja","en"].includes(payload?.lang) ? payload.lang : "ko";
 
         const roomId = `dr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const inviteCode = genInviteCode();
@@ -410,6 +435,7 @@ export function registerDraw(io, supabaseAdmin) {
           drawTimeSec,
           wordMode,
           wordCategory,
+          lang,
           useChoseongHint: !!payload?.useChoseongHint,
           currentRound: 0,
           currentDrawerId: null,
@@ -528,6 +554,10 @@ export function registerDraw(io, supabaseAdmin) {
       }
       if (typeof payload?.useChoseongHint === "boolean") {
         room.useChoseongHint = payload.useChoseongHint;
+      }
+      if (payload?.lang !== undefined) {
+        if (!["ko","ja","en"].includes(payload.lang)) return cb?.({ ok: false, error: "INVALID_LANG" });
+        room.lang = payload.lang;
       }
       broadcastRoomState(io, room);
       cb?.({ ok: true });

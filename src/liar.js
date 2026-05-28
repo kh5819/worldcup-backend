@@ -7,9 +7,16 @@
 // - socket.io room name = `liar:${roomId}`
 // =========================
 
-import { CATEGORIES, LIAR_KEYWORDS, pickRandomPair } from "./liar-words.js";
+import {
+  CATEGORIES,
+  LIAR_KEYWORDS,
+  pickRandomPair,
+  getLiarCategoriesByLang,
+} from "./liar-words.js";
 
+const ALLOWED_LANGS = ["ko", "ja", "en"];
 const CATEGORY_IDS = Object.keys(LIAR_KEYWORDS);
+function isValidLang(lang) { return ALLOWED_LANGS.includes(lang); }
 function isValidCategory(cat) {
   return cat === "random" || !!LIAR_KEYWORDS[cat];
 }
@@ -96,6 +103,7 @@ function publicRoom(room) {
     turnSec: room.turnSec,
     voteSec: room.voteSec,
     category: room.category,                                // 호스트 설정값 (random 가능)
+    lang: room.lang || "ko",
     effectiveCategory: room.roundData?.effectiveCategory || null,  // 진행 중 라운드의 실제 카테고리
     currentRoundIdx: room.currentRoundIdx,
     phase: room.roundData?.phase || (room.status === "lobby" ? "lobby" : null),
@@ -134,7 +142,8 @@ function startNextRound(io, room) {
 
   // 랜덤 카테고리면 매 라운드마다 다시 뽑기
   const effectiveCat = resolveCategoryForRound(room.category);
-  const pair = pickRandomPair(effectiveCat);
+  const _liarLang = room.lang || "ko";
+  const pair = pickRandomPair(effectiveCat, _liarLang);
   if (!pair) return endGame(io, room);
   const [citizenWord, liarWord] = pair;
   const liarUid = pickRandom(room.playerOrder);
@@ -152,7 +161,7 @@ function startNextRound(io, room) {
     timer: null,
   };
 
-  const catLabel = CATEGORIES.find(c => c.id === effectiveCat)?.label || effectiveCat;
+  const catLabel = getLiarCategoriesByLang(_liarLang).find(c => c.id === effectiveCat)?.label || effectiveCat;
 
   // 모두에게 라운드 시작 (역할/키워드 제외)
   io.to(socketRoomName(room.id)).emit("liar:roundStart", {
@@ -515,6 +524,7 @@ export function registerLiar(io, supabaseAdmin) {
         const maxPlayers = ALLOWED_MAX_PLAYERS.includes(Number(payload?.maxPlayers))
           ? Number(payload.maxPlayers) : 6;
         const category = isValidCategory(payload?.category) ? payload.category : "random";
+        const lang = isValidLang(payload?.lang) ? payload.lang : "ko";
 
         const roomId = `lr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const inviteCode = genInviteCode();
@@ -529,6 +539,7 @@ export function registerLiar(io, supabaseAdmin) {
           turnSec,
           voteSec,
           category,
+          lang,
           createdAt: Date.now(),
           players: new Map(),
           playerOrder: [],
@@ -626,6 +637,9 @@ export function registerLiar(io, supabaseAdmin) {
       }
       if (payload?.category && isValidCategory(payload.category)) {
         room.category = payload.category;
+      }
+      if (payload?.lang && isValidLang(payload.lang)) {
+        room.lang = payload.lang;
       }
       cb?.({ ok: true });
       broadcastRoomState(io, room);

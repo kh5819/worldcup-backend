@@ -20,7 +20,7 @@
 //   → 반응 깊이 제한 3
 // =========================
 
-import { CARDS, buildDeck, getCard, isReactionCard, publicCardList } from "./cardgame-cards.js";
+import { CARDS, buildDeck, getCard, isReactionCard, publicCardList, publicCardListByLang } from "./cardgame-cards.js";
 import { EVENTS, getEvent, pickRandomEvent, publicEventList } from "./cardgame-events.js";
 
 // ===== Room storage =====
@@ -187,6 +187,7 @@ function publicRoom(room) {
     hostUserId: room.hostUserId,
     status: room.status,
     mode: room.mode,
+    lang: room.lang || "ko",
     maxPlayers: room.maxPlayers,
     maxHand: MAX_HAND,
     turnSec: room.turnSec,
@@ -1190,12 +1191,13 @@ export function registerCardGame(io, supabaseAdmin) {
           if (old) leavePlayer(io, old, me.id, true);
         }
         const mode = ALLOWED_MODES.includes(payload?.mode) ? payload.mode : "1v1";
+        const lang = ["ko","ja","en"].includes(payload?.lang) ? payload.lang : "ko";
         const maxPlayers = modeMaxPlayers(mode);
         const roomId = `cg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const inviteCode = genInviteCode();
         const room = {
           id: roomId, inviteCode, hostUserId: me.id,
-          status: "lobby", mode, maxPlayers,
+          status: "lobby", mode, lang, maxPlayers,
           turnSec: TURN_SEC, reactionSec: REACTION_SEC,
           createdAt: Date.now(),
           players: new Map(), playerOrder: [],
@@ -1309,6 +1311,9 @@ export function registerCardGame(io, supabaseAdmin) {
         if (!ALLOWED_REACTION_SECS.includes(n)) return cb?.({ ok: false, error: "INVALID_REACTION_SEC" });
         room.reactionSec = n;
       }
+      if (payload?.lang && ["ko","ja","en"].includes(payload.lang)) {
+        room.lang = payload.lang;
+      }
       broadcastRoomState(io, room);
       cb?.({ ok: true, room: publicRoom(room) });
     });
@@ -1375,7 +1380,7 @@ export function registerCardGame(io, supabaseAdmin) {
       io.to(socketRoomName(room.id)).emit("cg:gameStart", {
         mode: room.mode,
         players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
-        cards: publicCardList(),
+        cards: publicCardListByLang(room.lang || "ko"),
         events: publicEventList(),
       });
       sendHandsAll(io, room);
