@@ -1549,6 +1549,19 @@ function _formatLastmod(v) {
   } catch { return ""; }
 }
 
+// i18n: hreflang alternates 빌더. 각 URL에 ko/ja/en/x-default 4개 alternate 추가.
+function _buildI18nUrl(path, lastmod, changefreq, priority) {
+  const sep = path.indexOf("?") >= 0 ? "&" : "?";
+  const canonical = SITE_URL + path;
+  const alts =
+    `<xhtml:link rel="alternate" hreflang="ko" href="${canonical}" />` +
+    `<xhtml:link rel="alternate" hreflang="ja" href="${canonical}${sep}lang=ja" />` +
+    `<xhtml:link rel="alternate" hreflang="en" href="${canonical}${sep}lang=en" />` +
+    `<xhtml:link rel="alternate" hreflang="x-default" href="${canonical}" />`;
+  return `<url><loc>${canonical}</loc>${alts}${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}<changefreq>${changefreq}</changefreq><priority>${priority}</priority></url>`;
+}
+const I18N_URLSET_OPEN = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">`;
+
 app.get("/sitemap-content.xml", async (req, res) => {
   try {
     const xml = await _withSitemapCache("content", async () => {
@@ -1565,12 +1578,12 @@ app.get("/sitemap-content.xml", async (req, res) => {
         .map(r => {
           const path = r.mode === "worldcup" ? `/w/${escapeXml(r.id)}` : `/q/${escapeXml(r.id)}`;
           const lastmod = _formatLastmod(r.updated_at);
-          return `<url><loc>${SITE_URL}${path}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}<changefreq>weekly</changefreq><priority>0.7</priority></url>`;
+          return _buildI18nUrl(path, lastmod, "weekly", "0.7");
         })
         .filter(Boolean)
         .join("");
       // 빈 응답도 valid한 형태 보장
-      return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${items || `<url><loc>${SITE_URL}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`}</urlset>`;
+      return `${I18N_URLSET_OPEN}${items || _buildI18nUrl("/", "", "daily", "1.0")}</urlset>`;
     });
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
@@ -1595,11 +1608,11 @@ app.get("/sitemap-tier.xml", async (req, res) => {
         .filter(r => r && _isValidId(r.id) && (!r.visibility || r.visibility === "public"))
         .map(r => {
           const lastmod = _formatLastmod(r.updated_at);
-          return `<url><loc>${SITE_URL}/t/${escapeXml(r.id)}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}<changefreq>weekly</changefreq><priority>0.6</priority></url>`;
+          return _buildI18nUrl(`/t/${escapeXml(r.id)}`, lastmod, "weekly", "0.6");
         })
         .filter(Boolean)
         .join("");
-      return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${items || `<url><loc>${SITE_URL}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`}</urlset>`;
+      return `${I18N_URLSET_OPEN}${items || _buildI18nUrl("/", "", "daily", "1.0")}</urlset>`;
     });
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
@@ -1628,11 +1641,11 @@ app.get("/sitemap-bingo.xml", async (req, res) => {
         .filter(r => r && _isValidId(r.id))
         .map(r => {
           const lastmod = _formatLastmod(r.updated_at);
-          return `<url><loc>${SITE_URL}/b/${escapeXml(r.id)}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}<changefreq>weekly</changefreq><priority>0.6</priority></url>`;
+          return _buildI18nUrl(`/b/${escapeXml(r.id)}`, lastmod, "weekly", "0.6");
         })
         .filter(Boolean)
         .join("");
-      return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${items || `<url><loc>${SITE_URL}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`}</urlset>`;
+      return `${I18N_URLSET_OPEN}${items || _buildI18nUrl("/", "", "daily", "1.0")}</urlset>`;
     });
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");
@@ -1661,11 +1674,11 @@ app.get("/sitemap-ptest.xml", async (req, res) => {
         .filter(r => r && _isValidId(r.id))
         .map(r => {
           const lastmod = _formatLastmod(r.updated_at);
-          return `<url><loc>${SITE_URL}/p/${escapeXml(r.id)}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ""}<changefreq>weekly</changefreq><priority>0.7</priority></url>`;
+          return _buildI18nUrl(`/p/${escapeXml(r.id)}`, lastmod, "weekly", "0.7");
         })
         .filter(Boolean)
         .join("");
-      return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${items || `<url><loc>${SITE_URL}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`}</urlset>`;
+      return `${I18N_URLSET_OPEN}${items || _buildI18nUrl("/", "", "daily", "1.0")}</urlset>`;
     });
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=3600, s-maxage=3600");

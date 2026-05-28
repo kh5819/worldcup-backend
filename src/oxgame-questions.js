@@ -143,8 +143,66 @@ export const OX_QUESTIONS = {
   ],
 };
 
-export function pickRandomQuestion(categoryId, excludeIds) {
-  const list = OX_QUESTIONS[categoryId] || [];
+// =========================
+// 다국어 wrapper (ko 그대로 + ja/en 신규)
+// =========================
+export const OX_CATEGORIES_BY_LANG = {
+  ko: OX_CATEGORIES,
+  ja: [
+    { id: "empathy",  label: "共感",     emoji: "😂" },
+    { id: "game",     label: "ゲーム",   emoji: "🎮" },
+    { id: "internet", label: "ネット",   emoji: "🌐" },
+    { id: "anime",    label: "アニメ/オタク", emoji: "🎌" },
+    { id: "love",     label: "恋愛話",   emoji: "❤️" },
+    { id: "guilty",   label: "ヤバい",   emoji: "🔥" },
+    { id: "honest",   label: "良心告白", emoji: "🤥" },
+  ],
+  en: [
+    { id: "empathy",  label: "Relatable",  emoji: "😂" },
+    { id: "game",     label: "Games",      emoji: "🎮" },
+    { id: "internet", label: "Internet",   emoji: "🌐" },
+    { id: "anime",    label: "Anime/Otaku", emoji: "🎌" },
+    { id: "love",     label: "Romance",    emoji: "❤️" },
+    { id: "guilty",   label: "Guilty",     emoji: "🔥" },
+    { id: "honest",   label: "Confess",    emoji: "🤥" },
+  ],
+};
+
+export const OX_QUESTIONS_JA = { empathy: [], game: [], internet: [], anime: [], love: [], guilty: [], honest: [] };
+export const OX_QUESTIONS_EN = { empathy: [], game: [], internet: [], anime: [], love: [], guilty: [], honest: [] };
+export const OX_QUESTIONS_BY_LANG = {
+  ko: OX_QUESTIONS,
+  ja: OX_QUESTIONS_JA,
+  en: OX_QUESTIONS_EN,
+};
+
+export function getOxCategoriesByLang(lang) {
+  return OX_CATEGORIES_BY_LANG[lang] || OX_CATEGORIES_BY_LANG.ko;
+}
+export function getOxQuestionsByLang(lang) {
+  const q = OX_QUESTIONS_BY_LANG[lang];
+  if (!q) return OX_QUESTIONS_BY_LANG.ko;
+  const merged = {};
+  for (const catId of Object.keys(OX_QUESTIONS)) {
+    const arr = q[catId];
+    merged[catId] = (arr && arr.length > 0) ? arr : OX_QUESTIONS[catId];
+  }
+  return merged;
+}
+export function getOxLangAvailability() {
+  const out = {};
+  for (const lang of Object.keys(OX_QUESTIONS_BY_LANG)) {
+    const q = OX_QUESTIONS_BY_LANG[lang];
+    let total = 0;
+    for (const arr of Object.values(q)) total += (arr || []).length;
+    out[lang] = total;
+  }
+  return out;
+}
+
+export function pickRandomQuestion(categoryId, excludeIds, lang = "ko") {
+  const questions = getOxQuestionsByLang(lang);
+  const list = questions[categoryId] || [];
   if (!list.length) return null;
   const ex = excludeIds || new Set();
   // 카테고리 내 미사용 질문 우선

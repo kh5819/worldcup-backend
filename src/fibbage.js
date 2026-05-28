@@ -14,11 +14,17 @@ import {
   normalizeAnswer,
   isLuckyHit,
   pickDecoy,
+  getCategoriesByLang,
+  getQuestionsByLang,
 } from "./fibbage-questions.js";
 
+const ALLOWED_LANGS = ["ko", "ja", "en"];
 const CATEGORY_IDS = Object.keys(FB_QUESTIONS);
 function isValidCategory(cat) {
   return cat === "random" || !!FB_QUESTIONS[cat];
+}
+function isValidLang(lang) {
+  return ALLOWED_LANGS.includes(lang);
 }
 function resolveCategoryForRound(roomCategory) {
   if (roomCategory !== "random") return roomCategory;
@@ -112,6 +118,7 @@ function publicRoom(room) {
     inputSec: room.inputSec,
     voteSec: room.voteSec,
     category: room.category,
+    lang: room.lang || "ko",
     effectiveCategory: room.roundData?.effectiveCategory || null,
     currentRoundIdx: room.currentRoundIdx,
     phase: room.roundData?.phase || (room.status === "lobby" ? "lobby" : null),
@@ -143,11 +150,11 @@ function startNextRound(io, room) {
   if (room.currentRoundIdx >= room.totalRounds) return endGame(io, room);
 
   const effectiveCat = resolveCategoryForRound(room.category);
-  const question = pickRandomQuestion(effectiveCat, room.usedQuestionIds);
+  const question = pickRandomQuestion(effectiveCat, room.usedQuestionIds, room.lang);
   if (!question) return endGame(io, room);
   room.usedQuestionIds.add(question.id);
 
-  const catLabel = FB_CATEGORIES.find(c => c.id === effectiveCat)?.label || effectiveCat;
+  const catLabel = getCategoriesByLang(room.lang).find(c => c.id === effectiveCat)?.label || effectiveCat;
 
   room.roundData = {
     phase: "input",
@@ -179,7 +186,7 @@ function startInputPhase(io, room) {
   room.roundData.deadline = Date.now() + room.inputSec * 1000;
 
   const q = room.roundData.question;
-  const catLabel = FB_CATEGORIES.find(c => c.id === room.roundData.effectiveCategory)?.label || room.roundData.effectiveCategory;
+  const catLabel = getCategoriesByLang(room.lang).find(c => c.id === room.roundData.effectiveCategory)?.label || room.roundData.effectiveCategory;
 
   io.to(socketRoomName(room.id)).emit("fb:inputPhase", {
     roundIdx: room.currentRoundIdx,
@@ -541,6 +548,7 @@ export function registerFibbage(io, supabaseAdmin) {
         const maxPlayers = ALLOWED_MAX_PLAYERS.includes(Number(payload?.maxPlayers))
           ? Number(payload.maxPlayers) : 6;
         const category = isValidCategory(payload?.category) ? payload.category : "random";
+        const lang = isValidLang(payload?.lang) ? payload.lang : "ko";
 
         const roomId = `fb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const inviteCode = genInviteCode();
@@ -555,6 +563,7 @@ export function registerFibbage(io, supabaseAdmin) {
           inputSec,
           voteSec,
           category,
+          lang,
           createdAt: Date.now(),
           players: new Map(),
           playerOrder: [],
@@ -652,6 +661,9 @@ export function registerFibbage(io, supabaseAdmin) {
       }
       if (payload?.category && isValidCategory(payload.category)) {
         room.category = payload.category;
+      }
+      if (payload?.lang && isValidLang(payload.lang)) {
+        room.lang = payload.lang;
       }
       cb?.({ ok: true });
       broadcastRoomState(io, room);
