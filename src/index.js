@@ -5572,7 +5572,7 @@ app.get("/my/contents/:id", requireAuth, async (req, res) => {
     if (cErr || !content) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
 
     let children = [];
-    if (content.mode === "worldcup") {
+    if (content.mode === "worldcup" || content.mode === "balance") {
       const { data } = await supabaseAdmin
         .from("worldcup_candidates")
         .select("*")
@@ -5629,7 +5629,8 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
     }
 
     // 후보 수정: 기존 ID 유지 (랭킹/전적 보존), soft delete
-    if (existing.mode === "worldcup" && candidates && Array.isArray(candidates)) {
+    // 밸런스(balance)도 worldcup_candidates를 공유하므로 동일 경로로 처리
+    if ((existing.mode === "worldcup" || existing.mode === "balance") && candidates && Array.isArray(candidates)) {
       // 1) 기존 활성 후보 ID 조회
       const { data: existingCands } = await supabaseAdmin
         .from("worldcup_candidates")
@@ -5667,6 +5668,8 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
           sort_order: i + 1,
           is_active: true,
         };
+        // 밸런스: 쌍 인덱스를 순서로 파생 저장 (2개씩 한 쌍)
+        if (existing.mode === "balance") row.pair_index = Math.floor(i / 2);
         if (c.id && existingIds.has(c.id)) {
           row.id = c.id;
           toUpdate.push(row);
