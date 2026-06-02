@@ -6047,6 +6047,61 @@ app.post("/worldcup/finish-anon", async (req, res) => {
 // =========================
 // 월드컵 페어 통계 API (선택 피드백용)
 // =========================
+// 밸런스: 한 콘텐츠의 모든 쌍 통계를 한 번에 (목숨 모드용 — 자격 문제 필터 + 다수파 판정)
+app.get("/balance/stats", async (req, res) => {
+  try {
+    const contentId = req.query.contentId;
+    if (!contentId) return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
+
+    // 1) 쌍 구성 (pair_index 우선, 없으면 sort_order 순 2개씩)
+    const { data: cands, error: cErr } = await supabaseAdmin
+      .from("worldcup_candidates")
+      .select("id, pair_index, sort_order")
+      .eq("content_id", contentId).eq("is_active", true)
+      .order("sort_order", { ascending: true });
+    if (cErr) return res.status(500).json({ ok: false, error: "CANDS_FAILED" });
+    const list = cands || [];
+    const hasPI = list.some(c => c.pair_index !== null && c.pair_index !== undefined);
+    const pairs = [];
+    if (hasPI) {
+      const map = new Map();
+      list.forEach(c => { const k = c.pair_index ?? 9999; if (!map.has(k)) map.set(k, []); map.get(k).push(c); });
+      [...map.keys()].sort((x, y) => x - y).forEach(k => { const arr = map.get(k); if (arr.length >= 2) pairs.push([arr[0].id, arr[1].id]); });
+    } else {
+      for (let i = 0; i + 1 < list.length; i += 2) pairs.push([list[i].id, list[i + 1].id]);
+    }
+
+    // 2) 매치 승자 집계 (콘텐츠 전체 1회 조회 후 JS 집계)
+    const { data: matches } = await supabaseAdmin
+      .from("worldcup_matches")
+      .select("candidate_a_id, candidate_b_id, winner_candidate_id")
+      .eq("content_id", contentId);
+    const winCount = new Map(); // winner_id → count, 단 pair 키로 묶어야 함
+    // pair별 집계: 키 = 정렬된 "min|max"
+    const pairAgg = new Map();
+    for (const m of (matches || [])) {
+      const a = m.candidate_a_id, b = m.candidate_b_id, w = m.winner_candidate_id;
+      if (!a || !b) continue;
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+      if (!pairAgg.has(key)) pairAgg.set(key, {});
+      const o = pairAgg.get(key);
+      o[w] = (o[w] || 0) + 1;
+    }
+
+    const result = pairs.map(([aId, bId]) => {
+      const key = aId < bId ? `${aId}|${bId}` : `${bId}|${aId}`;
+      const o = pairAgg.get(key) || {};
+      const aWins = o[aId] || 0, bWins = o[bId] || 0;
+      return { aId, bId, aWins, bWins, total: aWins + bWins };
+    });
+
+    return res.json({ ok: true, pairs: result });
+  } catch (err) {
+    console.error("[GET /balance/stats]", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
 app.get("/worldcup/pair-stats", async (req, res) => {
   try {
     const { contentId, a, b } = req.query;
