@@ -302,6 +302,13 @@ app.get("/og/content/:id", async (req, res) => {
         .select("*", { count: "exact", head: true })
         .eq("content_id", contentId);
       itemCount = count || 0;
+    } else if (content.mode === "balance") {
+      const { count } = await supabaseAdmin
+        .from("worldcup_candidates")
+        .select("*", { count: "exact", head: true })
+        .eq("content_id", contentId)
+        .eq("is_active", true);
+      itemCount = Math.ceil((count || 0) / 2);
     }
 
     // creator_name 조회 (profiles 테이블)
@@ -316,13 +323,15 @@ app.get("/og/content/:id", async (req, res) => {
     }
 
     // 타입별 설명 생성
-    const typeLabel = content.mode === "worldcup" ? "이상형 월드컵" : "퀴즈";
-    const bracketText = itemCount > 0 ? `${itemCount}${content.mode === "worldcup" ? "강" : "문제"}` : "";
+    const typeLabel = content.mode === "worldcup" ? "이상형 월드컵" : content.mode === "balance" ? "밸런스 게임" : "퀴즈";
+    const bracketText = itemCount > 0 ? `${itemCount}${content.mode === "worldcup" ? "강" : content.mode === "balance" ? "개 질문" : "문제"}` : "";
 
     let description = content.description || "";
     if (!description || description.length < 10) {
       if (content.mode === "worldcup") {
         description = `${content.title} — DUO에서 ${bracketText} 이상형월드컵 플레이!`;
+      } else if (content.mode === "balance") {
+        description = `${content.title} — ${bracketText} 밸런스 게임! 다른 사람들의 선택과 비교해보자 ⚖️`;
       } else {
         description = `${content.title} — 퀴즈 도전! ${bracketText} 정답률을 올려보자 🎯`;
       }
@@ -616,6 +625,13 @@ app.get("/og/detail/:id", async (req, res) => {
           .select("*", { count: "exact", head: true })
           .eq("content_id", detailId);
         itemCount = count || 0;
+      } else if (content.mode === "balance") {
+        const { count } = await supabaseAdmin
+          .from("worldcup_candidates")
+          .select("*", { count: "exact", head: true })
+          .eq("content_id", detailId)
+          .eq("is_active", true);
+        itemCount = Math.ceil((count || 0) / 2);
       }
 
       // 작성자
@@ -629,12 +645,14 @@ app.get("/og/detail/:id", async (req, res) => {
         creatorName = profile?.nickname || "";
       }
 
-      const typeLabel = content.mode === "worldcup" ? "이상형 월드컵" : "퀴즈";
-      const bracketText = itemCount > 0 ? `${itemCount}${content.mode === "worldcup" ? "강" : "문제"}` : "";
+      const typeLabel = content.mode === "worldcup" ? "이상형 월드컵" : content.mode === "balance" ? "밸런스 게임" : "퀴즈";
+      const bracketText = itemCount > 0 ? `${itemCount}${content.mode === "worldcup" ? "강" : content.mode === "balance" ? "개 질문" : "문제"}` : "";
       let description = content.description || "";
       if (!description || description.length < 10) {
         description = content.mode === "worldcup"
           ? `${content.title} — DUO에서 ${bracketText} 이상형월드컵 플레이!`
+          : content.mode === "balance"
+          ? `${content.title} — ${bracketText} 밸런스 게임! 다른 사람들의 선택과 비교해보자 ⚖️`
           : `${content.title} — 퀴즈 도전! ${bracketText} 정답률을 올려보자 🎯`;
       }
       if (creatorName) description += ` | 제작자: ${creatorName}`;
