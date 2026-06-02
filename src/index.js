@@ -2310,7 +2310,7 @@ app.post("/history", requireAuth, async (req, res) => {
       console.warn("[POST /history] 필수 필드 누락");
       return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
     }
-    if (!["worldcup", "quiz"].includes(content_type)) {
+    if (!["worldcup", "quiz", "balance"].includes(content_type)) {
       console.warn("[POST /history] 잘못된 content_type:", content_type);
       return res.status(400).json({ ok: false, error: "INVALID_CONTENT_TYPE" });
     }
@@ -6262,7 +6262,7 @@ app.post("/events", async (req, res) => {
     if (!contentId || !contentType || !eventType) {
       return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
     }
-    const validTypes = ["worldcup", "quiz", "tier"];
+    const validTypes = ["worldcup", "quiz", "tier", "balance"];
     const validEvents = ["play", "finish", "share"];
     if (!validTypes.includes(contentType) || !validEvents.includes(eventType)) {
       return res.status(400).json({ ok: false, error: "INVALID_TYPE" });
@@ -7544,7 +7544,7 @@ async function loadCandidates(contentId, userId, isAdmin) {
 
   if (cErr || !content) return { error: "CONTENT_NOT_FOUND" };
   if (content.is_hidden && !isAdmin) return { error: "CONTENT_HIDDEN" };
-  if (content.mode !== "worldcup") return { error: "NOT_WORLDCUP" };
+  if (content.mode !== "worldcup" && content.mode !== "balance") return { error: "NOT_WORLDCUP" };
 
   if (content.visibility === "private") {
     if (content.owner_id !== userId && !isAdmin) {
@@ -7675,6 +7675,119 @@ function initBracket(room, candidates) {
   }
 }
 
+// 밸런스: 후보(sort_order 순)를 2개씩 고정 쌍으로 묶고, 쌍 순서를 셔플 + 문제 수 제한.
+// bracket을 [a0,b0,a1,b1,...]로 평탄화 → nextMatch가 그대로 bracket[i*2],[i*2+1] 사용.
+// 토너먼트와 달리 탈락 없음(doRevealBalance가 선형 진행).
+function initBalanceBracket(room, candidates, count) {
+  const pairs = [];
+  for (let i = 0; i + 1 < candidates.length; i += 2) pairs.push([candidates[i], candidates[i + 1]]);
+  const shuffledPairs = shuffleArray(pairs);
+  const limited = (count > 0 && count < shuffledPairs.length) ? shuffledPairs.slice(0, count) : shuffledPairs;
+  room.bracket = limited.reduce((acc, p) => { acc.push(p[0], p[1]); return acc; }, []);
+  room.nextBracket = [];
+  room.matchIndex = 0;
+  room.roundIndex = 0;
+  room.scores = {};
+  room.picksHistory = [];
+  room.phase = "lobby";
+  room.currentMatch = null;
+  room.champion = null;
+  room.isBalance = true;
+  room.totalMatches = limited.length; // 쌍(질문) 수
+}
+
+// 밸런스 reveal: 승자 탈락 없이 비율만 공개 → 다음 쌍. 모든 쌍 끝나면 finished.
+function doRevealBalance(room) {
+  if (room.phase !== "playing" && room.phase !== "revoting") return;
+  room.phase = "revealed";
+  if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
+  room.roundEndsAt = null;
+
+  const match = room.currentMatch;
+  const picks = Array.from(room.players.entries()).map(([userId, pp]) => ({ userId, name: pp.name, choice: pp.choice }));
+  const activePicks = picks.filter(x => x.choice === "A" || x.choice === "B");
+  const aCount = activePicks.filter(x => x.choice === "A").length;
+  const bCount = activePicks.filter(x => x.choice === "B").length;
+  const total = Math.max(1, activePicks.length);
+  const percentA = activePicks.length > 0 ? Math.round((aCount / total) * 100) : 0;
+  const percentB = activePicks.length > 0 ? 100 - percentA : 0;
+
+  const matchCands = room._matchCands;
+  // 다수결 쪽에 점수 +1 (재미용 — 다수파 점수)
+  let roundWinner = null;
+  if (aCount > bCount) roundWinner = "A"; else if (bCount > aCount) roundWinner = "B";
+  if (roundWinner) {
+    for (const p of activePicks) if (p.choice === roundWinner) room.scores[p.userId] = (room.scores[p.userId] || 0) + 1;
+  }
+  // 전역 통계: 각 플레이어 표를 worldcup_matches에 기록 (솔로와 동일 — pair-stats 정확)
+  if (matchCands && matchCands.A && matchCands.B) {
+    for (const p of activePicks) {
+      const win = p.choice === "A" ? matchCands.A : matchCands.B;
+      const lose = p.choice === "A" ? matchCands.B : matchCands.A;
+      recordWorldcupMatch(room, matchCands.A, matchCands.B, win, lose, false, { mode: "balance" }).catch(() => {});
+    }
+  }
+
+  room.picksHistory.push({ roundIndex: room.roundIndex, match, picks, aCount, bCount });
+
+  room.matchIndex++;
+  const finished = room.matchIndex * 2 >= room.bracket.length;
+
+  const scores = buildScores(room);
+  io.to(room.id).emit("worldcup:reveal", {
+    isBalance: true,
+    picks,
+    percent: { A: percentA, B: percentB },
+    aCount, bCount,
+    matchCands: { A: { id: matchCands.A.id, name: matchCands.A.name }, B: { id: matchCands.B.id, name: matchCands.B.name } },
+    scores,
+    roundIndex: room.roundIndex,
+    totalMatches: room.totalMatches,
+    isLastRound: finished,
+  });
+  room.lastReveal = { isBalance: true, finished };
+  io.to(room.id).emit("room:state", publicRoom(room));
+
+  // 플레이어 1명 이하(혼자 멀티): 자동 다음 진행
+  if (room.players.size <= 1) {
+    if (finished) { _balanceFinish(room); return; }
+    _balanceNext(room);
+  }
+}
+
+// 밸런스 다음 쌍 (혼자 멀티 자동 / 호스트 next 공용)
+function _balanceNext(room) {
+  room.committed.clear();
+  for (const p of room.players.values()) delete p.choice;
+  room.roundIndex++;
+  room.phase = "playing";
+  nextMatch(room);
+  io.to(room.id).emit("worldcup:round", {
+    roomId: room.id,
+    roundIndex: room.roundIndex,
+    totalMatches: room.totalMatches,
+    match: room.currentMatch,
+    timer: { enabled: room.timerEnabled, sec: room.timerSec },
+    isBalance: true,
+  });
+  io.to(room.id).emit("room:state", publicRoom(room));
+  startRoundTimer(room);
+}
+
+function _balanceFinish(room) {
+  room.phase = "finished";
+  io.to(room.id).emit("worldcup:finished", {
+    roomId: room.id,
+    isBalance: true,
+    scores: buildScores(room),
+    picksHistory: room.picksHistory,
+  });
+  if (!room.alreadyCounted && room.contentId && room.hostUserId) {
+    room.alreadyCounted = true;
+    recordPlayOnce({ contentId: room.contentId, userId: room.hostUserId, mode: "multi", gameType: "balance" }).catch(() => {});
+  }
+}
+
 function nextMatch(room) {
   const idx = room.matchIndex;
   const candA = room.bracket[idx * 2];
@@ -7765,6 +7878,8 @@ function buildScores(room) {
 }
 
 function doReveal(room) {
+  // 밸런스는 전용 reveal(탈락 없음)
+  if (room.isBalance) return doRevealBalance(room);
   // playing 또는 revoting 상태에서만 reveal 진행
   if (room.phase !== "playing" && room.phase !== "revoting") return;
   room.phase = "revealed";
@@ -9213,7 +9328,9 @@ io.on("connection", (socket) => {
       id: roomId,
       inviteCode,
       hostUserId: me.id,
-      mode: payload?.mode === "quiz" ? "quiz" : payload?.mode === "tier" ? "tier" : "worldcup",
+      mode: payload?.mode === "quiz" ? "quiz" : payload?.mode === "tier" ? "tier" : payload?.mode === "balance" ? "balance" : "worldcup",
+      // 밸런스: 플레이할 쌍(질문) 수 (0=전체)
+      balanceCount: parseInt(payload?.balanceCount, 10) || 0,
       contentId: payload?.contentId || null,
       players: new Map(),
       committed: new Set(),
@@ -9631,6 +9748,30 @@ io.on("connection", (socket) => {
         return cb?.({ ok: true, totalQuestions: quizQuestions.length });
       }
 
+      // ── 밸런스 모드 (월드컵 후보 테이블 재사용, 고정 쌍 순서) ──
+      if (room.mode === "balance") {
+        if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
+        const bLoaded = await loadCandidates(contentId, me.id, me.isAdmin);
+        if (bLoaded.error) return cb?.({ ok: false, error: bLoaded.error });
+        if (!bLoaded.candidates || bLoaded.candidates.length < 2) return cb?.({ ok: false, error: "NOT_ENOUGH_CANDIDATES" });
+        room.content = bLoaded.content;
+        initBalanceBracket(room, bLoaded.candidates, room.balanceCount || 0);
+        room.roundIndex = 1;
+        room.phase = "playing";
+        room.committed.clear();
+        for (const p of room.players.values()) delete p.choice;
+        for (const userId of room.players.keys()) room.scores[userId] = 0;
+        nextMatch(room);
+        io.to(room.id).emit("worldcup:round", {
+          roomId: room.id, roundIndex: room.roundIndex, totalMatches: room.totalMatches,
+          match: room.currentMatch, timer: { enabled: room.timerEnabled, sec: room.timerSec }, isBalance: true,
+        });
+        io.to(room.id).emit("room:state", publicRoom(room));
+        startRoundTimer(room);
+        console.log(`[game:start] balance started — pairs=${room.totalMatches}`);
+        return cb?.({ ok: true });
+      }
+
       // ── 월드컵 모드 ──
       if (room.roundTimer) { clearTimeout(room.roundTimer); room.roundTimer = null; }
 
@@ -9709,6 +9850,14 @@ io.on("connection", (socket) => {
     if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
     if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
     if (room.phase !== "revealed") return cb?.({ ok: false, error: "NOT_REVEALED" });
+
+    // 밸런스: 탈락 없이 다음 쌍 / 끝나면 종료
+    if (room.isBalance) {
+      const finished = room.matchIndex * 2 >= room.bracket.length;
+      if (finished) { _balanceFinish(room); return cb?.({ ok: true, finished: true }); }
+      _balanceNext(room);
+      return cb?.({ ok: true, finished: false });
+    }
 
     if (room.champion) {
       room.phase = "finished";
