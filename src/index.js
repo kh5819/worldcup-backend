@@ -6513,13 +6513,13 @@ app.get("/explore/popular", async (req, res) => {
     const limitRaw = parseInt(req.query.limit) || 12;
     const limit = Math.min(30, Math.max(1, limitRaw));
 
-    // 1) worldcup/quiz from contents + content_metrics_v
+    // 1) worldcup/quiz/balance from contents + content_metrics_v
     let contentItems = [];
-    if (type === "all" || type === "worldcup" || type === "quiz") {
+    if (type === "all" || type === "worldcup" || type === "quiz" || type === "balance") {
       let q = supabaseAdmin
         .from("public_contents_list")
         .select("id, type, title, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, creator_name, play_count, complete_count, like_count, item_count, created_at");
-      if (type === "worldcup" || type === "quiz") {
+      if (type === "worldcup" || type === "quiz" || type === "balance") {
         q = q.eq("type", type);
       }
       q = q.order("complete_count", { ascending: false }).order("created_at", { ascending: false }).limit(limit);
