@@ -5685,13 +5685,14 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
     // 후보 수정: 기존 ID 유지 (랭킹/전적 보존), soft delete
     // 밸런스(balance)도 worldcup_candidates를 공유하므로 동일 경로로 처리
     if ((existing.mode === "worldcup" || existing.mode === "balance") && candidates && Array.isArray(candidates)) {
-      // 1) 기존 활성 후보 ID 조회
+      // 1) 기존 활성 후보 ID 조회 (thumbnail_url도 — 미디어 유지 시 기존 썸네일 보존용)
       const { data: existingCands } = await supabaseAdmin
         .from("worldcup_candidates")
-        .select("id")
+        .select("id, thumbnail_url")
         .eq("content_id", req.params.id)
         .eq("is_active", true);
       const existingIds = new Set((existingCands || []).map(r => r.id));
+      const existingThumb = new Map((existingCands || []).map(r => [r.id, r.thumbnail_url]));
 
       // incoming에서 유효한 기존 ID만 추출
       const incomingIds = new Set(
@@ -5712,11 +5713,18 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
       const toUpdate = [];
       const toInsert = [];
       candidates.forEach((c, i) => {
+        const _mediaUrl = c.media_url || "";
         const row = {
           content_id: req.params.id,
           name: c.name,
           media_type: c.media_type || "image",
-          media_url: c.media_url || "",
+          media_url: _mediaUrl,
+          // 썸네일 정리: 미디어가 없으면(글자 전용으로 변경) 기존 썸네일을 비워야
+          // 랭킹/우승모달 등에서 옛 사진·유튜브 썸네일이 남는 문제를 막는다.
+          // 미디어가 있으면 클라이언트가 보낸 값 우선, 없으면 기존 썸네일 보존.
+          thumbnail_url: _mediaUrl
+            ? (c.thumbnail_url || (c.id ? (existingThumb.get(c.id) || null) : null))
+            : null,
           start_sec: c.start_sec || null,
           duration_sec: c.duration_sec || null,
           sort_order: i + 1,
