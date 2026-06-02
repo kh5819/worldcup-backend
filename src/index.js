@@ -998,6 +998,15 @@ async function buildContentSeoHtml(contentId, mode) {
       .select("*", { count: "exact", head: true })
       .eq("content_id", contentId);
     itemCount = count || preview.length;
+  } else if (content.mode === "balance") {
+    // 밸런스는 worldcup_candidates 재사용 (쌍당 2개) → 질문 수 = 후보/2
+    const { data: cands, count } = await supabaseAdmin
+      .from("worldcup_candidates")
+      .select("name", { count: "exact" })
+      .eq("content_id", contentId)
+      .eq("is_active", true);
+    preview = (cands || []).slice(0, 8).map(c => c.name).filter(Boolean);
+    itemCount = Math.ceil((count || (cands || []).length) / 2);
   }
 
   // 제작자 닉네임
@@ -1011,14 +1020,17 @@ async function buildContentSeoHtml(contentId, mode) {
     creatorName = profile?.nickname || "";
   }
 
-  const typeLabel = content.mode === "worldcup" ? "이상형 월드컵" : "퀴즈";
-  const typeEmoji = content.mode === "worldcup" ? "🏆" : "❓";
-  const bracketText = itemCount > 0 ? `${itemCount}${content.mode === "worldcup" ? "강" : "문제"}` : "";
+  const typeLabel = content.mode === "worldcup" ? "이상형 월드컵" : content.mode === "balance" ? "밸런스 게임" : "퀴즈";
+  const typeEmoji = content.mode === "worldcup" ? "🏆" : content.mode === "balance" ? "⚖️" : "❓";
+  const _unit = content.mode === "worldcup" ? "강" : content.mode === "balance" ? "개 질문" : "문제";
+  const bracketText = itemCount > 0 ? `${itemCount}${_unit}` : "";
 
   let description = (content.description || "").trim();
   if (!description || description.length < 20) {
     if (content.mode === "worldcup") {
       description = `${content.title} — ${bracketText} 이상형 월드컵. ${creatorName ? creatorName + "이(가) 만든 " : ""}DUO 무료 이상형 월드컵에 도전해보세요. ${typeEmoji}`;
+    } else if (content.mode === "balance") {
+      description = `${content.title} — ${bracketText} 밸런스 게임. ${creatorName ? creatorName + "이(가) 만든 " : ""}나의 선택과 다른 사람들의 선택 비율을 비교해보세요. ${typeEmoji}`;
     } else {
       description = `${content.title} — ${bracketText} 퀴즈에 도전! ${creatorName ? creatorName + "이(가) 만든 " : ""}DUO 무료 퀴즈. 친구들과 정답률을 비교해보세요.`;
     }
@@ -1030,9 +1042,11 @@ async function buildContentSeoHtml(contentId, mode) {
     ogImage = `${process.env.SUPABASE_URL}/storage/v1/object/public/thumbnails/${ogImage}`;
   }
 
-  const path = content.mode === "worldcup" ? `/w/${content.id}` : `/q/${content.id}`;
+  const path = content.mode === "worldcup" ? `/w/${content.id}` : content.mode === "balance" ? `/balance/${content.id}` : `/q/${content.id}`;
   const canonical = `${SITE_URL}${path}`;
-  const playUrl = `${SITE_URL}/play.html?solo=1&type=${content.mode}&id=${content.id}`;
+  const playUrl = content.mode === "balance"
+    ? `${SITE_URL}/balance-play.html?id=${content.id}`
+    : `${SITE_URL}/play.html?solo=1&type=${content.mode}&id=${content.id}`;
   const title = `${content.title} — ${typeLabel} | DUO`;
 
   // 카테고리/태그
@@ -1089,7 +1103,7 @@ async function buildContentSeoHtml(contentId, mode) {
   // 본문
   const previewHtml = preview.length > 0
     ? `<div class="seo-section">
-        <h2>${content.mode === "worldcup" ? "후보 미리보기" : "문제 미리보기"}</h2>
+        <h2>${content.mode === "worldcup" ? "후보 미리보기" : content.mode === "balance" ? "선택지 미리보기" : "문제 미리보기"}</h2>
         <ol>${preview.map(p => `<li>${escHtml(p)}</li>`).join("")}</ol>
       </div>`
     : "";
@@ -1113,7 +1127,7 @@ async function buildContentSeoHtml(contentId, mode) {
       <h2>게임 정보</h2>
       <ul>
         <li>종류: ${escHtml(typeLabel)}</li>
-        ${bracketText ? `<li>${content.mode === "worldcup" ? "후보 수" : "문제 수"}: ${itemCount}</li>` : ""}
+        ${bracketText ? `<li>${content.mode === "worldcup" ? "후보 수" : content.mode === "balance" ? "질문 수" : "문제 수"}: ${itemCount}</li>` : ""}
         <li>누적 플레이: ${(content.play_count || 0).toLocaleString()}회</li>
         ${content.complete_count ? `<li>완주 수: ${(content.complete_count || 0).toLocaleString()}회</li>` : ""}
         ${creatorName ? `<li>제작자: ${escHtml(creatorName)}</li>` : ""}
@@ -1273,6 +1287,28 @@ app.get("/w/:id", async (req, res) => {
     res.send(html);
   } catch (e) {
     console.error("[GET /w/:id]", e);
+    res.status(500).send("Internal");
+  }
+});
+
+// /balance/:id — 밸런스 게임 SSR (카톡/검색 공유용)
+// ⚠️ /balance/stats 등 예약 서브경로는 next()로 통과시켜 아래 API 핸들러로 넘김
+const _BALANCE_RESERVED = new Set(["stats"]);
+app.get("/balance/:id", async (req, res, next) => {
+  try {
+    const id = req.params.id;
+    if (_BALANCE_RESERVED.has(id)) return next();
+    const html = await buildContentSeoHtml(id, "balance");
+    if (!html) return res.status(404).send(generateOgHtml({
+      title: "콘텐츠를 찾을 수 없습니다 — DUO",
+      description: "비공개되었거나 삭제된 콘텐츠입니다.",
+      image: DEFAULT_OG_IMAGE, url: SITE_URL, redirectUrl: SITE_URL,
+    }));
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=600, s-maxage=3600, stale-while-revalidate=600");
+    res.send(html);
+  } catch (e) {
+    console.error("[GET /balance/:id]", e);
     res.status(500).send("Internal");
   }
 });
@@ -1574,9 +1610,9 @@ app.get("/sitemap-content.xml", async (req, res) => {
         .limit(50000);
       if (error) { console.error("[sitemap-content query]", error); }
       const items = (rows || [])
-        .filter(r => r && _isValidId(r.id) && (r.mode === "worldcup" || r.mode === "quiz"))
+        .filter(r => r && _isValidId(r.id) && (r.mode === "worldcup" || r.mode === "quiz" || r.mode === "balance"))
         .map(r => {
-          const path = r.mode === "worldcup" ? `/w/${escapeXml(r.id)}` : `/q/${escapeXml(r.id)}`;
+          const path = r.mode === "worldcup" ? `/w/${escapeXml(r.id)}` : r.mode === "balance" ? `/balance/${escapeXml(r.id)}` : `/q/${escapeXml(r.id)}`;
           const lastmod = _formatLastmod(r.updated_at);
           return _buildI18nUrl(path, lastmod, "weekly", "0.7");
         })
