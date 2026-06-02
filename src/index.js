@@ -258,7 +258,7 @@ app.get("/content-lookup/:id", async (req, res) => {
 // OG 메타 미리보기 (카톡/디코/트위터 공유용)
 // GET /og/content/:id → SSR HTML 반환
 // =========================
-const DEFAULT_OG_IMAGE = "https://playduo.kr/og-default.png";
+const DEFAULT_OG_IMAGE = "https://playduo.kr/assets/logo-duo.png"; // og-default.png는 프로덕션 404 → 존재하는 로고로 폴백
 const SITE_NAME = "DUO";
 const SITE_URL = "https://playduo.kr";
 
