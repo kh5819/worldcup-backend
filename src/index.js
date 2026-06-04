@@ -6943,31 +6943,38 @@ app.get("/explore/trending", async (req, res) => {
   }
 });
 
-// GET /explore/rising — 새로 뜨는 (7일 이내 생성 + 반응 있음)
+// GET /explore/rising — 새로 뜨는 (7일 이내 생성 + 반응 있음, 유형 필터)
 app.get("/explore/rising", async (req, res) => {
   try {
+    const type = String(req.query.type || "all");
     const limitRaw = parseInt(req.query.limit) || 10;
     const limit = Math.min(20, Math.max(1, limitRaw));
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-    // 1) Recent worldcup/quiz
-    const { data: cData } = await supabaseAdmin
-      .from("public_contents_list")
-      .select("id, type, title, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, creator_name, play_count, complete_count, like_count, item_count, created_at")
-      .gte("created_at", since)
-      .order("complete_count", { ascending: false })
-      .limit(limit);
+    // 1) Recent worldcup/quiz/balance
+    let cData = [];
+    if (type === "all" || type === "worldcup" || type === "quiz" || type === "balance") {
+      let q = supabaseAdmin
+        .from("public_contents_list")
+        .select("id, type, title, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, creator_name, play_count, complete_count, like_count, item_count, created_at")
+        .gte("created_at", since);
+      if (type !== "all") q = q.eq("type", type);
+      const { data } = await q.order("complete_count", { ascending: false }).limit(limit);
+      cData = data || [];
+    }
 
     // 2) Recent tier
-    const { data: tData } = await supabaseAdmin
-      .from("tier_templates")
-      .select("id, title, cards, play_count, complete_count, like_count, created_at, creator_id")
-      .eq("is_public", true)
-      .is("deleted_at", null)
-      .gte("created_at", since)
-      .order("complete_count", { ascending: false })
-      .limit(limit);
-
+    let tData = null;
+    if (type === "all" || type === "tier") {
+      ({ data: tData } = await supabaseAdmin
+        .from("tier_templates")
+        .select("id, title, cards, play_count, complete_count, like_count, created_at, creator_id")
+        .eq("is_public", true)
+        .is("deleted_at", null)
+        .gte("created_at", since)
+        .order("complete_count", { ascending: false })
+        .limit(limit));
+    }
     const tiers = tData || [];
     let tierItems = [];
     if (tiers.length > 0) {
@@ -6989,16 +6996,19 @@ app.get("/explore/rising", async (req, res) => {
     }
 
     // 3) Recent bingo
-    const { data: bData } = await supabaseAdmin
-      .from("bingos")
-      .select("id, title, thumbnail_url, cells, play_count, complete_count, like_count, created_at, creator_id, size")
-      .eq("visibility", "public")
-      .eq("status", "published")
-      .eq("is_hidden", false)
-      .is("deleted_at", null)
-      .gte("created_at", since)
-      .order("complete_count", { ascending: false })
-      .limit(limit);
+    let bData = null;
+    if (type === "all" || type === "bingo") {
+      ({ data: bData } = await supabaseAdmin
+        .from("bingos")
+        .select("id, title, thumbnail_url, cells, play_count, complete_count, like_count, created_at, creator_id, size")
+        .eq("visibility", "public")
+        .eq("status", "published")
+        .eq("is_hidden", false)
+        .is("deleted_at", null)
+        .gte("created_at", since)
+        .order("complete_count", { ascending: false })
+        .limit(limit));
+    }
     const bingos = bData || [];
     let bingoItems = [];
     if (bingos.length > 0) {
@@ -7020,16 +7030,19 @@ app.get("/explore/rising", async (req, res) => {
     }
 
     // 4) Recent ptest
-    const { data: pData } = await supabaseAdmin
-      .from("personality_tests")
-      .select("id, title, thumbnail_url, questions, results, play_count, complete_count, like_count, created_at, creator_id")
-      .eq("visibility", "public")
-      .eq("status", "published")
-      .eq("is_hidden", false)
-      .is("deleted_at", null)
-      .gte("created_at", since)
-      .order("complete_count", { ascending: false })
-      .limit(limit);
+    let pData = null;
+    if (type === "all" || type === "ptest") {
+      ({ data: pData } = await supabaseAdmin
+        .from("personality_tests")
+        .select("id, title, thumbnail_url, questions, results, play_count, complete_count, like_count, created_at, creator_id")
+        .eq("visibility", "public")
+        .eq("status", "published")
+        .eq("is_hidden", false)
+        .is("deleted_at", null)
+        .gte("created_at", since)
+        .order("complete_count", { ascending: false })
+        .limit(limit));
+    }
     const tests = pData || [];
     let ptestItems = [];
     if (tests.length > 0) {
