@@ -2062,6 +2062,61 @@ app.get("/api/og-thumb", async (req, res) => {
 });
 
 // =============================================
+// GET /api/youtube-playlist — 유튜브 재생목록 → 영상 목록 (제작기 일괄 추가용)
+// 키는 서버 환경변수(YOUTUBE_API_KEY)에만 보관 — 프론트에 절대 노출 X.
+// 비용: playlistItems = 50개당 1유닛 (하루 무료 10,000유닛). 초과 시 차단(과금 없음).
+// =============================================
+app.get("/api/youtube-playlist", requireAuth, async (req, res) => {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return res.status(503).json({ ok: false, error: "YOUTUBE_API_KEY_NOT_SET" });
+
+  // 재생목록 ID 추출 (list= 파라미터가 있는 URL 또는 raw ID)
+  const raw = String(req.query.list || req.query.url || "").trim();
+  let plid = raw;
+  const m = raw.match(/[?&]list=([A-Za-z0-9_-]+)/);
+  if (m) plid = m[1];
+  if (!/^[A-Za-z0-9_-]{10,}$/.test(plid)) {
+    return res.status(400).json({ ok: false, error: "INVALID_PLAYLIST" });
+  }
+
+  try {
+    const items = [];
+    let pageToken = "";
+    let loops = 0;
+    do {
+      loops++;
+      const u = new URL("https://www.googleapis.com/youtube/v3/playlistItems");
+      u.searchParams.set("part", "snippet");
+      u.searchParams.set("maxResults", "50");
+      u.searchParams.set("playlistId", plid);
+      u.searchParams.set("key", apiKey);
+      if (pageToken) u.searchParams.set("pageToken", pageToken);
+
+      const r = await fetch(u, { signal: AbortSignal.timeout(10000) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const reason = j?.error?.errors?.[0]?.reason || j?.error?.message || "YT_API_ERROR";
+        return res.status(502).json({ ok: false, error: reason });
+      }
+      for (const it of (j.items || [])) {
+        const vid = it?.snippet?.resourceId?.videoId;
+        const title = it?.snippet?.title || "";
+        // 비공개/삭제 영상은 제외 (제목이 고정 문자열로 옴)
+        if (vid && title !== "Private video" && title !== "Deleted video") {
+          items.push({ id: vid, title: title.slice(0, 80) });
+        }
+      }
+      pageToken = j.nextPageToken || "";
+    } while (pageToken && loops < 20); // 최대 1000개(20페이지)까지
+
+    return res.json({ ok: true, count: items.length, items });
+  } catch (err) {
+    console.error("[youtube-playlist] error:", err.message);
+    return res.status(502).json({ ok: false, error: "FETCH_FAILED" });
+  }
+});
+
+// =============================================
 // POST /api/proxy-image — 외부 이미지 URL → Supabase Storage 복사 저장
 // 핫링크 차단(namu.wiki 등) 방지: 서버에서 fetch → Storage upload → publicUrl 반환
 // =============================================
