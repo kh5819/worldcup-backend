@@ -2960,6 +2960,7 @@ app.post("/tier-multi/publish", requireAuth, async (req, res) => {
     const tiers = board.tierMeta.map((m, i) => ({
       id: m.id,
       name: m.name,
+      image_url: m.image_url || "",
       color: MULTI_TIER_DEFAULT_COLORS[i % MULTI_TIER_DEFAULT_COLORS.length],
     }));
 
@@ -8841,7 +8842,8 @@ function initTierState(room, template, selectedCards) {
   const tierMeta = [];
   for (const t of template.base_tiers) {
     board[t.id] = [];
-    tierMeta.push({ id: t.id, name: t.name });
+    // image_url: 티어 칸 사진 (선택) — 멀티 결과 발행 시 싸움터로 전달 (클라는 무시해도 무해)
+    tierMeta.push({ id: t.id, name: t.name, image_url: t.image_url || "" });
   }
   room.tier = {
     templateId: template.id,
@@ -10634,6 +10636,37 @@ io.on("connection", (socket) => {
     });
 
     console.log(`[tier:rename] roomId=${room.id} tierId=${tierId} → "${name}"`);
+    cb?.({ ok: true });
+  });
+
+  /** tier:set-label-image — 호스트가 티어 칸 사진만 변경/제거 (구조 불변, rename과 동일 broadcast) */
+  safeOn(socket, "tier:set-label-image", (payload, cb) => {
+    const room = rooms.get(payload?.roomId);
+    if (!room || room.mode !== "tier" || !room.tier) return cb?.({ ok: false, error: "NOT_TIER_ROOM" });
+    if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+
+    const t = room.tier;
+    const tierId = payload?.tierId;
+    const raw = typeof payload?.imageUrl === "string" ? payload.imageUrl.trim() : "";
+
+    if (!tierId) return cb?.({ ok: false, error: "MISSING_TIER_ID" });
+    // ""=제거 허용. 값이 있으면 https URL + 길이 제한만 검사
+    if (raw && (!/^https:\/\//i.test(raw) || raw.length > 500)) {
+      return cb?.({ ok: false, error: "BAD_IMAGE_URL" });
+    }
+
+    const idx = t.tierMeta.findIndex(m => m.id === tierId);
+    if (idx < 0) return cb?.({ ok: false, error: "TIER_NOT_FOUND" });
+
+    if ((t.tierMeta[idx].image_url || "") === raw) return cb?.({ ok: true, unchanged: true });
+    t.tierMeta[idx].image_url = raw;
+
+    io.to(room.id).emit("tier:meta-update", {
+      roomId: room.id,
+      tierMeta: t.tierMeta,
+    });
+
+    console.log(`[tier:set-label-image] roomId=${room.id} tierId=${tierId} → ${raw ? "set" : "removed"}`);
     cb?.({ ok: true });
   });
 
