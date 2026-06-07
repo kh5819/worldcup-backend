@@ -352,7 +352,11 @@ app.get("/og/content/:id", async (req, res) => {
     }
 
     // 실제 플레이 페이지 URL
-    const playUrl = `${SITE_URL}/play.html?solo=1&type=${content.mode}&id=${contentId}`;
+    // 월드컵/퀴즈는 바로 플레이 대신 로비 상세 모달로 진입 — 시작 전에 타이머 등 옵션 선택 가능
+    // (이전: play.html 직행 → timer 파라미터가 없어서 DB 기본값(true)으로 무조건 45초 타이머가 켜지던 문제)
+    const playUrl = content.mode === "balance"
+      ? `${SITE_URL}/balance-play.html?id=${contentId}`
+      : `${SITE_URL}/index.html?detail=${contentId}`;
     const ogUrl = `${SITE_URL}/og/content/${contentId}`;
 
     const html = generateOgHtml({
@@ -1062,9 +1066,11 @@ async function buildContentSeoHtml(contentId, mode) {
 
   const path = content.mode === "worldcup" ? `/w/${content.id}` : content.mode === "balance" ? `/balance/${content.id}` : `/q/${content.id}`;
   const canonical = `${SITE_URL}${path}`;
+  // 월드컵/퀴즈는 로비 상세 모달로 진입 — 시작 전에 타이머 등 옵션 선택 가능
+  // (이전: play.html 직행 → timer 파라미터가 없어서 DB 기본값(true)으로 무조건 45초 타이머 ON)
   const playUrl = content.mode === "balance"
     ? `${SITE_URL}/balance-play.html?id=${content.id}`
-    : `${SITE_URL}/play.html?solo=1&type=${content.mode}&id=${content.id}`;
+    : `${SITE_URL}/index.html?detail=${content.id}`;
   const title = `${content.title} — ${typeLabel} | DUO`;
 
   // 카테고리/태그
