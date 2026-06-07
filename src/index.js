@@ -3707,7 +3707,10 @@ app.get("/admin/contents", requireAdmin, async (req, res) => {
     // 검색어 (제목 또는 태그)
     if (q && q.trim()) {
       const searchTerm = q.trim();
-      query = query.or(`title.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%,tags.cs.{${searchTerm}}`);
+      // 태그는 cs(완전일치·대소문자 구분)라 원문/소문자/대문자 변형을 모두 OR로 검색
+      const tagVariants = [...new Set([searchTerm, searchTerm.toLowerCase(), searchTerm.toUpperCase()])];
+      const tagConds = tagVariants.map(v => `tags.cs.{${v}}`).join(",");
+      query = query.or(`title.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%,${tagConds}`);
     }
 
     // 정렬
@@ -4722,7 +4725,10 @@ app.get("/admin/tier-templates", requireAdmin, async (req, res) => {
 
     if (q && q.trim()) {
       const searchTerm = q.trim();
-      query = query.or(`title.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%,tags.cs.{${searchTerm}}`);
+      // 태그는 cs(완전일치·대소문자 구분)라 원문/소문자/대문자 변형을 모두 OR로 검색
+      const tagVariants = [...new Set([searchTerm, searchTerm.toLowerCase(), searchTerm.toUpperCase()])];
+      const tagConds = tagVariants.map(v => `tags.cs.{${v}}`).join(",");
+      query = query.or(`title.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%,${tagConds}`);
     }
 
     if (sort === "popular") {
