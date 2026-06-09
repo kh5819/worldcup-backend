@@ -2264,6 +2264,10 @@ app.post("/api/storage-cleanup", requireAuth, async (req, res) => {
     const bucketPaths = {}; // { bucket: Set<path> }
     let skipped = 0;
 
+    // 1차 필터: 형식 + 소유권(user_id 경로) 통과한 삭제 후보 수집.
+    //   url = 쿼리/프래그먼트 제거한 정규 public URL (DB 저장 형태와 일치 → 참조 검사용)
+    const candidates = []; // { bucket, path, url }
+    const candUrls = new Set();
     for (const raw of urls) {
       if (typeof raw !== "string" || !raw) { skipped++; continue; }
       if (!raw.includes(".supabase.co/storage/")) { skipped++; continue; }
@@ -2276,8 +2280,37 @@ app.post("/api/storage-cleanup", requireAuth, async (req, res) => {
         skipped++;
         continue;
       }
-      if (!bucketPaths[bucket]) bucketPaths[bucket] = new Set();
-      bucketPaths[bucket].add(path);
+      const url = raw.split("#")[0].split("?")[0];
+      candidates.push({ bucket, path, url });
+      candUrls.add(url);
+    }
+
+    // 2차 가드(핵심): DB 어딘가(월드컵 후보 / 티어 카드 / 원본·다른 퀴즈 문제 /
+    //   썸네일 등)에서 아직 참조 중인 파일은 "절대" 삭제하지 않는다.
+    //   → 템플릿/복제본(실루엣·주관식·월드컵→티어 등 10종)이 원본과 공유하는
+    //     파일을 사진 교체 시 함께 지워버리던 데이터 유실 사고를 원천 차단.
+    let protectedCount = 0;
+    const referenced = new Set();
+    if (candUrls.size > 0) {
+      try {
+        const { data: refRows, error: refErr } = await supabaseAdmin
+          .rpc("filter_referenced_media_urls", { p_urls: Array.from(candUrls) });
+        if (refErr) {
+          // 가드 조회 실패 = 안전 우선: 어떤 것도 삭제하지 않고 중단 (스토리지 누수 < 데이터 유실)
+          console.error("[storage-cleanup] reference guard failed → abort delete:", refErr.message);
+          return res.json({ ok: true, deleted: 0, failed: 0, skipped, protected: candidates.length, guard: "error_safe_abort" });
+        }
+        (refRows || []).forEach(r => { if (r && r.url) referenced.add(r.url); });
+      } catch (e) {
+        console.error("[storage-cleanup] reference guard exception → abort delete:", e.message);
+        return res.json({ ok: true, deleted: 0, failed: 0, skipped, protected: candidates.length, guard: "exception_safe_abort" });
+      }
+    }
+
+    for (const c of candidates) {
+      if (referenced.has(c.url)) { protectedCount++; continue; } // 아직 쓰는 중 → 보존
+      if (!bucketPaths[c.bucket]) bucketPaths[c.bucket] = new Set();
+      bucketPaths[c.bucket].add(c.path);
     }
 
     let deleted = 0;
@@ -2298,8 +2331,8 @@ app.post("/api/storage-cleanup", requireAuth, async (req, res) => {
       }
     }
 
-    console.log(`[storage-cleanup] user=${userId.slice(0, 8)} deleted=${deleted} failed=${failed} skipped=${skipped}`);
-    return res.json({ ok: true, deleted, failed, skipped });
+    console.log(`[storage-cleanup] user=${userId.slice(0, 8)} deleted=${deleted} failed=${failed} skipped=${skipped} protected=${protectedCount}`);
+    return res.json({ ok: true, deleted, failed, skipped, protected: protectedCount });
   } catch (err) {
     console.error("[storage-cleanup] error:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
