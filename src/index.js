@@ -5715,6 +5715,25 @@ app.get("/my/contents", requireAuth, async (req, res) => {
   }
 });
 
+// 전체 행 페이지네이션 조회 헬퍼.
+// PostgREST 기본 1000행 한도 때문에, 1000개 넘는 후보/문제를 가진 콘텐츠는
+// 단일 select가 잘려서 반환된다. 잘린 채로 저장하면 1000번 이후가 삭제되는
+// 데이터 유실로 이어지므로, 반드시 range()로 끝까지 모아서 반환한다.
+async function _fetchAllRows(table, applyFilters, columns = "*") {
+  const PAGE = 1000;
+  let all = [];
+  for (let from = 0; ; from += PAGE) {
+    let q = supabaseAdmin.from(table).select(columns);
+    q = applyFilters(q);
+    const { data, error } = await q.range(from, from + PAGE - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all = all.concat(data);
+    if (data.length < PAGE) break;
+  }
+  return all;
+}
+
 // 콘텐츠 상세 조회 (후보/문제 포함)
 app.get("/my/contents/:id", requireAuth, async (req, res) => {
   try {
@@ -5728,20 +5747,17 @@ app.get("/my/contents/:id", requireAuth, async (req, res) => {
 
     let children = [];
     if (content.mode === "worldcup" || content.mode === "balance") {
-      const { data } = await supabaseAdmin
-        .from("worldcup_candidates")
-        .select("*")
-        .eq("content_id", content.id)
-        .eq("is_active", true)
-        .order("sort_order", { ascending: true });
-      children = data || [];
+      children = await _fetchAllRows("worldcup_candidates", q =>
+        q.eq("content_id", content.id)
+         .eq("is_active", true)
+         .order("sort_order", { ascending: true })
+         .order("id", { ascending: true }));
     } else if (content.mode === "quiz") {
-      const { data } = await supabaseAdmin
-        .from("quiz_questions")
-        .select("*")
-        .eq("content_id", content.id)
-        .order("sort_order", { ascending: true });
-      children = (data || []).map(q => ({ ...q, choices: _normalizeChoices(q.choices || []) }));
+      const data = await _fetchAllRows("quiz_questions", q =>
+        q.eq("content_id", content.id)
+         .order("sort_order", { ascending: true })
+         .order("id", { ascending: true }));
+      children = data.map(q => ({ ...q, choices: _normalizeChoices(q.choices || []) }));
     }
 
     return res.json({ ok: true, content, children });
@@ -5787,11 +5803,9 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
     // 밸런스(balance)도 worldcup_candidates를 공유하므로 동일 경로로 처리
     if ((existing.mode === "worldcup" || existing.mode === "balance") && candidates && Array.isArray(candidates)) {
       // 1) 기존 활성 후보 ID 조회 (thumbnail_url도 — 미디어 유지 시 기존 썸네일 보존용)
-      const { data: existingCands } = await supabaseAdmin
-        .from("worldcup_candidates")
-        .select("id, thumbnail_url")
-        .eq("content_id", req.params.id)
-        .eq("is_active", true);
+      //    1000개 초과 후보도 전부 모아야 soft-delete 판정이 정확함 (range 페이지네이션)
+      const existingCands = await _fetchAllRows("worldcup_candidates", q =>
+        q.eq("content_id", req.params.id).eq("is_active", true), "id, thumbnail_url");
       const existingIds = new Set((existingCands || []).map(r => r.id));
       const existingThumb = new Map((existingCands || []).map(r => [r.id, r.thumbnail_url]));
 
@@ -5869,10 +5883,9 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
       const contentId = req.params.id;
 
       // 1) 현재 DB에 있는 question id 목록 조회
-      const { data: existingQs } = await supabaseAdmin
-        .from("quiz_questions")
-        .select("id")
-        .eq("content_id", contentId);
+      //    1000개 초과 문제도 전부 모아야 삭제 판정이 정확함 (range 페이지네이션)
+      const existingQs = await _fetchAllRows("quiz_questions", q =>
+        q.eq("content_id", contentId), "id");
       const existingQIds = new Set((existingQs || []).map(q => q.id));
 
       // 2) payload 분리: update 대상 vs insert 대상
