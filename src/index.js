@@ -12270,8 +12270,11 @@ class SoopChatBridge {
     this.rawFrameCount = 0;
     this.sessionKey = null;
     this.subscribeError = null;
+    // 모드 (ChatBridge와 동일): "vote"(월드컵 !1/!2) | "quiz"(채팅 정답)
+    this.mode = "vote";
+    this.votes = new Map();          // 월드컵 투표: senderId → { choice, nickname, timestamp }
+    this._voteLogCount = 0;
     // 퀴즈 상태 (ChatBridge와 동일 인터페이스)
-    this.mode = "quiz";              // Soop은 퀴즈 전용
     this.currentRoundKey = null;
     this.roundEndsAt = null;
     this.quizAnswers = [];
@@ -12380,7 +12383,9 @@ class SoopChatBridge {
       const nickname = fields[6] || fields[3] || "익명";
       if (message) {
         this.totalMessagesProcessed++;
-        this._processQuizMsg(userId || nickname, nickname, message, Date.now(), "viewer");
+        const id = userId || nickname;
+        if (this.mode === "quiz") this._processQuizMsg(id, nickname, message, Date.now(), "viewer");
+        else this._processVoteMsg(id, nickname, message, Date.now());
       }
     }
   }
@@ -12394,10 +12399,39 @@ class SoopChatBridge {
   }
   _stopPing() { if (this._pingTimer) { clearInterval(this._pingTimer); this._pingTimer = null; } }
 
+  // ── 월드컵 투표 (ChatBridge와 동일 인터페이스) ──
+  setRound(roundKey, endsAt) {
+    this.mode = "vote";
+    this.currentRoundKey = roundKey;
+    this.roundEndsAt = endsAt ? new Date(endsAt) : null;
+    this.votes.clear();
+    console.log(`[SOOP:${this.roomCode}] 🗳 투표 라운드: ${roundKey}`);
+  }
+  _processVoteMsg(senderId, nickname, content, messageTime) {
+    if (!this.currentRoundKey) return;
+    if (this.roundEndsAt && Date.now() > this.roundEndsAt.getTime()) return;
+    const m = String(content).trim().match(/^!([12])$/);
+    if (!m) return;
+    const id = senderId || `anon_${nickname}`;
+    this.votes.set(id, { choice: parseInt(m[1]), nickname: nickname || "익명", timestamp: messageTime, role: "viewer" });
+    this._voteLogCount++;
+  }
+  getAggregates() {
+    let left = 0, right = 0;
+    const recentVoters = [];
+    for (const [, v] of this.votes) {
+      if (v.choice === 1) left++; else right++;
+      recentVoters.push({ nickname: v.nickname, choice: v.choice, timestamp: v.timestamp });
+    }
+    recentVoters.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    return { left, right, total: left + right, recentVoters: recentVoters.slice(0, 20) };
+  }
+
   disconnect() {
     this._stopPing();
     if (this.ws) { try { this.ws.close(); } catch (e) {} this.ws = null; }
     this.quizCollecting = false;
+    this.votes?.clear?.();
     this.quizSolvers?.clear?.(); this.quizAnsweredIds?.clear?.(); this.quizScores?.clear?.(); this.quizAllParticipants?.clear?.();
     if (this.status !== "error") this.status = "stopped";
     console.log(`[SOOP:${this.roomCode}] 연결 해제`);
@@ -12406,8 +12440,7 @@ class SoopChatBridge {
 
 // 퀴즈 채점 믹스인 → SoopChatBridge에 적용 (ChatBridge는 인라인 정의라 무수정)
 const QuizScoringMixin = {
-  // 월드컵 투표 집계 stub — SOOP은 퀴즈 전용이라 항상 0 (GET /votes 500 방지)
-  getAggregates() { return { left: 0, right: 0, total: 0, recentVoters: [] }; },
+  // (getAggregates는 SoopChatBridge 클래스에 실제 구현이 있어 믹스인에서 제거 — Object.assign 덮어쓰기 방지)
   _normAns(s) { if (s == null) return ""; return String(s).toLowerCase().replace(/\s+/g, ""); },
   _normLoose(s) { return this._normAns(s).replace(/[!?.,~\-_'"’“”·・…！？。、（）()\[\]【】♥♡☆★]/g, ""); },
   setQuizRound(roundKey, answers, type, choices, endsAt) {
