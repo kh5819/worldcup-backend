@@ -12263,6 +12263,13 @@ class SoopChatBridge {
     this._pingTimer = null;
     this._chatEventLog = [];
     this._rawDumpCount = 0;
+    // ★ /chat-audience/votes 엔드포인트가 참조하는 필드들 (ChatBridge와 인터페이스 맞춤 — 500 방지)
+    this._allEventNames = new Set();
+    this._sioEventCount = 0;
+    this._nonEioFrameCount = 0;
+    this.rawFrameCount = 0;
+    this.sessionKey = null;
+    this.subscribeError = null;
     // 퀴즈 상태 (ChatBridge와 동일 인터페이스)
     this.mode = "quiz";              // Soop은 퀴즈 전용
     this.currentRoundKey = null;
