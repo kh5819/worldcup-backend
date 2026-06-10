@@ -11461,6 +11461,26 @@ class ChatBridge {
     this._nonEioFrameCount = 0;     // ★ EIO 형식이 아닌 프레임 수
     this._chatEventLog = [];        // ★ 최근 채팅 이벤트 로그 (최대 20개, 디버깅용)
     this.rawFrameCount = 0;          // ★ Engine.IO raw 프레임 수신 횟수
+
+    // ── 퀴즈 채팅 정답 모드 (월드컵 투표와 별개, mode 플래그로 분기) ──
+    this.mode = "vote";              // "vote"(월드컵 !1/!2) | "quiz"(채팅 정답 맞히기)
+    this.quizAnswers = [];           // 정규화된 정답 배열 (멀티답 사전)
+    this.quizType = null;            // short | mcq | audio_youtube | video_youtube
+    this.quizChoices = [];           // mcq 보기 텍스트(표시용)
+    this.quizRoundStartAt = null;    // 선착(ms) 계산 기준
+    this._quizSolveOrder = 0;        // 이번 라운드 정답 순번
+    this.quizSolvers = new Map();    // (이번 문제) senderId → { nickname, ms, order }
+    this.quizAnsweredIds = new Set();// (이번 문제) 답을 1회라도 친 시청자
+    this.quizScores = new Map();     // (세션 누적) senderId → { nickname, score }
+    this.quizAllParticipants = new Set(); // (세션 누적) 참여 시청자 unique
+    this.quizAttempts = new Map();   // (이번 문제) senderId → 시도 횟수
+    this.quizAttemptLimit = 0;       // 0 = 정답 맞출 때까지 무제한 / N = N회 제한(객관식=1)
+    this.quizCollecting = false;     // ★ 현재 집계 중인지 (문제 푸는 동안만 true, reveal/타이머만료 시 false)
+    this._prevSolverIds = new Set(); // 직전 문제 정답자 (콤보 판정용)
+    this.quizFastestMs = null;       // (세션) 최단 반응속도(ms)
+    this.quizFastestNick = null;     // (세션) 최단 기록 보유자
+    this.quizQuestionCount = 0;      // (세션) 출제된 문제 수
+    this._quizLogCount = 0;
   }
 
   /** ★ 다양한 경로에서 sessionKey 추출 시도 */
@@ -11997,6 +12017,12 @@ class ChatBridge {
 
     this.totalMessagesProcessed++;
 
+    // ── 퀴즈 모드: 채팅 정답 매칭 (월드컵 투표와 분리) ──
+    if (this.mode === "quiz") {
+      this._processQuizMsg(senderChannelId, nickname, content, messageTime, userRole);
+      return;
+    }
+
     // ★ 디버깅 단계: 호스트/시청자 모두 집계 (필터 없음)
     // !1 또는 !2만 (정확히)
     const match = content.trim().match(/^!([12])$/);
@@ -12066,6 +12092,126 @@ class ChatBridge {
     };
   }
 
+  // ───────────── 퀴즈 채팅 정답 모드 ─────────────
+
+  /** 정답 정규화: 채점기(soloCheckAnswer)와 동일 — 공백제거 + 소문자.
+   *  추가로 흔한 구두점 제거판도 비교에 활용하기 위해 별도 메서드로 분리. */
+  _normAns(s) {
+    if (s == null) return "";
+    return String(s).toLowerCase().replace(/\s+/g, "");
+  }
+  /** 구두점/기호까지 제거한 더 느슨한 정규화 (보조 비교용) */
+  _normLoose(s) {
+    return this._normAns(s).replace(/[!?.,~\-_'"’“”·・…！？。、（）()\[\]【】♥♡☆★]/g, "");
+  }
+
+  /** 퀴즈 라운드 세팅 — 현재 문제의 정답 사전을 브릿지에 주입.
+   *  answers: 표시 정답 + 멀티답 전부 (mcq면 보기텍스트 + 정답번호 문자열 포함). */
+  setQuizRound(roundKey, answers, type, choices, endsAt) {
+    this.mode = "quiz";
+    this.currentRoundKey = roundKey;
+    this.roundEndsAt = endsAt ? new Date(endsAt) : null;
+    const exact = new Set(), loose = new Set();
+    for (const a of (answers || [])) {
+      const n = this._normAns(a); if (n) { exact.add(n); loose.add(this._normLoose(a)); }
+    }
+    this.quizAnswers = [...exact];
+    this.quizAnswersLoose = [...loose];
+    this.quizType = type || "short";
+    this.quizChoices = Array.isArray(choices) ? choices : [];
+    this._prevSolverIds = new Set(this.quizSolvers.keys()); // 직전 문제 정답자(콤보 판정)
+    this.quizQuestionCount++;
+    this.quizSolvers = new Map();
+    this.quizAnsweredIds = new Set();
+    this.quizAttempts = new Map();
+    // 객관식은 보기 찍기(브루트포스) 방지 위해 1회만, 그 외(주관식/소리/영상)는 맞출 때까지 허용
+    this.quizAttemptLimit = (this.quizType === "mcq") ? 1 : 0;
+    this.quizRoundStartAt = Date.now();
+    this.quizCollecting = true;      // 이 순간부터 집계 시작
+    this._quizSolveOrder = 0;
+    console.log(`[CHAT_BRIDGE:${this.roomCode}] 🧩 퀴즈 라운드: key=${roundKey} type=${this.quizType} 정답수=${this.quizAnswers.length} 시도제한=${this.quizAttemptLimit || "무제한"} 마감=${endsAt || "없음"}`);
+  }
+
+  /** 집계 중단 — 정답공개(reveal) 전환/타이머 만료 시 호출. 보드 데이터는 유지(표시용). */
+  closeQuizRound() {
+    this.quizCollecting = false;
+    console.log(`[CHAT_BRIDGE:${this.roomCode}] 🛑 퀴즈 집계 종료: key=${this.currentRoundKey} 정답 ${this.quizSolvers.size}/${this.quizAnsweredIds.size}`);
+  }
+
+  /** 개별 퀴즈 채팅 정답 처리 */
+  _processQuizMsg(senderId, nickname, content, messageTime, userRole) {
+    if (!this.currentRoundKey) return;
+    if (!this.quizCollecting) return;                                   // reveal 전환/집계 종료 시 무시
+    if (this.roundEndsAt && Date.now() > this.roundEndsAt.getTime()) {  // 타이머 만료 → 자동 종료
+      this.quizCollecting = false;
+      return;
+    }
+    const id = senderId || `anon_${nickname || "익명"}`;
+
+    // 총 참여 집계 (답을 1회라도 친 사람 — 정답 여부 무관)
+    this.quizAnsweredIds.add(id);
+    this.quizAllParticipants.add(id);
+
+    // 이미 이번 라운드 정답자면 중복 처리 안 함
+    if (this.quizSolvers.has(id)) return;
+
+    // 시도 제한 — 객관식(1회): 보기 찍기 방지. 그 외: 무제한(정답 맞출 때까지)
+    const att = this.quizAttempts.get(id) || 0;
+    if (this.quizAttemptLimit > 0 && att >= this.quizAttemptLimit) return;
+    this.quizAttempts.set(id, att + 1);
+
+    const norm = this._normAns(content);
+    if (!norm) return;
+    let correct = this.quizAnswers.includes(norm);
+    if (!correct) correct = this.quizAnswersLoose.includes(this._normLoose(content));
+    if (!correct) return;
+
+    const order = ++this._quizSolveOrder;
+    const ms = this.quizRoundStartAt ? (Date.now() - this.quizRoundStartAt) : 0;
+
+    // 세션 누적 점수 (+선착 보너스: 1등 +2, 그 외 +1)
+    const sc = this.quizScores.get(id) || { nickname: nickname || "익명", score: 0, solves: 0, streak: 0, maxStreak: 0 };
+    sc.nickname = nickname || sc.nickname;
+    sc.solves += 1;
+    sc.score += (order === 1 ? 2 : 1);
+    // 콤보: 직전 문제도 맞혔으면 연속 +1, 아니면 1부터
+    sc.streak = this._prevSolverIds.has(id) ? (sc.streak || 0) + 1 : 1;
+    sc.maxStreak = Math.max(sc.maxStreak || 0, sc.streak);
+    this.quizScores.set(id, sc);
+
+    // 세션 최단 반응속도 기록 갱신
+    let newRecord = false;
+    if (this.quizFastestMs == null || ms < this.quizFastestMs) {
+      this.quizFastestMs = ms; this.quizFastestNick = nickname || "익명"; newRecord = true;
+    }
+    this.quizSolvers.set(id, { nickname: nickname || "익명", ms, order, streak: sc.streak, record: newRecord });
+
+    this._quizLogCount++;
+    if (this._quizLogCount <= 30 || this._quizLogCount % 50 === 0) {
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] ✅ 정답 #${order} ${nickname}(${id}) ${ms}ms "${content.trim().slice(0, 30)}" | round=${this.currentRoundKey}`);
+    }
+  }
+
+  /** 퀴즈 보드 조회 — 이번 문제 정답자(순서) + 세션 누적 순위 */
+  getQuizBoard() {
+    const solvers = [...this.quizSolvers.values()].sort((a, b) => a.order - b.order);
+    const leaderboard = [...this.quizScores.values()]
+      .sort((a, b) => b.score - a.score || a.nickname.localeCompare(b.nickname));
+    return {
+      mode: "quiz",
+      roundKey: this.currentRoundKey,
+      collecting: this.quizCollecting,                 // 현재 집계 중 여부
+      roundAnswered: this.quizAnsweredIds.size,        // 이번 문제에 답한 시청자 수
+      roundCorrect: this.quizSolvers.size,             // 이번 문제 정답자 수
+      totalParticipants: this.quizAllParticipants.size, // 세션 누적 참여 unique
+      questionCount: this.quizQuestionCount,           // 세션 출제 문항 수
+      solvers,                                          // 이번 문제 정답자 [{nickname,ms,order,streak,record}]
+      leaderboard,                                      // 누적 [{nickname,score,solves,maxStreak}]
+      mvp: leaderboard[0] || null,                      // 누적 1위(MVP)
+      fastest: this.quizFastestMs == null ? null : { ms: this.quizFastestMs, nickname: this.quizFastestNick }, // 최단 반응속도
+    };
+  }
+
   /** 연결 해제 */
   disconnect() {
     this._stopPing();
@@ -12077,6 +12223,11 @@ class ChatBridge {
     this.currentRoundKey = null;
     this.roundEndsAt = null;
     this.votes.clear();
+    this.mode = "vote";
+    this.quizSolvers?.clear?.();
+    this.quizAnsweredIds?.clear?.();
+    this.quizScores?.clear?.();
+    this.quizAllParticipants?.clear?.();
     if (this.status !== "error") this.status = "stopped";
     console.log(`[CHAT_BRIDGE:${this.roomCode}] 연결 해제됨`);
   }
@@ -12244,6 +12395,66 @@ app.post("/chat-audience/round", requireAuth, async (req, res) => {
     console.error("[CHAT_AUD] /round 예외:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
+});
+
+// --- POST /chat-audience/quiz-round ---
+// 호스트가 현재 문제의 정답 사전을 브릿지에 주입 (채팅 정답 매칭 시작)
+//  body: { roomCode, roundKey, answers:[...], type, choices:[...], endsAt }
+app.post("/chat-audience/quiz-round", requireAuth, async (req, res) => {
+  try {
+    const { roomCode, roundKey, answers, type, choices, endsAt } = req.body;
+    if (!roomCode || !roundKey) return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
+    if (!Array.isArray(answers) || answers.length === 0) {
+      return res.status(400).json({ ok: false, error: "NO_ANSWERS" });
+    }
+    const bridge = chatBridges.get(roomCode);
+    if (!bridge) return res.status(404).json({ ok: false, error: "NO_BRIDGE", message: "채팅 연결이 없습니다" });
+
+    bridge.setQuizRound(roundKey, answers, type, choices, endsAt || null);
+    return res.json({ ok: true, bridgeStatus: bridge.status, answerCount: bridge.quizAnswers.length });
+  } catch (err) {
+    console.error("[CHAT_AUD] /quiz-round 예외:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// --- POST /chat-audience/quiz-close ---
+// 정답공개(reveal) 전환 시 호출 — 집계만 중단, 보드 데이터는 유지(표시용)
+app.post("/chat-audience/quiz-close", requireAuth, async (req, res) => {
+  try {
+    const { roomCode } = req.body;
+    if (!roomCode) return res.status(400).json({ ok: false, error: "MISSING_ROOM_CODE" });
+    const bridge = chatBridges.get(roomCode);
+    if (!bridge) return res.status(404).json({ ok: false, error: "NO_BRIDGE" });
+    bridge.closeQuizRound();
+    return res.json({ ok: true, ...bridge.getQuizBoard() });
+  } catch (err) {
+    console.error("[CHAT_AUD] /quiz-close 예외:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// --- GET /chat-audience/quiz-board ---
+// 이번 문제 정답자(순서) + 세션 누적 순위
+let _quizBoardLogCount = 0;
+app.get("/chat-audience/quiz-board", (req, res) => {
+  const roomCode = req.query.room;
+  if (!roomCode) return res.status(400).json({ ok: false, error: "MISSING_ROOM" });
+  const bridge = chatBridges.get(roomCode);
+  if (!bridge) {
+    return res.json({ ok: true, status: "no_bridge", mode: "quiz", roundKey: null,
+      roundAnswered: 0, roundCorrect: 0, totalParticipants: 0, solvers: [], leaderboard: [] });
+  }
+  const board = bridge.getQuizBoard();
+  _quizBoardLogCount++;
+  if (_quizBoardLogCount <= 10 || _quizBoardLogCount % 50 === 0) {
+    console.log(`[CHAT_AUD] GET /quiz-board #${_quizBoardLogCount} room=${roomCode}: 정답 ${board.roundCorrect}/${board.roundAnswered} 누적참여 ${board.totalParticipants} msgs=${bridge.totalMessagesProcessed}`);
+  }
+  return res.json({
+    ok: true, ...board,
+    status: bridge.status, errorCode: bridge.errorCode || null,
+    subscribed: bridge.subscribed, wsReadyState: bridge.ws?.readyState ?? null,
+  });
 });
 
 // --- GET /chat-audience/votes ---
