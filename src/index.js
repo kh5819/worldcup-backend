@@ -12399,6 +12399,8 @@ class SoopChatBridge {
 
 // 퀴즈 채점 믹스인 → SoopChatBridge에 적용 (ChatBridge는 인라인 정의라 무수정)
 const QuizScoringMixin = {
+  // 월드컵 투표 집계 stub — SOOP은 퀴즈 전용이라 항상 0 (GET /votes 500 방지)
+  getAggregates() { return { left: 0, right: 0, total: 0, recentVoters: [] }; },
   _normAns(s) { if (s == null) return ""; return String(s).toLowerCase().replace(/\s+/g, ""); },
   _normLoose(s) { return this._normAns(s).replace(/[!?.,~\-_'"’“”·・…！？。、（）()\[\]【】♥♡☆★]/g, ""); },
   setQuizRound(roundKey, answers, type, choices, endsAt) {
