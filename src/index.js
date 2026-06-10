@@ -12233,7 +12233,224 @@ class ChatBridge {
   }
 }
 
-// roomCode → ChatBridge 인스턴스
+// ============================================================
+// SoopChatBridge — SOOP(숲) 방송 채팅 연결 (공식 API 없음 → WS 프로토콜)
+//  ⚠️ 비공식 프로토콜: 실제 방송 라이브 테스트로 필드 인덱스/핸드셰이크 검증 필요.
+//  퀴즈 채점 로직은 QuizScoringMixin으로 ChatBridge와 공유.
+// ============================================================
+const SOOP_ESC = "\x1b\t";        // 패킷 헤더 (ESC + TAB)
+const SOOP_SEP = "\f";            // 0x0c 필드 구분자
+function _soopPacket(svc, args) {
+  const body = SOOP_SEP + (args || []).join(SOOP_SEP) + SOOP_SEP;
+  // byte length (UTF-8) 기준
+  const len = Buffer.byteLength(body, "utf8");
+  return SOOP_ESC + String(svc).padStart(4, "0") + String(len).padStart(6, "0") + "00" + body;
+}
+
+class SoopChatBridge {
+  constructor(roomCode, bjId, bno) {
+    this.roomCode = roomCode;
+    this.bjId = bjId;
+    this.bno = bno || null;
+    this.ws = null;
+    this.status = "idle";
+    this.errorCode = null;
+    this.errorMsg = null;
+    this.subscribed = false;
+    this.totalMessagesProcessed = 0;
+    this.connectedAt = null;
+    this.lastEventAt = null;
+    this._pingTimer = null;
+    this._chatEventLog = [];
+    this._rawDumpCount = 0;
+    // 퀴즈 상태 (ChatBridge와 동일 인터페이스)
+    this.mode = "quiz";              // Soop은 퀴즈 전용
+    this.currentRoundKey = null;
+    this.roundEndsAt = null;
+    this.quizAnswers = [];
+    this.quizAnswersLoose = [];
+    this.quizType = null;
+    this.quizChoices = [];
+    this.quizRoundStartAt = null;
+    this._quizSolveOrder = 0;
+    this.quizSolvers = new Map();
+    this.quizAnsweredIds = new Set();
+    this.quizScores = new Map();
+    this.quizAllParticipants = new Set();
+    this.quizAttempts = new Map();
+    this.quizAttemptLimit = 0;
+    this.quizCollecting = false;
+    this._prevSolverIds = new Set();
+    this.quizFastestMs = null;
+    this.quizFastestNick = null;
+    this.quizQuestionCount = 0;
+    this._quizLogCount = 0;
+  }
+
+  async connect() {
+    this.status = "connecting";
+    // 1) 방송 정보 API → 채팅 서버 주소/번호/토큰
+    let info;
+    try {
+      info = await this._fetchLiveInfo();
+    } catch (e) {
+      this.status = "error"; this.errorCode = "SOOP_INFO_FAILED"; this.errorMsg = e.message;
+      throw e;
+    }
+    if (!info || !info.CHDOMAIN || !info.CHATNO) {
+      this.status = "error"; this.errorCode = "SOOP_NO_CHANNEL";
+      throw new Error("SOOP 채팅 서버 정보를 못 받았어요 (방송 중이 아니거나 비공개)");
+    }
+    this._info = info;
+    // 2) WS 접속
+    const port = String(Number(info.CHPT) + 1); // SOOP: CHPT+1이 WS 포트(일반적)
+    const wsUrl = `wss://${info.CHDOMAIN}:${port}/Websocket/${this.bjId}`;
+    console.log(`[SOOP:${this.roomCode}] WS 접속: ${wsUrl} CHATNO=${info.CHATNO}`);
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      try {
+        this.ws = new WebSocket(wsUrl, ["chat"], { handshakeTimeout: 10000 });
+      } catch (e) { return reject(e); }
+      this.ws.on("open", () => {
+        this.status = "connected"; this.connectedAt = new Date();
+        // LOGIN (svc 1) → JOIN (svc 2)
+        try {
+          this.ws.send(_soopPacket(1, ["", "", "16"]));
+          setTimeout(() => {
+            try { this.ws.send(_soopPacket(2, [info.CHATNO, "", "", "", "16"])); this.subscribed = true; } catch (e) {}
+          }, 400);
+          this._startPing();
+        } catch (e) { console.warn(`[SOOP:${this.roomCode}] handshake 송신 오류:`, e.message); }
+        if (!settled) { settled = true; resolve(); }
+      });
+      this.ws.on("message", (buf) => this._onFrame(buf));
+      this.ws.on("error", (e) => {
+        console.warn(`[SOOP:${this.roomCode}] WS error:`, e.message);
+        this.errorCode = "SOOP_WS_ERROR"; this.errorMsg = e.message;
+        if (!settled) { settled = true; reject(e); }
+      });
+      this.ws.on("close", () => { this.status = "stopped"; this._stopPing(); });
+    });
+    return { ok: true };
+  }
+
+  async _fetchLiveInfo() {
+    // SOOP 방송 정보 API (player_live_api). bno 있으면 함께 전달.
+    const url = "https://live.sooplive.co.kr/afreeca/player_live_api.php";
+    const form = new URLSearchParams();
+    form.set("bid", this.bjId);
+    form.set("type", "live");
+    form.set("player_type", "html5");
+    if (this.bno) form.set("bno", this.bno);
+    const resp = await fetch(url + `?bjid=${encodeURIComponent(this.bjId)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "Referer": `https://play.sooplive.com/${this.bjId}` },
+      body: form.toString(),
+    });
+    const txt = await resp.text();
+    let json; try { json = JSON.parse(txt); } catch { throw new Error("SOOP API 응답 파싱 실패: " + txt.slice(0, 120)); }
+    const ch = json.CHANNEL || json.channel || {};
+    console.log(`[SOOP:${this.roomCode}] live info: RESULT=${ch.RESULT} CHDOMAIN=${ch.CHDOMAIN} CHPT=${ch.CHPT} CHATNO=${ch.CHATNO}`);
+    return ch;
+  }
+
+  _onFrame(buf) {
+    this.lastEventAt = new Date();
+    this.totalMessagesProcessed = (this.totalMessagesProcessed || 0);
+    let str;
+    try { str = Buffer.isBuffer(buf) ? buf.toString("utf8") : String(buf); } catch { return; }
+    if (this._rawDumpCount < 20) { this._rawDumpCount++; console.log(`[SOOP:${this.roomCode}] frame#${this._rawDumpCount}: ${str.slice(0, 200).replace(/\f/g, "|")}`); }
+    // 패킷 헤더 확인
+    if (!str.startsWith(SOOP_ESC)) return;
+    const svc = str.slice(2, 6);
+    const body = str.slice(14); // ESC(2)+svc(4)+len(6)+"00"(2) = 14
+    const fields = body.split(SOOP_SEP);
+    // CHAT 메시지: svc "0005" (일반 채팅). ⚠️ 필드 인덱스는 실측 검증 필요.
+    if (svc === "0005") {
+      // 일반적으로: fields[1]=메시지, fields[6]=닉네임, fields[2]=userId (버전마다 다름)
+      const message = fields[1] || "";
+      const userId = fields[2] || fields[5] || "";
+      const nickname = fields[6] || fields[3] || "익명";
+      if (message) {
+        this.totalMessagesProcessed++;
+        this._processQuizMsg(userId || nickname, nickname, message, Date.now(), "viewer");
+      }
+    }
+  }
+
+  _startPing() {
+    this._stopPing();
+    // SOOP keepalive: svc 0 빈 패킷 (약 1분)
+    this._pingTimer = setInterval(() => {
+      try { this.ws?.readyState === 1 && this.ws.send(_soopPacket(0, [])); } catch (e) {}
+    }, 50000);
+  }
+  _stopPing() { if (this._pingTimer) { clearInterval(this._pingTimer); this._pingTimer = null; } }
+
+  disconnect() {
+    this._stopPing();
+    if (this.ws) { try { this.ws.close(); } catch (e) {} this.ws = null; }
+    this.quizCollecting = false;
+    this.quizSolvers?.clear?.(); this.quizAnsweredIds?.clear?.(); this.quizScores?.clear?.(); this.quizAllParticipants?.clear?.();
+    if (this.status !== "error") this.status = "stopped";
+    console.log(`[SOOP:${this.roomCode}] 연결 해제`);
+  }
+}
+
+// 퀴즈 채점 믹스인 → SoopChatBridge에 적용 (ChatBridge는 인라인 정의라 무수정)
+const QuizScoringMixin = {
+  _normAns(s) { if (s == null) return ""; return String(s).toLowerCase().replace(/\s+/g, ""); },
+  _normLoose(s) { return this._normAns(s).replace(/[!?.,~\-_'"’“”·・…！？。、（）()\[\]【】♥♡☆★]/g, ""); },
+  setQuizRound(roundKey, answers, type, choices, endsAt) {
+    this.mode = "quiz"; this.currentRoundKey = roundKey; this.roundEndsAt = endsAt ? new Date(endsAt) : null;
+    const exact = new Set(), loose = new Set();
+    for (const a of (answers || [])) { const n = this._normAns(a); if (n) { exact.add(n); loose.add(this._normLoose(a)); } }
+    this.quizAnswers = [...exact]; this.quizAnswersLoose = [...loose];
+    this.quizType = type || "short"; this.quizChoices = Array.isArray(choices) ? choices : [];
+    this._prevSolverIds = new Set(this.quizSolvers.keys()); this.quizQuestionCount++;
+    this.quizSolvers = new Map(); this.quizAnsweredIds = new Set(); this.quizAttempts = new Map();
+    this.quizAttemptLimit = (this.quizType === "mcq") ? 1 : 0;
+    this.quizRoundStartAt = Date.now(); this.quizCollecting = true; this._quizSolveOrder = 0;
+  },
+  closeQuizRound() { this.quizCollecting = false; },
+  _processQuizMsg(senderId, nickname, content, messageTime, userRole) {
+    if (!this.currentRoundKey || !this.quizCollecting) return;
+    if (this.roundEndsAt && Date.now() > this.roundEndsAt.getTime()) { this.quizCollecting = false; return; }
+    const id = senderId || `anon_${nickname || "익명"}`;
+    this.quizAnsweredIds.add(id); this.quizAllParticipants.add(id);
+    if (this.quizSolvers.has(id)) return;
+    const att = this.quizAttempts.get(id) || 0;
+    if (this.quizAttemptLimit > 0 && att >= this.quizAttemptLimit) return;
+    this.quizAttempts.set(id, att + 1);
+    const norm = this._normAns(content); if (!norm) return;
+    let correct = this.quizAnswers.includes(norm);
+    if (!correct) correct = this.quizAnswersLoose.includes(this._normLoose(content));
+    if (!correct) return;
+    const order = ++this._quizSolveOrder;
+    const ms = this.quizRoundStartAt ? (Date.now() - this.quizRoundStartAt) : 0;
+    const sc = this.quizScores.get(id) || { nickname: nickname || "익명", score: 0, solves: 0, streak: 0, maxStreak: 0 };
+    sc.nickname = nickname || sc.nickname; sc.solves += 1; sc.score += (order === 1 ? 2 : 1);
+    sc.streak = this._prevSolverIds.has(id) ? (sc.streak || 0) + 1 : 1; sc.maxStreak = Math.max(sc.maxStreak || 0, sc.streak);
+    this.quizScores.set(id, sc);
+    let newRecord = false;
+    if (this.quizFastestMs == null || ms < this.quizFastestMs) { this.quizFastestMs = ms; this.quizFastestNick = nickname || "익명"; newRecord = true; }
+    this.quizSolvers.set(id, { nickname: nickname || "익명", ms, order, streak: sc.streak, record: newRecord });
+  },
+  getQuizBoard() {
+    const solvers = [...this.quizSolvers.values()].sort((a, b) => a.order - b.order);
+    const leaderboard = [...this.quizScores.values()].sort((a, b) => b.score - a.score || a.nickname.localeCompare(b.nickname));
+    return {
+      mode: "quiz", roundKey: this.currentRoundKey, collecting: this.quizCollecting,
+      roundAnswered: this.quizAnsweredIds.size, roundCorrect: this.quizSolvers.size,
+      totalParticipants: this.quizAllParticipants.size, questionCount: this.quizQuestionCount,
+      solvers, leaderboard, mvp: leaderboard[0] || null,
+      fastest: this.quizFastestMs == null ? null : { ms: this.quizFastestMs, nickname: this.quizFastestNick },
+    };
+  },
+};
+Object.assign(SoopChatBridge.prototype, QuizScoringMixin);
+
+// roomCode → ChatBridge / SoopChatBridge 인스턴스
 const chatBridges = new Map();
 
 // --- POST /chat-audience/start ---
@@ -12393,6 +12610,31 @@ app.post("/chat-audience/round", requireAuth, async (req, res) => {
 
   } catch (err) {
     console.error("[CHAT_AUD] /round 예외:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// --- POST /chat-audience/soop-start ---
+// SOOP 방송 채팅 연결 (로그인은 필요하나 SOOP 계정 연동 불필요 — 공개 채팅 읽기)
+//  body: { roomCode, bjId, bno, forceNew }
+app.post("/chat-audience/soop-start", requireAuth, async (req, res) => {
+  try {
+    const { roomCode, bjId, bno, forceNew } = req.body;
+    if (!roomCode || !bjId) return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
+    const existing = chatBridges.get(roomCode);
+    if (existing && (forceNew || existing.bjId !== bjId)) { try { existing.disconnect(); } catch {} chatBridges.delete(roomCode); }
+    else if (existing && existing.status === "connected") return res.json({ ok: true, status: "already_connected" });
+
+    const bridge = new SoopChatBridge(roomCode, bjId, bno || null);
+    chatBridges.set(roomCode, bridge);
+    try { await bridge.connect(); }
+    catch (err) {
+      console.error(`[CHAT_AUD] /soop-start 연결 실패: ${err.message}`);
+      return res.status(502).json({ ok: false, error: "SOOP_CONNECT_FAILED", errorCode: bridge.errorCode || "UNKNOWN", message: err.message });
+    }
+    return res.json({ ok: true, status: bridge.status, subscribed: bridge.subscribed });
+  } catch (err) {
+    console.error("[CHAT_AUD] /soop-start 예외:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
 });
