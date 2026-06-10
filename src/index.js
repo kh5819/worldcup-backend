@@ -12622,8 +12622,17 @@ app.post("/chat-audience/soop-start", requireAuth, async (req, res) => {
     const { roomCode, bjId, bno, forceNew } = req.body;
     if (!roomCode || !bjId) return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
     const existing = chatBridges.get(roomCode);
-    if (existing && (forceNew || existing.bjId !== bjId)) { try { existing.disconnect(); } catch {} chatBridges.delete(roomCode); }
-    else if (existing && existing.status === "connected") return res.json({ ok: true, status: "already_connected" });
+    if (!forceNew && existing && existing.status === "connected" && existing.bjId === bjId) {
+      return res.json({ ok: true, status: "already_connected" });
+    }
+    // ★ 옛 브릿지 정리 — 같은 roomCode 또는 같은 bjId의 모든 SOOP 브릿지 disconnect
+    //   (퀴즈 나갔다 새로 시작 시 누수/충돌 방지)
+    for (const [key, b] of chatBridges) {
+      if (key === roomCode || (b instanceof SoopChatBridge && b.bjId === bjId)) {
+        try { b.disconnect(); } catch {}
+        chatBridges.delete(key);
+      }
+    }
 
     const bridge = new SoopChatBridge(roomCode, bjId, bno || null);
     chatBridges.set(roomCode, bridge);
