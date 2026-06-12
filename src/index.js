@@ -7641,6 +7641,7 @@ function buildSyncPayload(room, userId) {
     phase: room.phase || "lobby",
     roundIndex: room.roundIndex || 0,
     totalMatches: room.totalMatches || 0,
+    ...(room.isBalance ? {} : wcRoundInfo(room)),
     currentMatch: room.currentMatch || null,
     content: room.content || null,
     timer: { enabled: !!room.timerEnabled, sec: room.timerSec || 0, remainingSec },
@@ -7751,6 +7752,7 @@ function publicRoom(room) {
       : (room.phase || "lobby"),
     roundIndex: room.roundIndex || 0,
     totalMatches: room.totalMatches || 0,
+    ...((room.mode === "worldcup" && !room.isBalance) ? wcRoundInfo(room) : {}),
     currentMatch: room.currentMatch || null,
     content: room.content || null,
     players: playersList,
@@ -7917,6 +7919,8 @@ function initBracket(room, candidates) {
   if (room.bracket.length % 2 !== 0) {
     room.nextBracket.push(room.bracket.pop());
   }
+  // ✅ 현재 라운드 크기(이번 라운드에 참가한 후보 수) — 강 라벨 표시용 (bye 포함)
+  room.roundSize = room.bracket.length + room.nextBracket.length;
 }
 
 // 밸런스: 후보(sort_order 순)를 2개씩 고정 쌍으로 묶고, 쌍 순서를 셔플 + 문제 수 제한.
@@ -8079,12 +8083,25 @@ function advanceBracket(room, winnerCandidate) {
     if (room.bracket.length > 1 && room.bracket.length % 2 !== 0) {
       room.nextBracket.push(room.bracket.pop());
     }
+    // ✅ 새 라운드 진입 → 라운드 크기 갱신 (강 라벨 표시용)
+    room.roundSize = room.bracket.length + room.nextBracket.length;
   }
   const remaining = room.bracket.length + room.nextBracket.length;
   if (remaining <= 1) {
     return { finished: true, champion: room.bracket[0] || winnerCandidate };
   }
   return { finished: false };
+}
+
+// ✅ 월드컵 라운드 표시 정보 — 누적 매치수가 아니라 "현재 강 + 라운드 내 진행도"
+//    예: 8강 → "8강 1/4 ~ 4/4", 4강 → "4강 1/2 ~ 2/2", 결승 → "결승"
+function wcRoundInfo(room) {
+  const bsize = (room.bracket && room.bracket.length) || 0;
+  const size = room.roundSize || bsize;
+  if (size <= 0) return {}; // 브래킷 미초기화(로비 등) → 라운드 정보 없음 (잘못된 "결승" 방지)
+  const roundName = size <= 2 ? "결승" : `${size}강`;
+  const roundTotalMatches = Math.max(1, Math.floor(bsize / 2));
+  return { roundName, matchInRound: (room.matchIndex || 0) + 1, roundTotalMatches };
 }
 
 function startRoundTimer(room) {
@@ -8272,6 +8289,7 @@ function doReveal(room) {
       roomId: room.id,
       roundIndex: room.roundIndex,
       totalMatches: room.totalMatches,
+      ...wcRoundInfo(room),
       match: room.currentMatch,
       timer: timerInfo
     });
@@ -10053,6 +10071,7 @@ io.on("connection", (socket) => {
         roomId: room.id,
         roundIndex: room.roundIndex,
         totalMatches: room.totalMatches,
+        ...wcRoundInfo(room),
         match: room.currentMatch,
         timer: timerInfo
       });
@@ -10147,6 +10166,7 @@ io.on("connection", (socket) => {
       roomId: room.id,
       roundIndex: room.roundIndex,
       totalMatches: room.totalMatches,
+      ...wcRoundInfo(room),
       match: room.currentMatch,
       timer: timerInfo
     });
