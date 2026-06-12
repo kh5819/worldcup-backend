@@ -12104,6 +12104,14 @@ class ChatBridge {
   _normLoose(s) {
     return this._normAns(s).replace(/[!?.,~\-_'"’“”·・…！？。、（）()\[\]【】♥♡☆★]/g, "");
   }
+  /** 채팅 정답 접두사 검사: "!정답"처럼 선행 "!"(반/전각)가 있어야 집계 대상.
+   *  접두사 제거한 본문을 반환, 접두사가 없거나 본문이 비면 null(=집계 제외). */
+  _stripQuizPrefix(s) {
+    const t = String(s == null ? "" : s).trim();
+    if (!/^[!！]/.test(t)) return null;        // "!" 없는 일반 채팅(이모티콘/잡담) → 참여·오답 집계 제외
+    const body = t.replace(/^[!！]+\s*/, "").trim();
+    return body || null;                        // "!"만 친 경우도 제외
+  }
 
   /** 퀴즈 라운드 세팅 — 현재 문제의 정답 사전을 브릿지에 주입.
    *  answers: 표시 정답 + 멀티답 전부 (mcq면 보기텍스트 + 정답번호 문자열 포함). */
@@ -12146,9 +12154,16 @@ class ChatBridge {
       this.quizCollecting = false;
       return;
     }
+
+    // ★ "!" 접두사 게이트: "!정답"만 집계. 일반 잡담/이모티콘 도배는 참여·오답에서 완전 제외.
+    //   (대기업 방송 노이즈 차단 — 하꼬 방송이면 사실상 영향 없음)
+    const ans = this._stripQuizPrefix(content);
+    if (ans == null) return;
+    content = ans;
+
     const id = senderId || `anon_${nickname || "익명"}`;
 
-    // 총 참여 집계 (답을 1회라도 친 사람 — 정답 여부 무관)
+    // 총 참여 집계 ("!"로 답을 1회라도 친 사람 — 정답 여부 무관)
     this.quizAnsweredIds.add(id);
     this.quizAllParticipants.add(id);
 
@@ -12443,6 +12458,13 @@ const QuizScoringMixin = {
   // (getAggregates는 SoopChatBridge 클래스에 실제 구현이 있어 믹스인에서 제거 — Object.assign 덮어쓰기 방지)
   _normAns(s) { if (s == null) return ""; return String(s).toLowerCase().replace(/\s+/g, ""); },
   _normLoose(s) { return this._normAns(s).replace(/[!?.,~\-_'"’“”·・…！？。、（）()\[\]【】♥♡☆★]/g, ""); },
+  // 채팅 정답 접두사 검사: "!정답"만 집계 대상. 본문 반환, 없으면 null.
+  _stripQuizPrefix(s) {
+    const t = String(s == null ? "" : s).trim();
+    if (!/^[!！]/.test(t)) return null;
+    const body = t.replace(/^[!！]+\s*/, "").trim();
+    return body || null;
+  },
   setQuizRound(roundKey, answers, type, choices, endsAt) {
     this.mode = "quiz"; this.currentRoundKey = roundKey; this.roundEndsAt = endsAt ? new Date(endsAt) : null;
     const exact = new Set(), loose = new Set();
@@ -12458,6 +12480,10 @@ const QuizScoringMixin = {
   _processQuizMsg(senderId, nickname, content, messageTime, userRole) {
     if (!this.currentRoundKey || !this.quizCollecting) return;
     if (this.roundEndsAt && Date.now() > this.roundEndsAt.getTime()) { this.quizCollecting = false; return; }
+    // ★ "!" 접두사 게이트: "!정답"만 집계. 일반 잡담/이모티콘 도배는 참여·오답에서 제외.
+    const ans = this._stripQuizPrefix(content);
+    if (ans == null) return;
+    content = ans;
     const id = senderId || `anon_${nickname || "익명"}`;
     this.quizAnsweredIds.add(id); this.quizAllParticipants.add(id);
     if (this.quizSolvers.has(id)) return;
