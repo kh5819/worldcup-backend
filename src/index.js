@@ -2085,10 +2085,25 @@ app.get("/api/youtube-playlist", requireAuth, async (req, res) => {
     return res.status(400).json({ ok: false, error: "INVALID_PLAYLIST" });
   }
 
+  // [2026-06-13] 범위 가져오기: start~end (재생목록 위치 1-based). 미지정 시 1~1000(기존 동작).
+  //  - YouTube API는 offset 직접 지정 불가(커서식) → 앞 페이지를 훑어 건너뛰고 범위만 수집.
+  //  - 위치(pos)는 비공개/삭제 포함 raw 기준(사용자가 보는 재생목록 번호와 일치).
+  //  - 1회 최대 1500개 위치 + 안전 상한 3000위치(60페이지). 더 뒤는 start를 올려 나눠 받기.
+  const MAX_POS = 3000;
+  const MAX_SPAN = 1500;
+  let startPos = parseInt(req.query.start, 10);
+  let endPos = parseInt(req.query.end, 10);
+  if (!Number.isFinite(startPos) || startPos < 1) startPos = 1;
+  if (!Number.isFinite(endPos) || endPos < startPos) endPos = startPos + 999; // 기본 1000개
+  endPos = Math.min(endPos, startPos + MAX_SPAN - 1, MAX_POS);
+  const maxLoops = Math.ceil(endPos / 50) + 2;
+
   try {
     const items = [];
     let pageToken = "";
     let loops = 0;
+    let pos = 0;           // raw 위치 카운터 (비공개/삭제 포함)
+    let reachedEnd = false;
     do {
       loops++;
       const u = new URL("https://www.googleapis.com/youtube/v3/playlistItems");
@@ -2105,6 +2120,9 @@ app.get("/api/youtube-playlist", requireAuth, async (req, res) => {
         return res.status(502).json({ ok: false, error: reason });
       }
       for (const it of (j.items || [])) {
+        pos++;
+        if (pos < startPos) continue;     // 범위 앞: 건너뜀
+        if (pos > endPos) { reachedEnd = true; break; } // 범위 끝 도달
         const vid = it?.snippet?.resourceId?.videoId;
         const title = it?.snippet?.title || "";
         // 비공개/삭제 영상은 제외 (제목이 고정 문자열로 옴)
@@ -2112,10 +2130,11 @@ app.get("/api/youtube-playlist", requireAuth, async (req, res) => {
           items.push({ id: vid, title: title.slice(0, 80) });
         }
       }
+      if (reachedEnd) break;
       pageToken = j.nextPageToken || "";
-    } while (pageToken && loops < 20); // 최대 1000개(20페이지)까지
+    } while (pageToken && loops < maxLoops);
 
-    return res.json({ ok: true, count: items.length, items });
+    return res.json({ ok: true, count: items.length, items, start: startPos, end: endPos, scanned: pos });
   } catch (err) {
     console.error("[youtube-playlist] error:", err.message);
     return res.status(502).json({ ok: false, error: "FETCH_FAILED" });
