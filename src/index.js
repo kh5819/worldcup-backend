@@ -12005,17 +12005,7 @@ class ChatBridge {
 
   /** ★ 개별 채팅 메시지 처리 — 발신자 타입/구조 전체 로깅 */
   _processSingleChatMsg(evt) {
-    // ★ sender 정보 추출 (가능한 모든 경로)
-    const senderChannelId = evt.senderChannelId || evt.channelId || evt.userId || evt.uid || null;
-    const nickname = evt.profile?.nickname || evt.nickname || evt.nick || evt.name || evt.sender || "익명";
-    const messageTime = evt.messageTime || evt.createdTime || evt.timestamp || evt.time || Date.now();
-
-    // ★ 발신자 타입/역할 (호스트 vs 시청자 vs 매니저 등)
-    const userRole = evt.profile?.userRoleCode || evt.userRoleCode || evt.role || evt.type || "unknown";
-    const badge = evt.profile?.badge || evt.badge || null;
-    const isHost = /streamer|host|owner|broadcaster/i.test(String(userRole));
-
-    // ★ 메시지 텍스트 추출: message > content(string) > content.message > msg > text > body
+    // ── [최적화 2026-06-15] 메시지 텍스트 먼저 추출 (가장 싼 작업) ──
     let content = null;
     if (typeof evt.message === "string") content = evt.message;
     else if (typeof evt.msg === "string") content = evt.msg;
@@ -12026,21 +12016,27 @@ class ChatBridge {
     else if (typeof evt.text === "string") content = evt.text;
     else if (typeof evt.body === "string") content = evt.body;
 
-    // ★ 전체 필드 디버깅 (처음 30개 메시지)
-    const logEntry = {
-      sender: senderChannelId,
-      nick: nickname,
-      role: userRole,
-      isHost,
-      content,
-      evtKeys: Object.keys(evt),
-    };
-
-    if (this._chatEventLog.length < 20) {
-      this._chatEventLog.push(logEntry);
+    // ── [최적화] "!" 조기 게이트 ──
+    //   vote(!1/!2)·quiz(!정답)·balance(!1/!2) 모두 선행 "!"(반/전각)가 필수.
+    //   "!" 없는 일반 채팅/이모티콘 도배는 닉네임·역할·뱃지 등 무거운 추출과 로깅을 건너뛰고 즉시 버림
+    //   → 대기업 스트리머(초당 수백~수천 메시지)에서도 CPU/이벤트루프 부담 최소화.
+    //   연결 직후 디버그 윈도(처음 30개)는 전체 로깅 위해 통과시킴.
+    const _inDebugWindow = this.totalMessagesProcessed < 30;
+    if (!_inDebugWindow && (content == null || !/^\s*[!！]/.test(content))) {
+      this.totalMessagesProcessed++;
+      return;
     }
 
-    // ★ 처음 30개 메시지 전부 상세 로그
+    // ── 여기부터는 "!" 메시지(또는 디버그 윈도)만 — 풀 추출 ──
+    const senderChannelId = evt.senderChannelId || evt.channelId || evt.userId || evt.uid || null;
+    const nickname = evt.profile?.nickname || evt.nickname || evt.nick || evt.name || evt.sender || "익명";
+    const messageTime = evt.messageTime || evt.createdTime || evt.timestamp || evt.time || Date.now();
+    const userRole = evt.profile?.userRoleCode || evt.userRoleCode || evt.role || evt.type || "unknown";
+    const isHost = /streamer|host|owner|broadcaster/i.test(String(userRole));
+
+    if (this._chatEventLog.length < 20) {
+      this._chatEventLog.push({ sender: senderChannelId, nick: nickname, role: userRole, isHost, content, evtKeys: Object.keys(evt) });
+    }
     if (this._rawDumpCount <= 30 || this.totalMessagesProcessed < 20) {
       console.log(`[CHAT_BRIDGE:${this.roomCode}] 📩 MSG: role="${userRole}" nick="${nickname}" sender=${senderChannelId} content="${content}" isHost=${isHost} keys=[${Object.keys(evt).join(",")}]`);
     }
@@ -12049,7 +12045,6 @@ class ChatBridge {
       if (this._rawDumpCount <= 30) {
         console.warn(`[CHAT_BRIDGE:${this.roomCode}] ⚠ content 없음: sender=${senderChannelId}, evtKeys=[${Object.keys(evt).join(",")}], raw=${JSON.stringify(evt).slice(0, 500)}`);
       }
-      // ★ content 없어도 일단 카운트 (디버깅)
       this.totalMessagesProcessed++;
       return;
     }
@@ -12433,14 +12428,17 @@ class SoopChatBridge {
     if (svc === "0005") {
       // 일반적으로: fields[1]=메시지, fields[6]=닉네임, fields[2]=userId (버전마다 다름)
       const message = fields[1] || "";
+      if (!message) return;
+      this.totalMessagesProcessed++;
+      // [최적화 2026-06-15] "!" 조기 게이트 — vote(!1/!2)·quiz(!정답) 모두 선행 "!" 필수.
+      //   "!" 없는 일반 채팅은 닉/유저ID 추출·핸들러 호출 없이 즉시 버림 (대기업 방송 CPU 부담↓).
+      //   기준은 하류(_processVoteMsg/_stripQuizPrefix: trim 후 ^!)과 동일 → "!" 메시지는 안 빠짐.
+      if (!/^\s*[!！]/.test(message)) return;
       const userId = fields[2] || fields[5] || "";
       const nickname = fields[6] || fields[3] || "익명";
-      if (message) {
-        this.totalMessagesProcessed++;
-        const id = userId || nickname;
-        if (this.mode === "quiz") this._processQuizMsg(id, nickname, message, Date.now(), "viewer");
-        else this._processVoteMsg(id, nickname, message, Date.now());
-      }
+      const id = userId || nickname;
+      if (this.mode === "quiz") this._processQuizMsg(id, nickname, message, Date.now(), "viewer");
+      else this._processVoteMsg(id, nickname, message, Date.now());
     }
   }
 
