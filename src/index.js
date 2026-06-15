@@ -3762,13 +3762,26 @@ app.get("/admin/contents", requireAdmin, async (req, res) => {
       query = query.gt("report_count", 0);
     }
 
-    // 검색어 (제목 또는 태그)
+    // 검색어 (제목 / 설명 / 태그 / 제작자 닉네임)
     if (q && q.trim()) {
       const searchTerm = q.trim();
       // 태그는 cs(완전일치·대소문자 구분)라 원문/소문자/대문자 변형을 모두 OR로 검색
       const tagVariants = [...new Set([searchTerm, searchTerm.toLowerCase(), searchTerm.toUpperCase()])];
       const tagConds = tagVariants.map(v => `tags.cs.{${v}}`).join(",");
-      query = query.or(`title.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%,${tagConds}`);
+
+      // 제작자(닉네임) 매칭 → owner_id 목록으로 변환해 OR에 추가
+      let creatorCond = "";
+      const { data: matchProfiles } = await supabaseAdmin
+        .from("profiles")
+        .select("id")
+        .ilike("nickname", `%${searchTerm}%`)
+        .limit(100);
+      if (matchProfiles && matchProfiles.length > 0) {
+        const ids = matchProfiles.map(p => p.id).join(",");
+        creatorCond = `,owner_id.in.(${ids})`;
+      }
+
+      query = query.or(`title.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%,${tagConds}${creatorCond}`);
     }
 
     // 정렬
