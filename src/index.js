@@ -14165,6 +14165,20 @@ app.get("/blockblast/leaderboard/me", async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
 });
 
+// ── hot 랭킹: 최근 플레이 집계(content_recent_plays) 1시간마다 갱신 ──
+//   로비 기본 정렬 hot_score = 최근7일×3 + 최근30일×1 + 총플레이×0.05 가 이 집계표를 참조.
+//   1시간 주기라 브라우징 중 순위가 흔들리지 않음(페이지네이션 안정).
+async function refreshRecentPlays() {
+  try {
+    const { error } = await supabaseAdmin.rpc("refresh_content_recent_plays");
+    if (error) console.error("[hot] refresh_content_recent_plays error:", error.message);
+  } catch (e) {
+    console.error("[hot] refreshRecentPlays exception:", e);
+  }
+}
+refreshRecentPlays();                              // 부팅 시 1회
+setInterval(refreshRecentPlays, 60 * 60 * 1000);   // 이후 1시간마다
+
 server.listen(process.env.PORT || 3001, () => {
   console.log(`Backend listening on http://localhost:${process.env.PORT || 3001}`);
 });
