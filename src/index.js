@@ -3746,6 +3746,7 @@ app.get("/admin/contents", requireAdmin, async (req, res) => {
       sort,        // newest | popular | reports
       hidden,      // true | false | all
       reported,    // true (report_count > 0만)
+      visibility,  // public | private | all
       page = 1,
       limit = 20,
     } = req.query;
@@ -3774,6 +3775,11 @@ app.get("/admin/contents", requireAdmin, async (req, res) => {
     // 신고된 콘텐츠만
     if (reported === "true") {
       query = query.gt("report_count", 0);
+    }
+
+    // 공개/비공개 필터
+    if (visibility === "public" || visibility === "private") {
+      query = query.eq("visibility", visibility);
     }
 
     // 검색어 (제목 / 설명 / 태그 / 제작자 닉네임)
