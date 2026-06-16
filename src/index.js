@@ -2866,6 +2866,20 @@ async function requireAuth(req, res, next) {
   next();
 }
 
+// 로그인 선택적 — 토큰 있고 유효하면 req.user 채우고, 없거나 무효여도 통과 (비로그인 허용 엔드포인트용)
+async function optionalAuth(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization || "";
+    let token = null;
+    if (authHeader.startsWith("Bearer ")) token = authHeader.slice(7).trim();
+    if (token && token !== "null" && token !== "undefined") {
+      const user = await verifyJWT(token);
+      if (user) req.user = user;
+    }
+  } catch (_) { /* 토큰 검증 실패해도 비로그인으로 통과 */ }
+  next();
+}
+
 async function requireAdmin(req, res, next) {
   const authHeader = req.headers.authorization || "";
 
@@ -12657,7 +12671,7 @@ async function _logStreamerChat({ platform, channelId, nickname, contentId, room
 }
 
 // --- POST /chat-audience/start ---
-app.post("/chat-audience/start", requireAuth, async (req, res) => {
+app.post("/chat-audience/start", optionalAuth, async (req, res) => {
   try {
     const { roomCode } = req.body;
     console.log(`[CHAT_AUD] POST /start roomCode=${roomCode} userId=${req.user?.id}`);
@@ -12805,7 +12819,7 @@ app.post("/chat-audience/start", requireAuth, async (req, res) => {
 });
 
 // --- POST /chat-audience/round ---
-app.post("/chat-audience/round", requireAuth, async (req, res) => {
+app.post("/chat-audience/round", optionalAuth, async (req, res) => {
   try {
     const { roomCode, roundKey, endsAt } = req.body;
     console.log(`[CHAT_AUD] POST /round roomCode=${roomCode} roundKey=${roundKey} endsAt=${endsAt}`);
@@ -12833,7 +12847,7 @@ app.post("/chat-audience/round", requireAuth, async (req, res) => {
 // --- POST /chat-audience/soop-start ---
 // SOOP 방송 채팅 연결 (로그인은 필요하나 SOOP 계정 연동 불필요 — 공개 채팅 읽기)
 //  body: { roomCode, bjId, bno, forceNew }
-app.post("/chat-audience/soop-start", requireAuth, async (req, res) => {
+app.post("/chat-audience/soop-start", optionalAuth, async (req, res) => {
   try {
     const { roomCode, bjId, bno, forceNew } = req.body;
     if (!roomCode || !bjId) return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
@@ -12879,7 +12893,7 @@ app.post("/chat-audience/soop-start", requireAuth, async (req, res) => {
 // --- POST /chat-audience/quiz-round ---
 // 호스트가 현재 문제의 정답 사전을 브릿지에 주입 (채팅 정답 매칭 시작)
 //  body: { roomCode, roundKey, answers:[...], type, choices:[...], endsAt }
-app.post("/chat-audience/quiz-round", requireAuth, async (req, res) => {
+app.post("/chat-audience/quiz-round", optionalAuth, async (req, res) => {
   try {
     const { roomCode, roundKey, answers, type, choices, endsAt } = req.body;
     if (!roomCode || !roundKey) return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
@@ -12899,7 +12913,7 @@ app.post("/chat-audience/quiz-round", requireAuth, async (req, res) => {
 
 // --- POST /chat-audience/quiz-close ---
 // 정답공개(reveal) 전환 시 호출 — 집계만 중단, 보드 데이터는 유지(표시용)
-app.post("/chat-audience/quiz-close", requireAuth, async (req, res) => {
+app.post("/chat-audience/quiz-close", optionalAuth, async (req, res) => {
   try {
     const { roomCode } = req.body;
     if (!roomCode) return res.status(400).json({ ok: false, error: "MISSING_ROOM_CODE" });
@@ -12982,7 +12996,7 @@ app.get("/chat-audience/votes", (req, res) => {
 });
 
 // --- POST /chat-audience/stop ---
-app.post("/chat-audience/stop", requireAuth, async (req, res) => {
+app.post("/chat-audience/stop", optionalAuth, async (req, res) => {
   try {
     const { roomCode } = req.body;
     console.log(`[CHAT_AUD] POST /stop roomCode=${roomCode}`);
