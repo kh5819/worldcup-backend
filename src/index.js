@@ -4339,6 +4339,44 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
   }
 });
 
+// 스트리머 채팅연동 사용 로그 조회 (운영자 전용)
+//  query: platform(chzzk|soop|all), q(닉/채널 검색), page, limit
+app.get("/admin/streamer-log", requireAdmin, async (req, res) => {
+  try {
+    const { q, platform, page = 1, limit = 50 } = req.query;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+    const offset = (pageNum - 1) * limitNum;
+
+    let query = supabaseAdmin
+      .from("streamer_chat_log")
+      .select("*", { count: "exact" });
+
+    if (platform && platform !== "all") query = query.eq("platform", platform);
+    if (q && q.trim()) {
+      // ★ or() 표현식을 깨뜨리는 쉼표/괄호 제거
+      const term = q.trim().replace(/[,()]/g, " ").trim();
+      if (term) query = query.or(`nickname.ilike.%${term}%,channel_id.ilike.%${term}%,host_nick.ilike.%${term}%`);
+    }
+
+    query = query.order("created_at", { ascending: false }).range(offset, offset + limitNum - 1);
+
+    const { data, error, count } = await query;
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR", detail: error.message });
+
+    return res.json({
+      ok: true,
+      items: data || [],
+      total: count || 0,
+      page: pageNum,
+      totalPages: Math.ceil((count || 0) / limitNum),
+    });
+  } catch (err) {
+    console.error("GET /admin/streamer-log:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
 // 관리자 닉네임 강제변경
 app.patch("/admin/users/:userId/nickname", requireAdmin, async (req, res) => {
   try {
@@ -12314,6 +12352,8 @@ class SoopChatBridge {
     this.roomCode = roomCode;
     this.bjId = bjId;
     this.bno = bno || null;
+    this.bjNick = null;   // 방송정보 API에서 채움 (BJNICK)
+    this.title = null;    // 방송 제목 (TITLE)
     this.ws = null;
     this.status = "idle";
     this.errorCode = null;
@@ -12422,7 +12462,10 @@ class SoopChatBridge {
     const txt = await resp.text();
     let json; try { json = JSON.parse(txt); } catch { throw new Error("SOOP API 응답 파싱 실패: " + txt.slice(0, 120)); }
     const ch = json.CHANNEL || json.channel || {};
-    console.log(`[SOOP:${this.roomCode}] live info: RESULT=${ch.RESULT} CHDOMAIN=${ch.CHDOMAIN} CHPT=${ch.CHPT} CHATNO=${ch.CHATNO}`);
+    // ★ 스트리머 식별용 — BJ 닉네임/방송제목 캡처 (있을 때만)
+    this.bjNick = ch.BJNICK || ch.BJNICKNAME || ch.bj_nick || this.bjNick || null;
+    this.title = ch.TITLE || ch.title || this.title || null;
+    console.log(`[SOOP:${this.roomCode}] live info: RESULT=${ch.RESULT} CHDOMAIN=${ch.CHDOMAIN} CHPT=${ch.CHPT} CHATNO=${ch.CHATNO} BJNICK=${this.bjNick || "?"}`);
     return ch;
   }
 
@@ -12571,6 +12614,48 @@ Object.assign(SoopChatBridge.prototype, QuizScoringMixin);
 // roomCode → ChatBridge / SoopChatBridge 인스턴스
 const chatBridges = new Map();
 
+// 스트리머 채팅연동 사용 로그 (운영자 admin 탭에서 확인) — 실패해도 게임 흐름엔 영향 없음
+async function _logStreamerChat({ platform, channelId, nickname, contentId, roomCode, hostUserId, hostNick }) {
+  try {
+    if (!platform || !channelId) return; // 식별자 없으면 기록 안 함
+    let content_title = null, content_mode = null;
+    if (contentId) {
+      try {
+        const { data: c } = await supabaseAdmin
+          .from("contents").select("title, mode").eq("id", contentId).maybeSingle();
+        if (c) { content_title = c.title || null; content_mode = c.mode || null; }
+        else {
+          const { data: t } = await supabaseAdmin
+            .from("tier_templates").select("title").eq("id", contentId).maybeSingle();
+          if (t) { content_title = t.title || null; content_mode = "tier"; }
+        }
+      } catch (_) { /* contentId 형식 오류 등 — 무시 */ }
+    }
+    let host_nick = hostNick || null;
+    if (!host_nick && hostUserId) {
+      try {
+        const { data: p } = await supabaseAdmin
+          .from("profiles").select("nickname").eq("id", hostUserId).maybeSingle();
+        host_nick = p?.nickname || null;
+      } catch (_) {}
+    }
+    await supabaseAdmin.from("streamer_chat_log").insert({
+      platform,
+      channel_id: channelId,
+      nickname: nickname || null,
+      content_id: contentId || null,
+      content_title,
+      content_mode,
+      room_code: roomCode || null,
+      host_user_id: hostUserId || null,
+      host_nick,
+    });
+    console.log(`[STREAMER_LOG] ${platform} ch=${channelId} nick=${nickname || "?"} content=${content_title || "?"}`);
+  } catch (e) {
+    console.warn("[STREAMER_LOG] insert 실패(무시):", e.message);
+  }
+}
+
 // --- POST /chat-audience/start ---
 app.post("/chat-audience/start", requireAuth, async (req, res) => {
   try {
@@ -12689,6 +12774,19 @@ app.post("/chat-audience/start", requireAuth, async (req, res) => {
     }
 
     console.log(`[CHAT_AUD] /start — 완료: status=${bridge.status}, subscribed=${bridge.subscribed}, errorCode=${bridge.errorCode || "none"}, subscribeError=${bridge.subscribeError || "none"}`);
+
+    // ★ 스트리머 사용 로그 (치지직) — await 안 함, 게임 응답 지연 방지
+    //   frontToken 경로는 sess.nickname=null 이므로 프론트가 보낸 닉으로 폴백
+    _logStreamerChat({
+      platform: "chzzk",
+      channelId: sess.channelId,
+      nickname: sess.nickname || req.body.chzzkNickname || null,
+      contentId: req.body.contentId,
+      roomCode,
+      hostUserId: userId,
+      hostNick: req.body.hostNick,
+    });
+
     return res.json({
       ok: true,
       status: bridge.status,
@@ -12759,6 +12857,18 @@ app.post("/chat-audience/soop-start", requireAuth, async (req, res) => {
       console.error(`[CHAT_AUD] /soop-start 연결 실패: ${err.message}`);
       return res.status(502).json({ ok: false, error: "SOOP_CONNECT_FAILED", errorCode: bridge.errorCode || "UNKNOWN", message: err.message });
     }
+
+    // ★ 스트리머 사용 로그 (SOOP) — bjId = 스트리머 고유 ID, bjNick = BJNICK(있으면)
+    _logStreamerChat({
+      platform: "soop",
+      channelId: bjId,
+      nickname: bridge.bjNick,
+      contentId: req.body.contentId,
+      roomCode,
+      hostUserId: req.user?.id,
+      hostNick: req.body.hostNick,
+    });
+
     return res.json({ ok: true, status: bridge.status, subscribed: bridge.subscribed });
   } catch (err) {
     console.error("[CHAT_AUD] /soop-start 예외:", err);
