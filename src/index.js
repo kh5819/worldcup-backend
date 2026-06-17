@@ -3884,6 +3884,42 @@ app.patch("/admin/contents/:id/hide", requireAdmin, async (req, res) => {
   }
 });
 
+// 관리자 퀴즈 정답(중복답) 일괄 수정 — RLS(owner만 수정)를 우회해 service role로 저장
+//   admin 페이지에서 타 계정 콘텐츠의 정답/동의어를 고칠 때 클라이언트 update가 0행으로
+//   조용히 실패하던 문제 해결. body: { updates: [{ id, answer: [기본정답, ...동의어] }] }
+app.patch("/admin/quiz-answers", requireAdmin, async (req, res) => {
+  try {
+    const updates = Array.isArray(req.body?.updates) ? req.body.updates : [];
+    if (updates.length === 0) return res.json({ ok: true, updated: 0, failed: [] });
+    if (updates.length > 500) return res.status(400).json({ ok: false, error: "TOO_MANY" });
+
+    let updated = 0;
+    const failed = [];
+    for (const u of updates) {
+      const id = u?.id;
+      const answer = Array.isArray(u?.answer)
+        ? u.answer.map(s => String(s).trim()).filter(Boolean)
+        : null;
+      // 기본 정답(answer[0])은 반드시 있어야 함 — 빈 배열 저장 방지
+      if (!id || !answer || answer.length === 0) { failed.push(id || "?"); continue; }
+      const { error } = await supabaseAdmin
+        .from("quiz_questions")
+        .update({ answer })
+        .eq("id", id);
+      if (error) {
+        console.error(`[admin/quiz-answers] update 실패 (${id}):`, error.message);
+        failed.push(id);
+      } else {
+        updated++;
+      }
+    }
+    return res.json({ ok: failed.length === 0, updated, failed });
+  } catch (err) {
+    console.error("PATCH /admin/quiz-answers:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
 // 관리자 콘텐츠 일반 수정 (title, description, category, tags, visibility, is_hidden, hidden_reason, thumbnail_url)
 app.patch("/admin/contents/:id", requireAdmin, async (req, res) => {
   try {
