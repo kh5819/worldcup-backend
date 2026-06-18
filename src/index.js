@@ -4396,7 +4396,7 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
 });
 
 // 스트리머 채팅연동 사용 로그 조회 (운영자 전용)
-//  query: platform(chzzk|soop|all), q(닉/채널 검색), page, limit
+//  query: platform(chzzk|soop|cime|all), q(닉/채널 검색), page, limit
 app.get("/admin/streamer-log", requireAdmin, async (req, res) => {
   try {
     const { q, platform, page = 1, limit = 50 } = req.query;
@@ -11420,6 +11420,15 @@ const CHZZK_REDIRECT_URI  = process.env.CHZZK_REDIRECT_URI;
 const chzzkSessions = new Map();      // roomCode → session
 const chzzkSessionsByUser = new Map(); // userId → session
 
+// ===== 씨미(ci.me) OpenAPI — 치지직과 동일 구조(OAuth→세션→WS 구독) =====
+const CIME_CLIENT_ID     = process.env.CIME_CLIENT_ID;
+const CIME_CLIENT_SECRET = process.env.CIME_CLIENT_SECRET;
+const CIME_REDIRECT_URI  = process.env.CIME_REDIRECT_URI;
+const CIME_WEB_BASE = "https://ci.me";
+const CIME_API_BASE = "https://ci.me/api/openapi";
+const cimeSessions = new Map();       // roomCode → session
+const cimeSessionsByUser = new Map(); // userId → session
+
 app.post("/chzzk/token", async (req, res) => {
   try {
     const { code, state, roomCode } = req.body;
@@ -11569,6 +11578,101 @@ app.get("/chzzk/status", (req, res) => {
     linked: true,
     channelId: sess.channelId,
     nickname: sess.nickname,
+    expiresAt: new Date(sess.expiresAt).toISOString(),
+  });
+});
+
+// ===================================================
+// 씨미(ci.me) OAuth 토큰 교환 — 치지직과 동일 구조
+// ===================================================
+app.post("/cime/token", async (req, res) => {
+  try {
+    const { code, state, roomCode } = req.body;
+    if (!code) return res.status(400).json({ ok: false, error: "MISSING_PARAMS", message: "code가 필요합니다" });
+    if (!CIME_CLIENT_ID || !CIME_CLIENT_SECRET) {
+      console.error("[CIME] 환경변수 CIME_CLIENT_ID / CIME_CLIENT_SECRET 미설정");
+      return res.status(500).json({ ok: false, error: "SERVER_CONFIG", message: "씨미 설정이 완료되지 않았습니다" });
+    }
+
+    // 1) code → accessToken 교환
+    const TOKEN_URL = `${CIME_API_BASE}/auth/v1/token`;
+    const tokenBody = { grantType: "authorization_code", clientId: CIME_CLIENT_ID, clientSecret: CIME_CLIENT_SECRET, code };
+    let tokenData = null, tokenError = null;
+    try {
+      console.log(`[CIME] 토큰 교환 시도: ${TOKEN_URL}`);
+      const r = await fetch(TOKEN_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(tokenBody) });
+      const raw = await r.text();
+      console.log(`[CIME] 토큰 응답: status=${r.status} body=${raw.slice(0, 300)}`);
+      if (r.ok) {
+        const p = JSON.parse(raw);
+        const c = p.content || p.data || p;
+        if (c.accessToken) tokenData = c;
+        else tokenError = `응답에 accessToken 없음: ${raw.slice(0, 200)}`;
+      } else tokenError = `${TOKEN_URL} → ${r.status}: ${raw.slice(0, 200)}`;
+    } catch (e) { tokenError = `${TOKEN_URL} → fetch 실패: ${e.message}`; console.warn("[CIME]", tokenError); }
+
+    if (!tokenData) {
+      console.error("[CIME] 토큰 교환 실패:", tokenError);
+      return res.status(502).json({ ok: false, error: "TOKEN_EXCHANGE_FAILED", message: tokenError });
+    }
+    const { accessToken, refreshToken, expiresIn } = tokenData;
+    console.log(`[CIME] 토큰 교환 성공: expiresIn=${expiresIn}`);
+
+    // 2) accessToken으로 내 채널 정보 조회 (best-effort)
+    let channelId = null, nickname = null;
+    const meUrls = [
+      `${CIME_API_BASE}/open/v1/channels/me`,
+      `${CIME_API_BASE}/open/v1/users/me`,
+      `${CIME_API_BASE}/open/v1/channels`,
+    ];
+    for (const u of meUrls) {
+      try {
+        const mr = await fetch(u, { headers: { "Authorization": `Bearer ${accessToken}`, "Client-Id": CIME_CLIENT_ID } });
+        const mraw = await mr.text();
+        console.log(`[CIME] 채널 조회 (${u}): status=${mr.status} body=${mraw.slice(0, 200)}`);
+        if (mr.ok) {
+          const mp = JSON.parse(mraw);
+          let c = mp.content || mp.data || mp;
+          if (Array.isArray(c)) c = c[0] || {};
+          channelId = c.channelId || c.channel_id || c.id || channelId;
+          nickname = c.channelName || c.nickname || c.name || nickname;
+          if (channelId) break;
+        }
+      } catch (e) { console.warn(`[CIME] ${u} 실패:`, e.message); }
+    }
+    console.log(`[CIME] 사용자: channelId=${channelId}, nickname=${nickname}`);
+
+    const sessObj = {
+      accessToken, refreshToken,
+      expiresAt: Date.now() + (Number(expiresIn) || 86400) * 1000,
+      channelId, nickname,
+      userId: req.body.userId || null,
+    };
+    if (roomCode) cimeSessions.set(roomCode, sessObj);
+    console.log(`[CIME] 세션 저장 완료: roomCode=${roomCode}, channelId=${channelId}`);
+
+    return res.json({
+      ok: true,
+      channelId: channelId || null,
+      nickname: nickname || null,
+      cimeAccessToken: accessToken,
+      cimeExpiresAt: sessObj.expiresAt,
+    });
+  } catch (err) {
+    console.error("[CIME] /cime/token 예외:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR", message: err.message });
+  }
+});
+
+// 씨미 세션 조회 (디버그/상태확인용)
+app.get("/cime/status", (req, res) => {
+  const roomCode = req.query.room;
+  if (!roomCode) return res.status(400).json({ ok: false, error: "MISSING_ROOM" });
+  const sess = cimeSessions.get(roomCode);
+  if (!sess) return res.json({ ok: true, linked: false });
+  return res.json({
+    ok: true, linked: true,
+    channelId: sess.channelId, nickname: sess.nickname,
     expiresAt: new Date(sess.expiresAt).toISOString(),
   });
 });
@@ -12668,6 +12772,120 @@ const QuizScoringMixin = {
 Object.assign(SoopChatBridge.prototype, QuizScoringMixin);
 
 // roomCode → ChatBridge / SoopChatBridge 인스턴스
+// ============================================================
+// CimeChatBridge — 씨미(ci.me) OpenAPI 채팅 연결
+//  치지직과 동일한 OAuth→세션→WS구독 모델. 단 WS는 평문 JSON({event,data}) +
+//  {"type":"PING"} 킵얼라이브. 투표/퀴즈 집계는 ChatBridge를 상속해 그대로 재사용
+//  (_processSingleChatMsg / setRound / setQuizRound / getAggregates / getQuizBoard 등).
+// ============================================================
+class CimeChatBridge extends ChatBridge {
+  async connect() {
+    this.status = "connecting";
+    this.errorMsg = null;
+    try {
+      // (A) 세션 생성 → WebSocket URL 획득
+      const sessUrl = `${CIME_API_BASE}/open/v1/sessions/auth`;
+      console.log(`[CIME_BRIDGE:${this.roomCode}] 세션 요청: ${sessUrl}`);
+      const sr = await fetch(sessUrl, {
+        headers: { "Authorization": `Bearer ${this.accessToken}`, "Client-Id": CIME_CLIENT_ID },
+      });
+      const sraw = await sr.text();
+      console.log(`[CIME_BRIDGE:${this.roomCode}] 세션 응답: status=${sr.status} body=${sraw.slice(0, 300)}`);
+      if (!sr.ok) { this.errorCode = "CIME_SESSION_FAILED"; this.errorMsg = `${sr.status}: ${sraw.slice(0, 200)}`; throw new Error(this.errorMsg); }
+      let sp = null; try { sp = JSON.parse(sraw); } catch {}
+      const sc = sp?.content || sp?.data || sp || {};
+      const wsUrl = sc.url || sc.websocketUrl || sc.wsUrl;
+      if (!wsUrl) { this.errorCode = "CIME_NO_WS_URL"; throw new Error("세션 WS URL 없음"); }
+      try { this.sessionKey = new URL(wsUrl).searchParams.get("sessionKey"); } catch {}
+      console.log(`[CIME_BRIDGE:${this.roomCode}] WS=${wsUrl.slice(0, 80)} sessionKey=${this.sessionKey?.slice(0, 16)}`);
+
+      // (B) WS 연결
+      await new Promise((resolve, reject) => {
+        let settled = false;
+        try { this.ws = new WebSocket(wsUrl, { handshakeTimeout: 10000 }); }
+        catch (e) { return reject(e); }
+        this.ws.on("open", async () => {
+          this.status = "connected"; this.connectedAt = new Date();
+          console.log(`[CIME_BRIDGE:${this.roomCode}] WS open`);
+          this._startPing();
+          // (C) 채팅 이벤트 구독
+          try { await this._subscribeChat(); } catch (e) { console.warn(`[CIME_BRIDGE:${this.roomCode}] 구독 예외:`, e.message); }
+          if (!settled) { settled = true; resolve(); }
+        });
+        this.ws.on("message", (buf) => this._onCimeFrame(buf));
+        this.ws.on("error", (e) => {
+          console.warn(`[CIME_BRIDGE:${this.roomCode}] WS error:`, e.message);
+          this.errorCode = this.errorCode || "CIME_WS_ERROR"; this.errorMsg = e.message;
+          if (!settled) { settled = true; reject(e); }
+        });
+        this.ws.on("close", (code) => { this.status = "stopped"; this._stopPing(); console.log(`[CIME_BRIDGE:${this.roomCode}] WS close code=${code}`); });
+      });
+
+      // 진단 로그
+      for (const sec of [15, 30, 60]) setTimeout(() => {
+        if (this.status === "connected") {
+          console.log(`[CIME_BRIDGE:${this.roomCode}] ★${sec}s rawCHAT=${this._rawDumpCount} msgs=${this.totalMessagesProcessed} votes=${this.votes.size} subscribed=${this.subscribed} ws=${this.ws?.readyState} events=[${[...this._allEventNames]}]`);
+          if (this._rawDumpCount === 0 && this.subscribed) {
+            console.warn(`[CIME_BRIDGE:${this.roomCode}] ⚠️ ${sec}s: 구독 성공했지만 CHAT 이벤트 0건 — 방송이 라이브인지/채팅이 올라오는지 확인 필요`);
+          }
+        }
+      }, sec * 1000);
+    } catch (err) {
+      this.status = "error"; this.errorMsg = err.message;
+      console.error(`[CIME_BRIDGE:${this.roomCode}] 연결 실패:`, err.message);
+      this.disconnect();
+      throw err;
+    }
+  }
+
+  async _subscribeChat() {
+    if (!this.sessionKey) { this.subscribeError = "sessionKey 없음"; this.errorCode = this.errorCode || "NO_SESSION_KEY"; return; }
+    const url = `${CIME_API_BASE}/open/v1/sessions/events/subscribe/chat?sessionKey=${encodeURIComponent(this.sessionKey)}`;
+    const body = this.channelId ? JSON.stringify({ channelId: this.channelId }) : "{}";
+    console.log(`[CIME_BRIDGE:${this.roomCode}] CHAT 구독: channelId=${this.channelId || "(none)"}`);
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${this.accessToken}`, "Client-Id": CIME_CLIENT_ID },
+      body,
+    });
+    const raw = await r.text();
+    console.log(`[CIME_BRIDGE:${this.roomCode}] 구독 응답: status=${r.status} body=${raw.slice(0, 300)}`);
+    let p = null; try { p = JSON.parse(raw); } catch {}
+    if (p?.code && p.code !== 200) { this.errorCode = "CHAT_SUBSCRIBE_FAILED"; this.subscribeError = `code=${p.code}: ${p.message || ""}`; }
+    else if (!r.ok) { this.errorCode = r.status === 403 ? "CHAT_SUBSCRIBE_SCOPE" : "CHAT_SUBSCRIBE_FAILED"; this.subscribeError = `${r.status}: ${raw.slice(0, 200)}`; }
+    else { this.subscribed = true; console.log(`[CIME_BRIDGE:${this.roomCode}] ✅ CHAT 구독 성공`); }
+  }
+
+  _onCimeFrame(buf) {
+    this.rawFrameCount++;
+    this.lastEventAt = new Date();
+    let txt; try { txt = buf.toString("utf8"); } catch { return; }
+    if (!txt) return;
+    let msg = null; try { msg = JSON.parse(txt); } catch { return; }
+    const list = Array.isArray(msg) ? msg : [msg];
+    for (const m of list) {
+      if (!m || typeof m !== "object") continue;
+      const evName = m.event || m.type || "";
+      if (evName) this._allEventNames.add(evName);
+      if (/^chat$/i.test(evName) || m.data?.content != null || m.content != null) {
+        this._rawDumpCount++;
+        const data = m.data != null ? m.data : m;
+        if (!this.channelId && data && data.channelId) this.channelId = data.channelId; // 로그용 backfill
+        const arr = Array.isArray(data) ? data : [data];
+        for (const d of arr) { if (d && typeof d === "object") this._processSingleChatMsg(d); }
+      }
+    }
+  }
+
+  // ci.me 킵얼라이브: 1분마다 {"type":"PING"} (치지직 EIO "2" 핑 오버라이드)
+  _startPing() {
+    this._stopPing();
+    this._pingTimer = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) { try { this.ws.send(JSON.stringify({ type: "PING" })); } catch {} }
+    }, 60000);
+  }
+}
+
 const chatBridges = new Map();
 
 // 스트리머 채팅연동 사용 로그 (운영자 admin 탭에서 확인) — 실패해도 게임 흐름엔 영향 없음
@@ -12929,6 +13147,94 @@ app.post("/chat-audience/soop-start", optionalAuth, async (req, res) => {
   } catch (err) {
     console.error("[CHAT_AUD] /soop-start 예외:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// --- POST /chat-audience/cime-start ---
+// 씨미(ci.me) 채팅 연결 — OAuth 연동 필요(치지직과 동일 모델)
+//  body: { roomCode, cimeAccessToken, cimeChannelId, cimeExpiresAt, cimeNickname, contentId, hostNick, forceNew }
+app.post("/chat-audience/cime-start", optionalAuth, async (req, res) => {
+  try {
+    const { roomCode, forceNew } = req.body;
+    if (!roomCode) return res.status(400).json({ ok: false, error: "MISSING_ROOM_CODE" });
+
+    const existing = chatBridges.get(roomCode);
+    if (!forceNew && existing && existing.status === "connected") {
+      return res.json({ ok: true, status: "already_connected", channelId: existing.channelId, subscribed: existing.subscribed, errorCode: existing.errorCode || null });
+    }
+
+    const userId = req.user?.id;
+    const { cimeAccessToken: frontToken, cimeChannelId: frontChannel, cimeExpiresAt: frontExpires } = req.body;
+
+    let sess = null;
+    // 1) 프론트 토큰 우선 (sessionStorage 기반 — 서버 재시작/roomCode 변경에 강건)
+    if (frontToken) {
+      const expiresAt = frontExpires || (Date.now() + 86400 * 1000);
+      if (expiresAt > Date.now()) {
+        sess = { accessToken: frontToken, channelId: frontChannel || null, expiresAt, nickname: req.body.cimeNickname || null };
+        cimeSessions.set(roomCode, sess);
+        if (userId) cimeSessionsByUser.set(userId, sess);
+      }
+    }
+    // 2) 백엔드 Map fallback
+    if (!sess) {
+      sess = cimeSessions.get(roomCode);
+      if (!sess || !sess.accessToken) {
+        let best = null;
+        for (const [, v] of cimeSessions) if (v.accessToken && v.expiresAt > Date.now() && (!best || v.expiresAt > best.expiresAt)) best = v;
+        if (best) sess = best;
+      }
+      if ((!sess || !sess.accessToken) && userId) {
+        const us = cimeSessionsByUser.get(userId);
+        if (us && us.accessToken && us.expiresAt > Date.now()) sess = us;
+      }
+      if (sess && sess.accessToken) { cimeSessions.set(roomCode, sess); if (userId) cimeSessionsByUser.set(userId, sess); }
+    }
+
+    if (!sess || !sess.accessToken) {
+      return res.status(400).json({ ok: false, error: "NO_CIME_SESSION", errorCode: "NO_CIME_SESSION", message: "먼저 씨미 계정을 연동하세요 (방을 새로 만든 경우 재연동 필요)" });
+    }
+    if (sess.expiresAt < Date.now()) {
+      return res.status(401).json({ ok: false, error: "TOKEN_EXPIRED", errorCode: "TOKEN_EXPIRED", message: "씨미 토큰이 만료되었습니다. 다시 연동하세요" });
+    }
+
+    // 기존 브릿지 정리
+    for (const [key, b] of chatBridges) {
+      if (key === roomCode || (b instanceof CimeChatBridge && b.channelId && b.channelId === sess.channelId)) {
+        try { b.disconnect(); } catch {}
+        chatBridges.delete(key);
+      }
+    }
+
+    const bridge = new CimeChatBridge(roomCode, sess.accessToken, sess.channelId);
+    chatBridges.set(roomCode, bridge);
+    try { await bridge.connect(); }
+    catch (err) {
+      console.error(`[CHAT_AUD] /cime-start 연결 실패: ${err.message}`);
+      return res.status(502).json({ ok: false, error: "CIME_CONNECT_FAILED", errorCode: bridge.errorCode || "UNKNOWN", message: err.message });
+    }
+
+    // ★ 스트리머 사용 로그 (씨미)
+    _logStreamerChat({
+      platform: "cime",
+      channelId: sess.channelId || bridge.channelId || req.body.cimeChannelId,
+      nickname: sess.nickname || req.body.cimeNickname || null,
+      contentId: req.body.contentId,
+      roomCode,
+      hostUserId: userId,
+      hostNick: req.body.hostNick,
+    });
+
+    return res.json({
+      ok: true, status: bridge.status,
+      channelId: sess.channelId || bridge.channelId,
+      subscribed: bridge.subscribed,
+      errorCode: bridge.errorCode || null,
+      subscribeError: bridge.subscribeError || null,
+    });
+  } catch (err) {
+    console.error("[CHAT_AUD] /cime-start 예외:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR", message: err.message });
   }
 });
 

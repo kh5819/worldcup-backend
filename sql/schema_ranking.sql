@@ -90,7 +90,7 @@ CREATE POLICY hof_service_insert ON public.ranking_hall_of_fame
 -- 3. record_ranking_points() — 핵심 포인트 기록 함수
 -- - content_events AFTER INSERT 트리거에서 호출
 -- - SECURITY DEFINER: 내부에서 profiles, contents 등 조회 가능
--- - 일일 최대: play 30, creator 100
+-- - 일일 최대: play 100, creator 500
 -- ============================================================
 CREATE OR REPLACE FUNCTION public.record_ranking_points(
   p_player_id    uuid,
@@ -145,7 +145,7 @@ BEGIN
     AND point_type = 'play'
     AND day_date = v_day;
 
-  IF v_play_today < 30 THEN
+  IF v_play_today < 100 THEN
     INSERT INTO public.ranking_points
       (user_id, point_type, content_id, content_type, source_user_id, week_start, day_date)
     VALUES
@@ -160,7 +160,7 @@ BEGIN
     AND point_type = 'creator'
     AND day_date = v_day;
 
-  IF v_creator_today < 100 THEN
+  IF v_creator_today < 500 THEN
     INSERT INTO public.ranking_points
       (user_id, point_type, content_id, content_type, source_user_id, week_start, day_date)
     VALUES
