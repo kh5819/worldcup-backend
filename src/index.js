@@ -6502,7 +6502,7 @@ app.post("/quiz/finish", async (req, res) => {
       });
     }
 
-    // questionResults: 선택적 (멀티 퀴즈는 문항별 추적 없음)
+    // questionResults: 선택적 — 솔로·멀티 모두 로컬 플레이어 문항별 정오답을 보냄(있을 때만 quiz_question_attempts 기록)
     const hasQuestionResults = Array.isArray(questionResults) && questionResults.length > 0;
 
     // 1) quiz_attempts insert
