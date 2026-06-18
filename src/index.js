@@ -11618,29 +11618,26 @@ app.post("/cime/token", async (req, res) => {
     const { accessToken, refreshToken, expiresIn } = tokenData;
     console.log(`[CIME] 토큰 교환 성공: expiresIn=${expiresIn}`);
 
-    // 2) accessToken으로 내 채널 정보 조회 (best-effort)
-    let channelId = null, nickname = null;
-    const meUrls = [
-      `${CIME_API_BASE}/open/v1/channels/me`,
-      `${CIME_API_BASE}/open/v1/users/me`,
-      `${CIME_API_BASE}/open/v1/channels`,
-    ];
-    for (const u of meUrls) {
-      try {
-        const mr = await fetch(u, { headers: { "Authorization": `Bearer ${accessToken}`, "Client-Id": CIME_CLIENT_ID } });
-        const mraw = await mr.text();
-        console.log(`[CIME] 채널 조회 (${u}): status=${mr.status} body=${mraw.slice(0, 200)}`);
-        if (mr.ok) {
-          const mp = JSON.parse(mraw);
-          let c = mp.content || mp.data || mp;
-          if (Array.isArray(c)) c = c[0] || {};
-          channelId = c.channelId || c.channel_id || c.id || channelId;
-          nickname = c.channelName || c.nickname || c.name || nickname;
-          if (channelId) break;
-        }
-      } catch (e) { console.warn(`[CIME] ${u} 실패:`, e.message); }
-    }
-    console.log(`[CIME] 사용자: channelId=${channelId}, nickname=${nickname}`);
+    // 2) accessToken으로 내 채널 정보 조회 — 공식: GET /open/v1/users/me (Bearer, scope READ:USER)
+    //    응답: { code, message, content: { channelId, channelName, channelHandle, channelImageUrl } }
+    let channelId = null, nickname = null, channelHandle = null;
+    try {
+      const meUrl = `${CIME_API_BASE}/open/v1/users/me`;
+      const mr = await fetch(meUrl, { headers: { "Authorization": `Bearer ${accessToken}`, "Client-Id": CIME_CLIENT_ID } });
+      const mraw = await mr.text();
+      console.log(`[CIME] 내 정보 조회 (${meUrl}): status=${mr.status} body=${mraw.slice(0, 250)}`);
+      if (mr.ok) {
+        const mp = JSON.parse(mraw);
+        let c = mp.content || mp.data || mp;
+        if (Array.isArray(c)) c = c[0] || {};
+        channelId = c.channelId || c.channel_id || c.id || null;
+        nickname = c.channelName || c.nickname || c.name || null;
+        channelHandle = c.channelHandle || null;
+      } else if (mr.status === 403) {
+        console.warn("[CIME] /users/me 403 — 앱에 READ:USER scope가 없을 수 있음 (채팅은 가능, 채널정보만 누락)");
+      }
+    } catch (e) { console.warn("[CIME] /users/me 실패:", e.message); }
+    console.log(`[CIME] 사용자: channelId=${channelId}, nickname=${nickname}, handle=${channelHandle}`);
 
     const sessObj = {
       accessToken, refreshToken,
@@ -12840,13 +12837,13 @@ class CimeChatBridge extends ChatBridge {
 
   async _subscribeChat() {
     if (!this.sessionKey) { this.subscribeError = "sessionKey 없음"; this.errorCode = this.errorCode || "NO_SESSION_KEY"; return; }
+    // 공식 스펙: sessionKey(쿼리)만 필수, body 없음. 구독 대상 채널은 토큰 소유자 채널로 자동.
     const url = `${CIME_API_BASE}/open/v1/sessions/events/subscribe/chat?sessionKey=${encodeURIComponent(this.sessionKey)}`;
-    const body = this.channelId ? JSON.stringify({ channelId: this.channelId }) : "{}";
-    console.log(`[CIME_BRIDGE:${this.roomCode}] CHAT 구독: channelId=${this.channelId || "(none)"}`);
+    console.log(`[CIME_BRIDGE:${this.roomCode}] CHAT 구독 요청 (sessionKey=${this.sessionKey.slice(0, 12)}…)`);
     const r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${this.accessToken}`, "Client-Id": CIME_CLIENT_ID },
-      body,
+      body: "{}",
     });
     const raw = await r.text();
     console.log(`[CIME_BRIDGE:${this.roomCode}] 구독 응답: status=${r.status} body=${raw.slice(0, 300)}`);
