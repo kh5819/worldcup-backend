@@ -12180,10 +12180,17 @@ class ChatBridge {
           JSON.stringify(data).slice(0, 1500));
         console.log(`[CHAT_BRIDGE:${this.roomCode}]   type=${typeof data}, isArray=${Array.isArray(data)}, keys=${data && typeof data === "object" ? Object.keys(data).join(",") : "N/A"}`);
         if (typeof data === "string") {
-          // 문자열이면 JSON 파싱 시도
           console.log(`[CHAT_BRIDGE:${this.roomCode}]   ★ data는 문자열! 앞 500자: ${data.slice(0, 500)}`);
-          try { data = JSON.parse(data); } catch (e) {}
         }
+      }
+
+      // ★★★ [버그수정 2026-06-20] 치지직은 CHAT 페이로드를 JSON 문자열로 이중 인코딩해 보냄.
+      //   문자열→객체 파싱은 디버그 윈도(처음 30개)와 무관하게 "항상" 수행해야 한다.
+      //   (이전엔 위 `_rawDumpCount <= 30` 블록 안에 있어서, 31번째 메시지부터는 파싱이 스킵 →
+      //    data가 문자열인 채로 `typeof evt === "object"` 검사에 걸려 _processSingleChatMsg 호출
+      //    자체가 안 됨 → 모든 채팅/투표가 조용히 버려지고 msgs가 30에 고정, 투표 0 고정됐음)
+      if (typeof data === "string") {
+        try { data = JSON.parse(data); } catch (e) { /* 일반 텍스트면 문자열 그대로 둠 (아래 객체검사에서 자연히 스킵) */ }
       }
 
       // 치지직 CHAT 이벤트 구조 — 공식 문서 기준:
