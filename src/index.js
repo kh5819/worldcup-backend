@@ -12979,29 +12979,24 @@ app.post("/chat-audience/start", optionalAuth, async (req, res) => {
       }
     }
 
-    // ★ 2) 프론트 토큰 없으면 백엔드 Map fallback
+    // ★ 2) 프론트 토큰 없으면 백엔드 Map fallback — ★반드시 "본인" 세션만 (roomCode/userId 매칭)
+    //   [보안수정 2026-06-20] 이전엔 여기서 "전체 세션 스캔 → 만료 가장 늦은 아무 세션"을 집어왔다.
+    //   외부 스트리머가 여러 명 연동하면(streamer-chat-log 개방) 남의 치지직 세션을 잡아
+    //   채널이 뒤섞이고(=계정 꼬임), 13030의 브릿지 정리(b.channelId === sess.channelId)가
+    //   진행 중인 "다른 스트리머"의 브릿지를 끊어버렸다. → 전체 스캔 완전 제거.
+    //   본인 세션을 못 찾으면 NO_CHZZK_SESSION으로 재연동 유도(안전 — 남의 세션 절대 차용 안 함).
     if (!sess) {
       sess = chzzkSessions.get(roomCode);
-      if (!sess || !sess.accessToken) {
-        console.log(`[CHAT_AUD] /start — roomCode=${roomCode}에 세션 없음, 전체 스캔 시도 (keys=[${[...chzzkSessions.keys()]}])`);
-        let bestSess = null;
-        for (const [key, val] of chzzkSessions) {
-          if (val.accessToken && val.expiresAt > Date.now()) {
-            if (!bestSess || val.expiresAt > bestSess.expiresAt) {
-              bestSess = val;
-              console.log(`[CHAT_AUD] /start — 유효 세션 발견: key=${key}, channelId=${val.channelId}, expires=${new Date(val.expiresAt).toISOString()}`);
-            }
-          }
-        }
-        if (bestSess) sess = bestSess;
-      }
-      // userId 기반 fallback
+      // userId 기반 fallback (로그인 사용자 — 본인 userId 세션만)
       if ((!sess || !sess.accessToken) && userId) {
         const userSess = chzzkSessionsByUser.get(userId);
         if (userSess && userSess.accessToken && userSess.expiresAt > Date.now()) {
           console.log(`[CHAT_AUD] /start — userId fallback 성공: userId=${userId}, channelId=${userSess.channelId}`);
           sess = userSess;
         }
+      }
+      if (!sess || !sess.accessToken) {
+        console.log(`[CHAT_AUD] /start — roomCode=${roomCode}/userId=${userId}에 본인 세션 없음 → 재연동 필요 (남의 세션 차용 안 함)`);
       }
       if (sess && sess.accessToken) {
         chzzkSessions.set(roomCode, sess);
@@ -13180,14 +13175,11 @@ app.post("/chat-audience/cime-start", optionalAuth, async (req, res) => {
         if (userId) cimeSessionsByUser.set(userId, sess);
       }
     }
-    // 2) 백엔드 Map fallback
+    // 2) 백엔드 Map fallback — ★본인(roomCode/userId) 세션만
+    //   [보안수정 2026-06-20] 치지직과 동일하게 "전체 cimeSessions 스캔(아무 세션 차용)" 제거.
+    //   외부 스트리머 다중 연동 시 남의 씨미 세션을 잡아 채널 뒤섞임/진행중 브릿지 끊김 방지.
     if (!sess) {
       sess = cimeSessions.get(roomCode);
-      if (!sess || !sess.accessToken) {
-        let best = null;
-        for (const [, v] of cimeSessions) if (v.accessToken && v.expiresAt > Date.now() && (!best || v.expiresAt > best.expiresAt)) best = v;
-        if (best) sess = best;
-      }
       if ((!sess || !sess.accessToken) && userId) {
         const us = cimeSessionsByUser.get(userId);
         if (us && us.accessToken && us.expiresAt > Date.now()) sess = us;
