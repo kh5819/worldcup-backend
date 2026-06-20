@@ -13027,9 +13027,10 @@ app.post("/chat-audience/start", optionalAuth, async (req, res) => {
 
     console.log(`[CHAT_AUD] /start — 연결 시도: channelId=${sess.channelId}, tokenExpires=${new Date(sess.expiresAt).toISOString()}`);
 
-    // ★ 기존 브릿지 전체 정리 — 같은 channelId의 모든 브릿지 disconnect (솔로에서 roomCode 변경 대응)
+    // ★ 기존 브릿지 정리 — "본인" 것만: 같은 channelId(본인 계정) 또는 같은 roomCode(본인 방).
+    //   ★ channelId 비어있을 때 다른 빈-channelId 브릿지를 잘못 끊지 않도록 truthy 가드(스트리머 격리).
     for (const [key, b] of chatBridges) {
-      if (b.channelId === sess.channelId || key === roomCode) {
+      if ((sess.channelId && b.channelId === sess.channelId) || key === roomCode) {
         console.log(`[CHAT_AUD] /start — 기존 브릿지 정리: key=${key}, status=${b.status}`);
         b.disconnect();
         chatBridges.delete(key);
