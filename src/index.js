@@ -9092,8 +9092,12 @@ function initTierState(room, template, selectedCards) {
   const cardMap = {};
   const cardOrder = [];
   for (const c of selectedCards) {
-    // media_type/media_url 패스스루 — 영상(유튜브/MP4) 카드 클라 재생용. 기존 클라는 무시(무해).
-    cardMap[c.id] = { id: c.id, label: c.label, image_url: c.image_url, media_type: c.media_type || null, media_url: c.media_url || null };
+    // media_type/media_url/시작초/길이 패스스루 — 영상(유튜브/MP4) 카드 클라 재생용. 기존 클라는 무시(무해).
+    cardMap[c.id] = {
+      id: c.id, label: c.label, image_url: c.image_url,
+      media_type: c.media_type || null, media_url: c.media_url || null,
+      start_sec: c.start_sec ?? null, duration_sec: c.duration_sec ?? null,
+    };
     cardOrder.push(c.id);
   }
   const board = {};
