@@ -4420,10 +4420,41 @@ app.get("/admin/streamer-log", requireAdmin, async (req, res) => {
     const { data, error, count } = await query;
     if (error) return res.status(500).json({ ok: false, error: "DB_ERROR", detail: error.message });
 
+    // ── 고유 스트리머 수 (같은 닉네임은 몇 번을 하든 1명) ──
+    //    현재 platform/q 필터를 그대로 반영. 닉네임 우선 dedup, 없으면 channel_id 폴백.
+    let uniqueStreamers = 0;
+    try {
+      const seen = new Set();
+      const BATCH = 1000;
+      let from = 0;
+      for (;;) {
+        let uq = supabaseAdmin
+          .from("streamer_chat_log")
+          .select("nickname, channel_id");
+        if (platform && platform !== "all") uq = uq.eq("platform", platform);
+        if (q && q.trim()) {
+          const term = q.trim().replace(/[,()]/g, " ").trim();
+          if (term) uq = uq.or(`nickname.ilike.%${term}%,channel_id.ilike.%${term}%,host_nick.ilike.%${term}%`);
+        }
+        uq = uq.range(from, from + BATCH - 1);
+        const { data: rows, error: uErr } = await uq;
+        if (uErr || !rows) break;
+        for (const r of rows) {
+          const nick = (r.nickname || "").trim();
+          const key = nick ? `n:${nick.toLowerCase()}` : (r.channel_id ? `c:${r.channel_id}` : "");
+          if (key) seen.add(key);
+        }
+        if (rows.length < BATCH) break;
+        from += BATCH;
+      }
+      uniqueStreamers = seen.size;
+    } catch { uniqueStreamers = 0; }
+
     return res.json({
       ok: true,
       items: data || [],
       total: count || 0,
+      uniqueStreamers,
       page: pageNum,
       totalPages: Math.ceil((count || 0) / limitNum),
     });
