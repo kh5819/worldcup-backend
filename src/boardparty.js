@@ -238,8 +238,9 @@ function finishGame(io, room, winnerUid) {
   // 플레이어 + stats 페이로드
   const playersWithStats = room.playerOrder.map(uid => {
     const p = room.players.get(uid);
+    if (!p) return null;
     return { ...publicPlayer(uid, p), stats: p.stats };
-  });
+  }).filter(Boolean);
 
   io.to(socketRoomName(room.id)).emit("bp:gameEnd", {
     winnerTeam: room.winnerTeam,
