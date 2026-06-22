@@ -4475,6 +4475,60 @@ app.get("/admin/streamer-log", requireAdmin, async (req, res) => {
   }
 });
 
+// 스트리머별 사용 횟수 집계 (운영자 전용) — "총 N명" 카운트 클릭 시 "누가 몇 번 썼는지" 리스트.
+//  dedup 규칙은 /admin/streamer-log 의 uniqueStreamers 와 동일(닉네임 우선, 없으면 channel_id) → 리스트 길이 == 총 N명.
+//  query: platform(chzzk|soop|cime|all), q (streamer-log 와 동일 필터 반영)
+app.get("/admin/streamer-log/by-streamer", requireAdmin, async (req, res) => {
+  try {
+    const { q, platform } = req.query;
+    const map = new Map(); // key -> { platform, nickname, channel_id, uses, lastUsed }
+    const BATCH = 1000;
+    let from = 0;
+    for (;;) {
+      let uq = supabaseAdmin
+        .from("streamer_chat_log")
+        .select("platform, nickname, channel_id, created_at");
+      if (platform && platform !== "all") uq = uq.eq("platform", platform);
+      if (q && q.trim()) {
+        const term = q.trim().replace(/[,()]/g, " ").trim();
+        if (term) uq = uq.or(`nickname.ilike.%${term}%,channel_id.ilike.%${term}%,host_nick.ilike.%${term}%`);
+      }
+      uq = uq.order("created_at", { ascending: false }).range(from, from + BATCH - 1);
+      const { data: rows, error } = await uq;
+      if (error) return res.status(500).json({ ok: false, error: "DB_ERROR", detail: error.message });
+      if (!rows || rows.length === 0) break;
+      for (const r of rows) {
+        const nick = (r.nickname || "").trim();
+        const key = nick ? `n:${nick.toLowerCase()}` : (r.channel_id ? `c:${r.channel_id}` : "");
+        if (!key) continue;
+        const cur = map.get(key);
+        if (cur) {
+          cur.uses += 1;
+          if (r.created_at && (!cur.lastUsed || r.created_at > cur.lastUsed)) cur.lastUsed = r.created_at;
+        } else {
+          // rows 는 created_at desc 정렬 → 첫 등장이 최신 닉/플랫폼 = 대표값
+          map.set(key, {
+            platform: r.platform || null,
+            nickname: r.nickname || null,
+            channel_id: r.channel_id || null,
+            uses: 1,
+            lastUsed: r.created_at || null,
+          });
+        }
+      }
+      if (rows.length < BATCH) break;
+      from += BATCH;
+    }
+    const streamers = [...map.values()].sort(
+      (a, b) => b.uses - a.uses || String(b.lastUsed || "").localeCompare(String(a.lastUsed || ""))
+    );
+    return res.json({ ok: true, streamers, total: streamers.length });
+  } catch (err) {
+    console.error("GET /admin/streamer-log/by-streamer:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
 // 관리자 닉네임 강제변경
 app.patch("/admin/users/:userId/nickname", requireAdmin, async (req, res) => {
   try {
