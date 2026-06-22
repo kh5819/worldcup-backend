@@ -187,6 +187,7 @@ function findWinLine(board, size, x, y, color, winLength) {
 
 // ===== 공개용 직렬화 =====
 function publicPlayer(userId, p) {
+  if (!p) return null;
   return {
     userId,
     name: p.name,

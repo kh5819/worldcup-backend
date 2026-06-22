@@ -126,11 +126,14 @@ function publicRoom(room, viewerUserId) {
     deckRemaining: room.deck?.length || 0,
     currentTurnPlayerId: room.currentTurnPlayerId,
     turnPhase: room.turnPhase, // 'idle' | 'guess'
-    players: room.playerOrder.map(uid => {
-      const p = room.players.get(uid);
-      const isSameTeam = !!(viewerTeam && p.team && p.team === viewerTeam);
-      return publicPlayer(uid, p, viewerUserId, isSameTeam);
-    }),
+    players: room.playerOrder
+      .map(uid => {
+        const p = room.players.get(uid);
+        if (!p) return null; // playerOrder엔 남았지만 players에서 사라진 유령 항목 방어 (서버 크래시 방지)
+        const isSameTeam = !!(viewerTeam && p.team && p.team === viewerTeam);
+        return publicPlayer(uid, p, viewerUserId, isSameTeam);
+      })
+      .filter(Boolean),
   };
 }
 

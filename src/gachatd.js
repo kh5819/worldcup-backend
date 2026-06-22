@@ -78,6 +78,7 @@ function newPlayerState(name, isGuest, avatarUrl, socketId) {
 }
 
 function publicPlayer(userId, p) {
+  if (!p) return null;
   return {
     playerId: userId,
     nickname: p.name,

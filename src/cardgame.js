@@ -150,6 +150,7 @@ function modePerTeam(mode) { return MODE_INFO[mode]?.perTeam || null; }
 
 // ===== Public serialization =====
 function publicPlayer(userId, p, includeHandCount = true) {
+  if (!p) return null;
   return {
     userId, name: p.name, isGuest: p.isGuest, avatar_url: p.avatar_url || null,
     connected: p.connected, team: p.team,

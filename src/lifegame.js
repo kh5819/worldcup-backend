@@ -84,6 +84,7 @@ function newPlayerState(name, isGuest, avatarUrl, gender) {
 
 // ===== 공개용 직렬화 =====
 function publicPlayer(userId, p, opts = {}) {
+  if (!p) return null;
   return {
     userId,
     name: p.name,

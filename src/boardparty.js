@@ -124,6 +124,7 @@ function makeEmptyStats() {
 
 // ===== Public serialization =====
 function publicPlayer(uid, p) {
+  if (!p) return null;
   return {
     userId: uid, name: p.name, isGuest: p.isGuest, avatar_url: p.avatar_url || null,
     connected: p.connected, team: p.team,

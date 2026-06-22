@@ -39,6 +39,17 @@ import { registerMemoryMulti } from "./memory-multi.js";
 import { registerBlockBlastMulti } from "./blockblast-multi.js";
 import { registerYachtMulti } from "./yacht-multi.js";
 
+// ── 전역 크래시 가드 ──
+// 처리 안 된 예외/Promise 거부가 서버 프로세스 전체를 죽이는 것 방지.
+// (게임/소켓 핸들러 하나의 버그로 전체 멀티·채팅 연결이 끊기고 Render가 재시작되던 문제 대응)
+// 정상 동작엔 영향 없음 — 죽으려던 순간에만 실행되어 에러를 로그로 남기고 프로세스를 유지한다.
+process.on("unhandledRejection", (reason) => {
+  console.error("[FATAL] Unhandled Rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL] Uncaught Exception:", err?.stack || err);
+});
+
 const app = express();
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
