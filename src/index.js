@@ -4529,6 +4529,24 @@ app.get("/admin/streamer-log/by-streamer", requireAdmin, async (req, res) => {
   }
 });
 
+// 스트리머 로그 1행 삭제 (운영자 전용) — 실험/테스트로 쌓인 기록을 admin에서 직접 정리.
+//  로그 테이블 한 행만 지움 → 콘텐츠/멀티/채팅수집 등 다른 데이터엔 영향 없음(순수 기록용 테이블).
+app.delete("/admin/streamer-log/:id", requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ ok: false, error: "MISSING_ID" });
+    const { error } = await supabaseAdmin
+      .from("streamer_chat_log")
+      .delete()
+      .eq("id", id);
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR", detail: error.message });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/streamer-log/:id:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
 // 관리자 닉네임 강제변경
 app.patch("/admin/users/:userId/nickname", requireAdmin, async (req, res) => {
   try {
