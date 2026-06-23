@@ -6151,6 +6151,7 @@ app.put("/my/contents/:id", requireAuth, async (req, res) => {
           media_display_mode: (q.media_display_mode === "crop" || q.media_display_mode === "original") ? q.media_display_mode : "original",
           media_display_option: (q.media_display_option && typeof q.media_display_option === "object") ? q.media_display_option : {},
           mute_video: q.type === "video_youtube" ? !!q.mute_video : false,
+          loop_video: q.type === "video_youtube" ? !!q.loop_video : false,
         };
         if (row.reveal_media_url) {
           console.log(`[REVEAL-MEDIA] PUT q${i}: reveal_media_url=${row.reveal_media_url}, reveal_media_type=${row.reveal_media_type}`);
@@ -8620,6 +8621,7 @@ async function loadQuizQuestions(contentId, userId, isAdmin) {
         mediaDisplayMode: q.media_display_mode || "original",
         mediaDisplayOption: q.media_display_option || {},
         muteVideo: !!q.mute_video,
+        loopVideo: !!q.loop_video,
       };
     })
   };
@@ -8749,6 +8751,7 @@ function safeQuestion(q, index, total) {
     payload.durationSec = q.durationSec;
     if (q.type === "video_youtube") {
       payload.muteVideo = !!q.muteVideo;
+      payload.loopVideo = !!q.loopVideo;
     }
   }
   // image/gif/mp4 미디어가 있으면 클라이언트에 전달 (audio_youtube/video_youtube 제외)
@@ -8883,6 +8886,7 @@ function startQuizAnswering(room) {
       durationSec: question.durationSec,
       kind: question.type === "video_youtube" ? "video" : "audio",
       muteVideo: question.type === "video_youtube" ? !!question.muteVideo : true,
+      loopVideo: question.type === "video_youtube" ? !!question.loopVideo : false,
     };
     q.youtube = youtubePayload;
   }
