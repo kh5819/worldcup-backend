@@ -2138,7 +2138,10 @@ app.get("/api/youtube-playlist", requireAuth, async (req, res) => {
         const title = it?.snippet?.title || "";
         // 비공개/삭제 영상은 제외 (제목이 고정 문자열로 옴)
         if (vid && title !== "Private video" && title !== "Deleted video") {
-          items.push({ id: vid, title: title.slice(0, 80) });
+          // ★ 이모지(서로게이트 쌍)가 80번째에서 잘리면 반쪽 서로게이트가 남아
+          //   프론트 저장 시 22P02(invalid json)로 후보 저장이 통째로 실패한다.
+          //   코드포인트 단위([...str])로 잘라 쌍이 쪼개지지 않게 한다.
+          items.push({ id: vid, title: [...title].slice(0, 80).join("") });
         }
       }
       if (reachedEnd) break;
