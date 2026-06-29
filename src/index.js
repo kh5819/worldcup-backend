@@ -108,8 +108,21 @@ const restLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { ok: false, error: "RATE_LIMITED" },
+  // 대용량 월드컵/티어 저장 시 외부 이미지 복사는 전용 limiter로 따로 관리 (아래)
+  skip: (req) => req.path === "/api/proxy-image",
 });
 app.use(restLimiter);
+
+// ── /api/proxy-image 전용 rate limiter ──
+// 대형 월드컵(1000+장) 1회 저장 시 후보 수만큼 호출되므로 전역 300/분과 별도로 상향.
+// requireAuth 뒤에서만 도달하는 로그인 전용 엔드포인트라 버스트 허용해도 안전.
+const proxyImageLimiter = rateLimit({
+  windowMs: 60 * 1000,  // 1분
+  max: 1500,            // IP당 1500 req/min — 1025장 통합 월드컵도 1회 저장으로 완료
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: "RATE_LIMITED" },
+});
 
 // Supabase (토큰 검증용)
 const supabase = createClient(
@@ -1037,7 +1050,8 @@ async function buildContentSeoHtml(contentId, mode) {
       .from("worldcup_candidates")
       .select("name", { count: "exact" })
       .eq("content_id", contentId)
-      .eq("is_active", true);
+      .eq("is_active", true)
+      .limit(8);
     preview = (cands || []).slice(0, 8).map(c => c.name).filter(Boolean);
     itemCount = Math.ceil((count || (cands || []).length) / 2);
   }
@@ -2159,7 +2173,7 @@ app.get("/api/youtube-playlist", requireAuth, async (req, res) => {
 // POST /api/proxy-image — 외부 이미지 URL → Supabase Storage 복사 저장
 // 핫링크 차단(namu.wiki 등) 방지: 서버에서 fetch → Storage upload → publicUrl 반환
 // =============================================
-app.post("/api/proxy-image", requireAuth, async (req, res) => {
+app.post("/api/proxy-image", proxyImageLimiter, requireAuth, async (req, res) => {
   const MAX_SIZE = 10 * 1024 * 1024; // 10MB
   const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 
@@ -6474,12 +6488,15 @@ app.get("/balance/stats", async (req, res) => {
     if (!contentId) return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
 
     // 1) 쌍 구성 (pair_index 우선, 없으면 sort_order 순 2개씩)
-    const { data: cands, error: cErr } = await supabaseAdmin
-      .from("worldcup_candidates")
-      .select("id, pair_index, sort_order")
-      .eq("content_id", contentId).eq("is_active", true)
-      .order("sort_order", { ascending: true });
-    if (cErr) return res.status(500).json({ ok: false, error: "CANDS_FAILED" });
+    let cands;
+    try {
+      cands = await _fetchAllRows("worldcup_candidates", q =>
+        q.eq("content_id", contentId).eq("is_active", true)
+         .order("sort_order", { ascending: true })
+         .order("id", { ascending: true }), "id, pair_index, sort_order");
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: "CANDS_FAILED" });
+    }
     const list = cands || [];
     const hasPI = list.some(c => c.pair_index !== null && c.pair_index !== undefined);
     const pairs = [];
@@ -8042,14 +8059,17 @@ async function loadCandidates(contentId, userId, isAdmin) {
     }
   }
 
-  const { data: rows, error: rErr } = await supabaseAdmin
-    .from("worldcup_candidates")
-    .select("*")
-    .eq("content_id", contentId)
-    .eq("is_active", true)
-    .order("sort_order", { ascending: true });
-
-  if (rErr || !rows) return { error: "CANDIDATES_LOAD_FAILED" };
+  let rows;
+  try {
+    rows = await _fetchAllRows("worldcup_candidates", q =>
+      q.eq("content_id", contentId)
+       .eq("is_active", true)
+       .order("sort_order", { ascending: true })
+       .order("id", { ascending: true }));
+  } catch (e) {
+    return { error: "CANDIDATES_LOAD_FAILED" };
+  }
+  if (!rows) return { error: "CANDIDATES_LOAD_FAILED" };
   if (rows.length < 2) return { error: "NOT_ENOUGH_CANDIDATES" };
 
   // ✅ 전체 후보 반환 (강수 선택은 selectCandidatesForRoom에서 처리)
@@ -8585,13 +8605,16 @@ async function loadQuizQuestions(contentId, userId, isAdmin) {
     }
   }
 
-  const { data: rows, error: rErr } = await supabaseAdmin
-    .from("quiz_questions")
-    .select("*")
-    .eq("content_id", contentId)
-    .order("sort_order", { ascending: true });
-
-  if (rErr || !rows) return { error: "QUESTIONS_LOAD_FAILED" };
+  let rows;
+  try {
+    rows = await _fetchAllRows("quiz_questions", q =>
+      q.eq("content_id", contentId)
+       .order("sort_order", { ascending: true })
+       .order("id", { ascending: true }));
+  } catch (e) {
+    return { error: "QUESTIONS_LOAD_FAILED" };
+  }
+  if (!rows) return { error: "QUESTIONS_LOAD_FAILED" };
   if (rows.length < 1) return { error: "NO_QUESTIONS" };
 
   return {
@@ -11233,11 +11256,13 @@ async function _resolveAutoThumbFromUrl(mediaUrl) {
  */
 async function _resolveAndSaveCandidateThumbnails(contentId) {
   try {
-    const { data: candidates } = await supabaseAdmin
-      .from("worldcup_candidates")
-      .select("id, media_type, media_url, thumbnail_url")
-      .eq("content_id", contentId)
-      .is("thumbnail_url", null);
+    let candidates;
+    try {
+      candidates = await _fetchAllRows("worldcup_candidates", q =>
+        q.eq("content_id", contentId)
+         .is("thumbnail_url", null)
+         .order("id", { ascending: true }), "id, media_type, media_url, thumbnail_url");
+    } catch (e) { return; }
 
     if (!candidates || !candidates.length) return;
 
