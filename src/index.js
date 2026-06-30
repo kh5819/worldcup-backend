@@ -988,7 +988,6 @@ function generateSeoHtml({ title, description, image, canonical, jsonLd, bodyHtm
       <a href="${SITE_URL}/gamezone.html">🎮 게임천국</a>
       <a href="${SITE_URL}/omok.html">⚫⚪ 멀티 오목</a>
       <a href="${SITE_URL}/cardgame-multi.html">🃏 난장 카드게임</a>
-      <a href="${SITE_URL}/boardparty-multi.html">🎲 보드파티</a>
       <a href="${SITE_URL}/liar-multi.html">🕵️ 라이어 키워드</a>
       <a href="${SITE_URL}/fibbage-multi.html">🎭 거짓말 매치</a>
       <a href="${SITE_URL}/lifegame.html">🎲 인생게임</a>
