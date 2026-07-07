@@ -2048,7 +2048,7 @@ app.get("/api/og-thumb", async (req, res) => {
   if (!url) return res.status(400).json({ error: "url required" });
 
   // 보안: 허용 도메인 (CHZZK / SOOP / 네이버 비디오)
-  const ALLOWED = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.co\.kr|serviceapi\.nmv\.naver\.com|nmv\.naver\.com)\//i;
+  const ALLOWED = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.(?:co\.kr|com)|serviceapi\.nmv\.naver\.com|nmv\.naver\.com)\//i;
   if (!ALLOWED.test(url)) return res.status(403).json({ error: "domain not allowed" });
 
   // 캐시 확인 (nocache=1로 우회 가능)
@@ -2390,7 +2390,7 @@ app.get("/api/og-thumb/debug", async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "url required" });
 
-  const ALLOWED = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.co\.kr|serviceapi\.nmv\.naver\.com|nmv\.naver\.com)\//i;
+  const ALLOWED = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.(?:co\.kr|com)|serviceapi\.nmv\.naver\.com|nmv\.naver\.com)\//i;
   if (!ALLOWED.test(url)) return res.status(403).json({ error: "domain not allowed" });
 
   const chzzkId = _extractChzzkClipId(url);
@@ -11222,7 +11222,7 @@ async function _resolveAutoThumbFromUrl(mediaUrl) {
   }
 
   // SOOP / Naver Video → og:image
-  const ALLOWED_OG = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.co\.kr|serviceapi\.nmv\.naver\.com|nmv\.naver\.com)\//i;
+  const ALLOWED_OG = /^https?:\/\/(chzzk\.naver\.com|vod\.sooplive\.(?:co\.kr|com)|serviceapi\.nmv\.naver\.com|nmv\.naver\.com)\//i;
   if (ALLOWED_OG.test(url)) {
     try {
       const resp = await fetch(url, {
@@ -11513,7 +11513,7 @@ const _backfillHandler = async (req, res) => {
           // CHZZK — 기존 _resolveAutoThumbFromUrl 사용
           thumb = await _resolveAutoThumbFromUrl(url);
           if (thumb) results.push({ id: c.id, provider: "chzzk", thumb: thumb.slice(0, 80) });
-        } else if (/vod\.sooplive\.co\.kr/i.test(url)) {
+        } else if (/vod\.sooplive\.(?:co\.kr|com)/i.test(url)) {
           // SOOP — 기존 _resolveAutoThumbFromUrl 사용
           thumb = await _resolveAutoThumbFromUrl(url);
           if (thumb) results.push({ id: c.id, provider: "soop", thumb: thumb.slice(0, 80) });
