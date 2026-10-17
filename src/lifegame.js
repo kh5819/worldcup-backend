@@ -11,6 +11,10 @@ import {
   STAGES, STAGE_TURNS, STAT_DEFS, EVENTS, ENDINGS, ANALYSIS_LINES,
 } from "./lifegame-data.js";
 
+import {
+  startMinigame, handleMiniAct, recheckMinigame, abortMinigame, isMinigameActive,
+} from "./lifegame-minigames.js";
+
 const STAT_KEYS = STAT_DEFS.map(d => d.key);
 
 // ===== Room storage =====
@@ -25,6 +29,8 @@ const ALLOWED_TURN_SECS = [5, 10, 15, 20, 30];
 const RESULT_DELAY_MS = 1500;
 const EMPTY_ROOM_TTL_MS = 30_000;
 const TOTAL_ROUNDS = STAGES.reduce((a, s) => a + (STAGE_TURNS[s.id] || 1), 0);
+// 이 라운드(0-based)를 마친 직후 미니게임 삽입 (4·9·14번째 라운드 뒤)
+const MINIGAME_AFTER_ROUNDS = new Set([3, 8, 13]);
 
 // ===== Utils =====
 function genInviteCode() {
@@ -112,6 +118,7 @@ function publicRoom(room) {
     status: room.status,
     maxPlayers: room.maxPlayers,
     turnTimeSec: room.turnTimeSec,
+    minigames: room.minigames !== false,
     currentRoundIndex: room.currentRoundIndex,
     totalRounds: TOTAL_ROUNDS,
     currentTurnUserId: room.playerOrder[room.currentTurnPlayerIdx] || null,
@@ -374,6 +381,7 @@ function clearEmptyRoomTimer(room) {
 }
 
 function deleteRoom(io, room, reason = "UNKNOWN") {
+  abortMinigame(room);
   clearTurnTimer(room);
   clearEmptyRoomTimer(room);
   lifegameRooms.delete(room.id);
@@ -445,6 +453,7 @@ function startCurrentTurn(io, room) {
 
   const turnUserId = room.playerOrder[room.currentTurnPlayerIdx];
   const turnSec = room.turnTimeSec;
+  room.turnLocked = false; // 이 턴의 선택은 1회만 허용
   room.turnDeadline = Date.now() + turnSec * 1000;
 
   io.to(socketRoomName(room.id)).emit("lifegame:turnStart", {
@@ -468,6 +477,8 @@ function submitChoice(io, room, userId, choiceId, timedOut) {
   if (room.status !== "playing") return;
   const turnUid = room.playerOrder[room.currentTurnPlayerIdx];
   if (turnUid !== userId) return;
+  // 시간초과 자동선택 / 연속 클릭 / 끊김 자동선택이 겹쳐도 한 턴에 한 번만 적용
+  if (room.turnLocked) return;
 
   clearTurnTimer(room);
 
@@ -477,6 +488,7 @@ function submitChoice(io, room, userId, choiceId, timedOut) {
 
   const result = applyChoiceForPlayer(player, event, choiceId);
   if (!result) return;
+  room.turnLocked = true;
 
   const payload = {
     roundIndex: room.currentRoundIndex,
@@ -504,13 +516,34 @@ function endRound(io, room) {
     roundIndex: room.currentRoundIndex,
     results: room.turnResultsThisRound,
   });
+  const doneIdx = room.currentRoundIndex;
   room.currentRoundIndex += 1;
-  // 잠깐 텀 두고 다음 라운드
-  setTimeout(() => startNextRound(io, room), 800);
+  // 잠깐 텀 두고 (미니게임 or 다음 라운드)
+  setTimeout(() => {
+    if (room.status !== "playing") return;
+    const wantMini = room.minigames !== false
+      && MINIGAME_AFTER_ROUNDS.has(doneIdx)
+      && room.currentRoundIndex < TOTAL_ROUNDS;
+    if (wantMini) {
+      const started = startMinigame({
+        room,
+        emit: (ev, payload) => io.to(socketRoomName(room.id)).emit(ev, payload),
+        clampStat,
+        onFinish: () => {
+          if (room.status !== "playing") return;
+          broadcastRoomState(io, room);
+          startNextRound(io, room);
+        },
+      });
+      if (started) return;
+    }
+    startNextRound(io, room);
+  }, 800);
 }
 
 function endGame(io, room) {
   room.status = "ended";
+  abortMinigame(room);
   clearTurnTimer(room);
 
   for (const uid of room.playerOrder) {
@@ -563,6 +596,7 @@ export function registerLifegame(io, supabaseAdmin) {
           status: "lobby",  // 'lobby' | 'playing' | 'ended'
           maxPlayers,
           turnTimeSec: turnSec,
+          minigames: true,
           createdAt: Date.now(),
 
           players: new Map(),
@@ -662,6 +696,7 @@ export function registerLifegame(io, supabaseAdmin) {
       if (payload?.turnTimeSec != null && ALLOWED_TURN_SECS.includes(Number(payload.turnTimeSec))) {
         room.turnTimeSec = Number(payload.turnTimeSec);
       }
+      if (payload?.minigames != null) room.minigames = !!payload.minigames;
       if (payload?.maxPlayers != null) {
         const m = Math.min(MAX_PLAYERS_HARD_CAP, Math.max(MIN_PLAYERS, Number(payload.maxPlayers) || 6));
         if (m >= room.players.size) room.maxPlayers = m;
@@ -681,6 +716,8 @@ export function registerLifegame(io, supabaseAdmin) {
       if (room.status === "ended") { room.endedAt = null; }
       if (room.players.size < MIN_PLAYERS) return cb?.({ ok: false, error: "NOT_ENOUGH_PLAYERS" });
 
+      abortMinigame(room);
+      room.miniUsed = new Set();
       room.status = "playing";
       room.currentRoundIndex = 0;
       room.seenEventIds = new Set();
@@ -700,6 +737,7 @@ export function registerLifegame(io, supabaseAdmin) {
       const turnUid = room.playerOrder[room.currentTurnPlayerIdx];
       if (turnUid !== me.id) return cb?.({ ok: false, error: "NOT_YOUR_TURN" });
 
+      if (room.turnLocked) return cb?.({ ok: false, error: "ALREADY_SUBMITTED" });
       const choiceId = String(payload?.choiceId || "");
       const ev = room.currentEvent;
       if (!ev || !ev.choices.find(c => c.id === choiceId)) {
@@ -708,6 +746,14 @@ export function registerLifegame(io, supabaseAdmin) {
 
       cb?.({ ok: true });
       submitChoice(io, room, me.id, choiceId, false);
+    });
+
+    // ===== miniAct (미니게임 입력) =====
+    socket.on("lifegame:miniAct", (payload, cb) => {
+      const roomId = lifegameUserRoom.get(me.id);
+      const room = roomId ? lifegameRooms.get(roomId) : null;
+      if (!room || room.status !== "playing") return cb?.({ ok: false });
+      cb?.({ ok: handleMiniAct(room, me.id, payload) });
     });
 
     // ===== leaveRoom =====
@@ -762,6 +808,7 @@ export function registerLifegame(io, supabaseAdmin) {
           const ev = room.currentEvent;
           if (ev) submitChoice(io, room, me.id, ev.choices[0].id, true);
         }
+        if (isMinigameActive(room)) recheckMinigame(room);
         broadcastRoomState(io, room);
         // 모두 끊기면 방 정리
         const anyConnected = room.playerOrder.some(uid => room.players.get(uid)?.connected);
@@ -793,6 +840,7 @@ function leavePlayer(io, room, userId, forced) {
   }
 
   if (room.status === "playing") {
+    if (isMinigameActive(room)) recheckMinigame(room);
     if (wasTurn) {
       // 다음 턴으로 자동 진행 (인덱스는 그대로 두고 startCurrentTurn이 알아서 skip)
       startCurrentTurn(io, room);

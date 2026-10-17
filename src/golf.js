@@ -12,11 +12,13 @@ const golfInvites = new Map();
 const golfUserRoom = new Map();
 
 const ALLOWED_MAX_PLAYERS = [2, 4, 6, 8];
-const ALLOWED_MODES = ["short", "hard"];
+const ALLOWED_MODES = ["short", "hard", "extreme"];
 const EMPTY_ROOM_TTL_MS = 30_000;
 const MAX_NICK_LEN = 14;
 const TOTAL_HOLES = 10;
 const HOLE_TIMEOUT_MS = 120_000;   // 한 홀 최대 2분 (안 끝나면 강제 진행)
+const HOLE_TIMEOUT_EXTREME_MS = 180_000; // 매우 어려움: 홀당 기대 타수 5~9타·굴러가는 시간 20~40초라 3분
+function holeTimeoutMs(room) { return room.mode === "extreme" ? HOLE_TIMEOUT_EXTREME_MS : HOLE_TIMEOUT_MS; }
 const POS_THROTTLE_MS = 50;        // peerPos 서버 throttle (클라 10Hz 송신 → 안전 마진)
 
 // ===== util =====
@@ -165,6 +167,7 @@ function startHole(io, room, holeIndex) {
     p.lastActionMs = Date.now();
   }
   clearHoleTimer(room);
+  const timeoutMs = holeTimeoutMs(room);
   room.holeTimer = setTimeout(() => {
     const r = golfRooms.get(room.id);
     if (r && r.status === "playing" && r.holeIndex === holeIndex) {
@@ -173,12 +176,12 @@ function startHole(io, room, holeIndex) {
         if (p.status === "playing" && !p.holed){
           // 페널티: 현재 stroke + 2
           p.totalStrokes += (p.strokes + 2);
-          p.totalTime += HOLE_TIMEOUT_MS;
+          p.totalTime += timeoutMs;
         }
       }
       advanceHole(io, r);
     }
-  }, HOLE_TIMEOUT_MS);
+  }, timeoutMs);
 }
 
 function advanceHole(io, room) {
