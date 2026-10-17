@@ -853,7 +853,7 @@ function generateOgHtml({ title, description, image, url, redirectUrl, type = "w
 
 const escHtml = (s) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
-function generateSeoHtml({ title, description, image, canonical, jsonLd, bodyHtml, playUrl, breadcrumb }) {
+function generateSeoHtml({ title, description, image, canonical, jsonLd, bodyHtml, playUrl, breadcrumb, playLabel = "▶ 플레이 시작", robots = "index,follow,max-image-preview:large" }) {
   const ldScript = jsonLd ? `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>` : "";
   const bcScript = breadcrumb ? `<script type="application/ld+json">${JSON.stringify(breadcrumb)}</script>` : "";
   return `<!DOCTYPE html>
@@ -864,7 +864,7 @@ function generateSeoHtml({ title, description, image, canonical, jsonLd, bodyHtm
   <title>${escHtml(title)}</title>
   <meta name="description" content="${escHtml(description)}">
   <link rel="canonical" href="${escHtml(canonical)}">
-  <meta name="robots" content="index,follow,max-image-preview:large">
+  <meta name="robots" content="${escHtml(robots)}">
 
   <!-- Open Graph (검색엔진 + SNS 공유 양용) -->
   <meta property="og:type" content="website">
@@ -982,7 +982,7 @@ function generateSeoHtml({ title, description, image, canonical, jsonLd, bodyHtm
       <a href="${SITE_URL}/gamezone.html" style="font-size:13px">🎮 게임천국</a>
     </div>
     ${bodyHtml}
-    <a class="seo-play" href="${escHtml(playUrl)}">▶ 플레이 시작</a>
+    <a class="seo-play" href="${escHtml(playUrl)}">${escHtml(playLabel)}</a>
     <div class="seo-related">
       <h2>다른 무료 게임도 즐겨보세요</h2>
       <a href="${SITE_URL}/gamezone.html">🎮 게임천국</a>
@@ -1773,6 +1773,155 @@ app.get("/sitemap-ptest.xml", async (req, res) => {
   }
 });
 
+// =========================
+// 커뮤니티 글 SSR — /cm/:id (검색엔진 색인용, 실제 화면은 community.html?id=)
+// 삭제·숨김(is_deleted) 글은 즉시 410 Gone (캐시 없음 → 삭제하면 바로 검색 대상에서 빠짐)
+// 너무 짧은 글은 noindex (얇은 콘텐츠로 사이트 전체 평가가 깎이는 것 방지)
+// =========================
+const COMMUNITY_CATEGORY_LABEL = { free: "자유", question: "질문", recommend: "추천", multi: "멀티구인" };
+function _communityIndexable(p) {
+  return (String(p.title || "").length + String(p.body || "").length) >= 30
+    || (Array.isArray(p.image_urls) && p.image_urls.length > 0)
+    || (p.comment_count || 0) > 0;
+}
+
+// 반환: null(없음) | "gone"(삭제·숨김) | html
+async function buildCommunitySeoHtml(postId) {
+  if (!_isValidId(postId)) return null;
+  const { data: p } = await supabaseAdmin
+    .from("community_posts")
+    .select("id, user_id, guest_name, title, body, category, image_urls, like_count, comment_count, view_count, is_deleted, created_at")
+    .eq("id", postId)
+    .maybeSingle();
+  if (!p) return null;
+  if (p.is_deleted) return "gone";
+
+  let author = p.guest_name ? `${p.guest_name} (비회원)` : "익명";
+  if (p.user_id) {
+    const { data: profile } = await supabaseAdmin.from("profiles").select("nickname").eq("id", p.user_id).maybeSingle();
+    author = profile?.nickname || "회원";
+  }
+  const { data: comments } = await supabaseAdmin
+    .from("community_comments")
+    .select("body, created_at")
+    .eq("post_id", p.id)
+    .eq("is_deleted", false)
+    .order("created_at", { ascending: true })
+    .limit(20);
+  const shownComments = (comments || []).filter(c => c.body);
+
+  const cat = COMMUNITY_CATEGORY_LABEL[p.category] || "";
+  const body = String(p.body || "").trim();
+  const flat = body.replace(/\s+/g, " ");
+  let description = flat || `${p.title} — PlayDuo 커뮤니티 글`;
+  if (description.length > 155) description = description.slice(0, 152) + "...";
+  const images = Array.isArray(p.image_urls) ? p.image_urls.filter(u => /^https:\/\//.test(u)) : [];
+  const ogImage = images[0] || DEFAULT_OG_IMAGE;
+  const canonical = `${SITE_URL}/cm/${p.id}`;
+  const viewUrl = `${SITE_URL}/community.html?id=${p.id}`;
+  const title = `${cat ? `[${cat}] ` : ""}${p.title} — PlayDuo 커뮤니티`;
+
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "DiscussionForumPosting",
+    "headline": p.title,
+    "text": flat.slice(0, 1000),
+    "url": canonical,
+    "datePublished": p.created_at,
+    "author": { "@type": "Person", "name": author },
+    "commentCount": p.comment_count || 0,
+    "interactionStatistic": [
+      { "@type": "InteractionCounter", "interactionType": "https://schema.org/LikeAction", "userInteractionCount": p.like_count || 0 },
+      { "@type": "InteractionCounter", "interactionType": "https://schema.org/ViewAction", "userInteractionCount": p.view_count || 0 },
+    ],
+    "comment": shownComments.slice(0, 10).map(c => ({ "@type": "Comment", "text": String(c.body).slice(0, 300), "datePublished": c.created_at })),
+  };
+  if (images.length) jsonLd.image = images;
+  const breadcrumb = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "DUO", "item": SITE_URL },
+      { "@type": "ListItem", "position": 2, "name": "커뮤니티", "item": `${SITE_URL}/community.html` },
+      { "@type": "ListItem", "position": 3, "name": p.title, "item": canonical },
+    ],
+  };
+
+  const dateStr = new Date(p.created_at).toISOString().slice(0, 10);
+  const commentsHtml = shownComments.length
+    ? `<div class="seo-section"><h2>댓글 ${p.comment_count || shownComments.length}개</h2><ul>${shownComments.map(c => `<li>${escHtml(c.body)}</li>`).join("")}</ul></div>`
+    : "";
+  const bodyHtml = `
+    <nav class="seo-bc" aria-label="breadcrumb">
+      <a href="${SITE_URL}">DUO</a> · <a href="${SITE_URL}/community.html">커뮤니티</a>${cat ? ` · <a href="${SITE_URL}/community.html?cat=${escHtml(p.category)}">${escHtml(cat)}</a>` : ""}
+    </nav>
+    <h1 class="seo-title">${escHtml(p.title)}</h1>
+    <div class="seo-meta">
+      ${cat ? `<span class="seo-chip">${escHtml(cat)}</span>` : ""}
+      <span class="seo-chip">👤 ${escHtml(author)}</span>
+      <span class="seo-chip">${dateStr}</span>
+      <span class="seo-chip">👍 ${p.like_count || 0}</span>
+      <span class="seo-chip">조회 ${p.view_count || 0}</span>
+    </div>
+    ${body ? `<div class="seo-desc" style="white-space:pre-line">${escHtml(body)}</div>` : ""}
+    ${images.map(u => `<img class="seo-thumb" src="${escHtml(u)}" alt="${escHtml(p.title)}" loading="lazy" />`).join("")}
+    ${commentsHtml}
+  `;
+
+  return generateSeoHtml({
+    title, description, image: ogImage, canonical, jsonLd, breadcrumb, bodyHtml,
+    playUrl: viewUrl, playLabel: "💬 커뮤니티에서 보기 · 댓글 달기",
+    robots: _communityIndexable(p) ? "index,follow,max-image-preview:large" : "noindex,follow",
+  });
+}
+
+app.get("/cm/:id", async (req, res) => {
+  try {
+    const html = await buildCommunitySeoHtml(req.params.id);
+    // 캐시 없음: 삭제·수정이 검색엔진/사용자에게 즉시 반영
+    res.setHeader("Cache-Control", "no-store");
+    if (!html || html === "gone") {
+      return res.status(html === "gone" ? 410 : 404)
+        .set("X-Robots-Tag", "noindex")
+        .type("html")
+        .send(generateOgHtml({
+          title: "삭제된 글입니다 — PlayDuo 커뮤니티",
+          description: "삭제되었거나 숨겨진 글입니다.",
+          image: DEFAULT_OG_IMAGE, url: `${SITE_URL}/community.html`, redirectUrl: `${SITE_URL}/community.html`,
+        }));
+    }
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(html);
+  } catch (e) {
+    console.error("[GET /cm/:id]", e);
+    res.status(500).send("Internal");
+  }
+});
+
+// /sitemap-community.xml — 커뮤니티 글 (삭제·숨김·너무 짧은 글 제외). 캐시 없음 → 새 글 즉시 포함, 삭제 즉시 제외
+app.get("/sitemap-community.xml", async (req, res) => {
+  try {
+    const { data: rows, error } = await supabaseAdmin
+      .from("community_posts")
+      .select("id, title, body, image_urls, comment_count, created_at")
+      .eq("is_deleted", false)
+      .order("created_at", { ascending: false })
+      .limit(50000);
+    if (error) { console.error("[sitemap-community query]", error); }
+    const items = (rows || [])
+      .filter(r => r && _isValidId(r.id) && _communityIndexable(r))
+      .map(r => `<url><loc>${SITE_URL}/cm/${escapeXml(r.id)}</loc><lastmod>${_formatLastmod(r.created_at)}</lastmod><changefreq>weekly</changefreq><priority>0.5</priority></url>`)
+      .join("");
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE_URL}/community.html</loc><changefreq>hourly</changefreq><priority>0.7</priority></url>${items}</urlset>`;
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.send(xml);
+  } catch (e) {
+    console.error("[sitemap-community]", e);
+    res.status(500).type("text/plain").send("Internal");
+  }
+});
+
 // sitemap 캐시 즉시 무효화 (개발/admin용, 토큰 옵션)
 app.get("/sitemap-bust", (req, res) => {
   SITEMAP_CACHE.clear();
@@ -1802,6 +1951,10 @@ app.get("/sitemap-index.xml", async (req, res) => {
   </sitemap>
   <sitemap>
     <loc>${SITE_URL}/sitemap-ptest.xml</loc>
+    <lastmod>${today}</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>${SITE_URL}/sitemap-community.xml</loc>
     <lastmod>${today}</lastmod>
   </sitemap>
 </sitemapindex>`;
