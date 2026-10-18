@@ -31,12 +31,12 @@ CREATE TABLE IF NOT EXISTS public.community_posts (
 );
 CREATE INDEX IF NOT EXISTS idx_community_posts_created ON public.community_posts(created_at DESC) WHERE NOT is_deleted;
 CREATE INDEX IF NOT EXISTS idx_community_posts_user ON public.community_posts(user_id);
--- 말머리(선택): none=없음(기본), free=자유, question=질문, recommend=추천, multi=멀티구인
+-- 말머리(선택): none=없음(기본), free=자유, question=질문, recommend=추천, multi=멀티구인, notice=공지(관리자 전용)
 ALTER TABLE public.community_posts ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT 'none';
 ALTER TABLE public.community_posts ALTER COLUMN category SET DEFAULT 'none';
 ALTER TABLE public.community_posts DROP CONSTRAINT IF EXISTS community_posts_category_check;
 ALTER TABLE public.community_posts ADD CONSTRAINT community_posts_category_check
-  CHECK (category IN ('none', 'free', 'question', 'recommend', 'multi'));
+  CHECK (category IN ('none', 'free', 'question', 'recommend', 'multi', 'notice'));
 CREATE INDEX IF NOT EXISTS idx_community_posts_category ON public.community_posts(category, created_at DESC) WHERE NOT is_deleted;
 -- 목록 탭 정렬 (인기순=좋아요, 조회수순)
 CREATE INDEX IF NOT EXISTS idx_community_posts_likes ON public.community_posts(like_count DESC, created_at DESC) WHERE NOT is_deleted;
@@ -160,8 +160,12 @@ BEGIN
     RAISE EXCEPTION 'invalid_image_url';
   END IF;
 
-  IF coalesce(p_category, 'none') NOT IN ('none', 'free', 'question', 'recommend', 'multi') THEN
+  IF coalesce(p_category, 'none') NOT IN ('none', 'free', 'question', 'recommend', 'multi', 'notice') THEN
     RAISE EXCEPTION 'invalid_category';
+  END IF;
+  -- 공지 말머리는 관리자 전용
+  IF p_category = 'notice' AND NOT public.is_admin() THEN
+    RAISE EXCEPTION 'forbidden';
   END IF;
 
   INSERT INTO community_posts (user_id, guest_name, title, body, image_urls, category)

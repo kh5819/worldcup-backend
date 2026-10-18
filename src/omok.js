@@ -17,6 +17,8 @@
 // 5목 검사: 매 착수 시 4방향 (가로/세로/대각 NW-SE, NE-SW) — 5 이상 연속이면 승리
 // =========================
 
+import { chooseOmokMove, OMOK_BOT_LEVELS } from "./omok-bot.js";
+
 // ===== Room storage =====
 const omokRooms = new Map();      // roomId → room
 const omokInvites = new Map();    // inviteCode → roomId
@@ -30,6 +32,9 @@ const ALLOWED_TURN_SECS = [10, 30, 60, 90, 120, 180];
 const ALLOWED_MODES = ["1v1", "2v2", "3v3", "4v4", "2v2v2", "2v2v2v2", "ffa"];
 const ALLOWED_WIN_LENGTHS = [3, 4, 5]; // 호스트가 인원·보드에 맞게 승리 조건 조정
 const EMPTY_ROOM_TTL_MS = 30_000;
+// AI 봇: 난이도별 이름·생각하는 척 하는 지연(ms)
+const BOT_LABEL = { easy: "쉬움", normal: "보통", hard: "어려움" };
+const BOT_DELAY_MS = { easy: [700, 1500], normal: [800, 1700], hard: [900, 2000] };
 const ENDED_ROOM_TTL_MS = 10 * 60_000;
 
 // 모드별 인원 (ffa는 가변)
@@ -101,6 +106,22 @@ function newPlayerState(name, isGuest, avatarUrl) {
     team: null,  // 0|1 (팀전만)
     cards: [],   // 초딩 모드 보유 카드 id 배열
   };
+}
+
+function newBotState(level, seq) {
+  const lv = OMOK_BOT_LEVELS.includes(level) ? level : "normal";
+  const p = newPlayerState(`🤖 봇${seq}(${BOT_LABEL[lv]})`, false, null);
+  p.isBot = true;
+  p.botLevel = lv;
+  return p;
+}
+function hasConnectedHuman(room) {
+  for (const p of room.players.values()) if (!p.isBot && p.connected) return true;
+  return false;
+}
+function hasHuman(room) {
+  for (const p of room.players.values()) if (!p.isBot) return true;
+  return false;
 }
 
 function countTeam(room, team) {
@@ -197,6 +218,8 @@ function publicPlayer(userId, p) {
     color: p.color,
     team: p.team,
     cardCount: (p.cards || []).length, // 카드 개수만 공개 (내용 비공개)
+    isBot: !!p.isBot,
+    botLevel: p.isBot ? p.botLevel : null,
   };
 }
 
@@ -257,12 +280,16 @@ function emitMyCards(io, room, userId) {
 function clearTurnTimer(room) {
   if (room.turnTimer) { clearTimeout(room.turnTimer); room.turnTimer = null; }
 }
+function clearBotTimer(room) {
+  if (room.botTimer) { clearTimeout(room.botTimer); room.botTimer = null; }
+}
 function clearEmptyRoomTimer(room) {
   if (room.emptyRoomTimer) { clearTimeout(room.emptyRoomTimer); room.emptyRoomTimer = null; }
 }
 
 function deleteRoom(io, room, reason = "UNKNOWN") {
   clearTurnTimer(room);
+  clearBotTimer(room);
   clearEmptyRoomTimer(room);
   omokRooms.delete(room.id);
   omokInvites.delete(room.inviteCode);
@@ -299,12 +326,13 @@ function startTurn(io, room) {
     if (p && p.connected) break;
     room.currentTurnIdx = (room.currentTurnIdx + 1) % room.playerOrder.length;
   }
-  // 모두 끊겨있으면 그냥 대기
+  // 모두 끊겨있으면 그냥 대기 (사람이 없으면 봇끼리 계속 두지 않고 멈춤)
   const turnUid = room.playerOrder[room.currentTurnIdx];
   const turnPlayer = room.players.get(turnUid);
-  if (!turnPlayer?.connected) {
+  if (!turnPlayer?.connected || !hasConnectedHuman(room)) {
     return;
   }
+  clearBotTimer(room);
 
   room.turnDeadline = Date.now() + room.turnTimeSec * 1000;
 
@@ -316,6 +344,49 @@ function startTurn(io, room) {
 
   clearTurnTimer(room);
   room.turnTimer = setTimeout(() => onTurnTimeout(io, room, turnUid), room.turnTimeSec * 1000);
+
+  if (turnPlayer.isBot) scheduleBot(io, room, turnUid);
+}
+
+// ===== AI 봇 =====
+function scheduleBot(io, room, uid) {
+  clearBotTimer(room);
+  const p = room.players.get(uid);
+  const [lo, hi] = BOT_DELAY_MS[p?.botLevel] || BOT_DELAY_MS.normal;
+  const delay = lo + Math.floor(Math.random() * (hi - lo));
+  const histLen = room.history.length;
+  room.botTimer = setTimeout(() => botTurn(io, room, uid, histLen), delay);
+}
+
+function botTurn(io, room, uid, histLen) {
+  room.botTimer = null;
+  if (!omokRooms.has(room.id) || room.status !== "playing") return;
+  // 그 사이 차례가 바뀌었거나 이미 착수가 일어났으면 무시
+  if (room.playerOrder[room.currentTurnIdx] !== uid || room.history.length !== histLen) return;
+  if (!hasConnectedHuman(room)) return;
+  const bot = room.players.get(uid);
+  if (!bot) return;
+  try {
+    const mv = chooseOmokMove(room, uid, bot.botLevel);
+    if (mv && placeStone(io, room, uid, mv.x, mv.y).ok) return;
+    // 예외 상황(벽/투명돌과 겹침 등): 아무 합법 칸이나
+    const size = room.boardSize;
+    const start = Math.floor(Math.random() * room.board.length);
+    for (let k = 0; k < room.board.length; k++) {
+      const i = (start + k) % room.board.length;
+      if (room.board[i] !== 0) continue;
+      if (placeStone(io, room, uid, i % size, Math.floor(i / size)).ok) return;
+    }
+  } catch (e) {
+    console.error("[omok:bot]", e);
+  }
+  // 둘 곳이 없으면 패스
+  if (room.status === "playing" && room.playerOrder[room.currentTurnIdx] === uid) {
+    clearTurnTimer(room);
+    io.to(socketRoomName(room.id)).emit("omok:turnPass", { userId: uid, name: bot.name, timedOut: false });
+    room.currentTurnIdx = (room.currentTurnIdx + 1) % room.playerOrder.length;
+    startTurn(io, room);
+  }
 }
 
 function onTurnTimeout(io, room, expectedTurnUid) {
@@ -607,6 +678,7 @@ function countNonZero(arr) {
 function endGame(io, room, winLine, reason = "WIN") {
   room.status = "ended";
   clearTurnTimer(room);
+  clearBotTimer(room);
 
   const winnerP = room.winnerUserId ? room.players.get(room.winnerUserId) : null;
   io.to(socketRoomName(room.id)).emit("omok:gameEnd", {
@@ -692,6 +764,8 @@ export function registerOmok(io, supabaseAdmin) {
           ghosts: new Map(),     // key="x,y" → { ownerId, color, expireAtTurn }
           turnDeadline: null,
           turnTimer: null,
+          botTimer: null,
+          botSeq: 0,
           emptyRoomTimer: null,
         };
         omokRooms.set(roomId, room);
@@ -733,10 +807,16 @@ export function registerOmok(io, supabaseAdmin) {
           if (room.players.has(me.id)) {
             const p = room.players.get(me.id);
             p.connected = true;
+            clearEmptyRoomTimer(room);
             socket.join(socketRoomName(roomId));
             omokUserRoom.set(me.id, roomId);
             cb?.({ ok: true, roomId, inviteCode: room.inviteCode, room: publicRoom(room), reconnected: true });
             broadcastRoomState(io, room);
+            // 모두 끊겨 멈춰 있던 판(타이머 없음)이면 다시 진행
+            if (room.status === "playing") {
+              const curBot = room.players.get(room.playerOrder[room.currentTurnIdx])?.isBot;
+              if (!room.turnTimer || (curBot && !room.botTimer)) startTurn(io, room);
+            }
             return;
           }
           return cb?.({ ok: false, error: "GAME_ALREADY_STARTED" });
@@ -829,6 +909,28 @@ export function registerOmok(io, supabaseAdmin) {
         if (room.specialMode !== sm) { room.specialMode = sm; changed = true; }
       }
       if (changed) broadcastRoomState(io, room);
+      cb?.({ ok: true, room: publicRoom(room) });
+    });
+
+    // ===== addBot (host only, lobby only) — 빈 자리에 AI 봇 추가 =====
+    // payload: { level: 'easy'|'normal'|'hard', fill?: boolean (true면 빈 자리 전부 채움) }
+    socket.on("omok:addBot", (payload, cb) => {
+      const roomId = omokUserRoom.get(me.id);
+      const room = roomId ? omokRooms.get(roomId) : null;
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
+      if (room.status !== "lobby") return cb?.({ ok: false, error: "NOT_LOBBY" });
+      const level = OMOK_BOT_LEVELS.includes(payload?.level) ? payload.level : "normal";
+      if (room.players.size >= room.maxPlayers) return cb?.({ ok: false, error: "ROOM_FULL" });
+      const want = payload?.fill ? room.maxPlayers - room.players.size : 1;
+      for (let k = 0; k < want; k++) {
+        room.botSeq = (room.botSeq || 0) + 1;
+        const uid = `bot_${room.id}_${room.botSeq}`;
+        room.players.set(uid, newBotState(level, room.botSeq));
+        room.playerOrder.push(uid);
+      }
+      reassignColorsAndTeams(room);
+      broadcastRoomState(io, room);
       cb?.({ ok: true, room: publicRoom(room) });
     });
 
@@ -1147,7 +1249,7 @@ export function registerOmok(io, supabaseAdmin) {
         }
         broadcastRoomState(io, room);
         // 모두 끊기면 일정 시간 뒤 정리
-        const anyConnected = room.playerOrder.some(uid => room.players.get(uid)?.connected);
+        const anyConnected = hasConnectedHuman(room);
         if (!anyConnected) {
           clearEmptyRoomTimer(room);
           room.emptyRoomTimer = setTimeout(() => deleteRoom(io, room, "ALL_DISCONNECTED"), EMPTY_ROOM_TTL_MS);
@@ -1167,13 +1269,13 @@ function leavePlayer(io, room, userId, forced) {
   room.playerOrder = room.playerOrder.filter(u => u !== userId);
   if (omokUserRoom.get(userId) === room.id) omokUserRoom.delete(userId);
 
-  if (room.playerOrder.length === 0) {
+  if (room.playerOrder.length === 0 || !hasHuman(room)) {
     deleteRoom(io, room, "EMPTY");
     return;
   }
 
   if (wasHost) {
-    room.hostUserId = room.playerOrder[0];
+    room.hostUserId = room.playerOrder.find(uid => !room.players.get(uid)?.isBot) || room.playerOrder[0];
   }
 
   if (room.status === "lobby") {
