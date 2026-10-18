@@ -28,6 +28,11 @@ const KINDS = {
     desc: "가장 빨리 정답을 고르세요. 틀리면 탈락!",
     flavor: "intel", asc: true,
   },
+  tap: {
+    emoji: "🔢", title: "숫자 순서 터치",
+    desc: "1부터 9까지 순서대로 가장 빨리 터치! 틀린 숫자는 무시돼요.",
+    flavor: "social", asc: true,
+  },
 };
 const KIND_IDS = Object.keys(KINDS);
 
@@ -63,6 +68,18 @@ function makeMath() {
   }
   const choices = [...set].sort(() => Math.random() - 0.5);
   return { question: `${q} = ?`, choices, answerIdx: choices.indexOf(ans) };
+}
+
+// 숫자 터치: 전원 같은 판 배치 (서버가 1~9를 섞어서 전달)
+const TAP_LIMIT_MS = 12000;
+const TAP_MIN_MS = 1200; // 사람이 9번 순서대로 누르는 하한 — 미만이면 비정상 입력(반칙)
+function makeTapCells() {
+  const cells = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+  for (let i = cells.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [cells[i], cells[j]] = [cells[j], cells[i]];
+  }
+  return cells;
 }
 
 function clearTimers(mini) {
@@ -136,6 +153,11 @@ function beginKind(room, mini) {
     mini.goAt = Date.now();
     emit("lifegame:miniGo", { kind: "stop", targetMs: 3000 });
     later(mini, () => finish(room, mini), 6500);
+  } else if (mini.kind === "tap") {
+    mini.phase = "go";
+    mini.goAt = Date.now();
+    emit("lifegame:miniGo", { kind: "tap", cells: makeTapCells(), limitMs: TAP_LIMIT_MS });
+    later(mini, () => finish(room, mini), TAP_LIMIT_MS + 2500);
   } else {
     mini.math = makeMath();
     mini.phase = "go";
@@ -172,6 +194,11 @@ export function handleMiniAct(room, userId, payload) {
     const elapsed = now - mini.goAt;
     const diff = Math.abs(elapsed - 3000);
     mini.acts.set(userId, { value: diff, display: `${(elapsed / 1000).toFixed(2)}초 (${diff}ms 차이)` });
+  } else if (mini.kind === "tap") {
+    const ms = now - mini.goAt;
+    if (ms < TAP_MIN_MS) mini.acts.set(userId, { foul: true, display: "비정상 기록 😵" });
+    else if (payload?.timeout || ms > TAP_LIMIT_MS + 2000) mini.acts.set(userId, { foul: true, display: "시간 초과 ⏰" });
+    else mini.acts.set(userId, { value: ms, display: `${(ms / 1000).toFixed(2)}초` });
   } else if (mini.kind === "math") {
     if (Number(payload?.choiceIdx) === mini.math.answerIdx) {
       const ms = now - mini.goAt;
