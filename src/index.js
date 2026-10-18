@@ -3677,8 +3677,22 @@ app.patch("/admin/comment-reports/:id/status", requireAdmin, async (req, res) =>
 app.delete("/admin/comments/:commentTable/:commentId", requireAdmin, async (req, res) => {
   try {
     const { commentTable, commentId } = req.params;
-    if (!["content_comments", "tier_instance_comments", "notice_comments"].includes(commentTable)) {
+    if (!["content_comments", "tier_instance_comments", "notice_comments", "community_comments"].includes(commentTable)) {
       return res.status(400).json({ ok: false, error: "INVALID_TABLE" });
+    }
+
+    // 커뮤니티 댓글: soft delete (본문 비움 + 글 댓글수 -1 + 신고 처리) — 사용자용 community_delete_comment와 동일
+    if (commentTable === "community_comments") {
+      const { data: cm } = await supabaseAdmin.from("community_comments").select("id, post_id, is_deleted").eq("id", commentId).maybeSingle();
+      if (!cm) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+      if (!cm.is_deleted) {
+        const { error: uErr } = await supabaseAdmin.from("community_comments").update({ is_deleted: true, body: "" }).eq("id", commentId);
+        if (uErr) { console.error("admin community comment delete:", uErr); return res.status(500).json({ ok: false, error: "DB_ERROR" }); }
+        const { data: post } = await supabaseAdmin.from("community_posts").select("comment_count").eq("id", cm.post_id).maybeSingle();
+        if (post) await supabaseAdmin.from("community_posts").update({ comment_count: Math.max((post.comment_count || 0) - 1, 0) }).eq("id", cm.post_id);
+      }
+      await supabaseAdmin.from("community_reports").update({ status: "resolved" }).eq("target_type", "comment").eq("target_id", commentId).eq("status", "pending");
+      return res.json({ ok: true });
     }
 
     // 댓글 삭제
@@ -3714,7 +3728,7 @@ app.get("/admin/all-comments", requireAdmin, async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 30));
     const offset = (page - 1) * limit;
-    const source = req.query.source || "all"; // all | content | tier | notice
+    const source = req.query.source || "all"; // all | content | tier | notice | community
     const q = (req.query.q || "").trim();
     const authorQ = (req.query.author || "").trim();
 
@@ -3876,6 +3890,62 @@ app.get("/admin/all-comments", requireAdmin, async (req, res) => {
           });
         });
         totalCount += nCount || 0;
+      }
+    }
+
+    // ── community_comments (커뮤니티 글 댓글/답글, soft delete 안 된 것만) ──
+    if (shouldFetch("community")) {
+      let mq = supabaseAdmin.from("community_comments").select("id, post_id, parent_id, user_id, guest_name, body, created_at", { count: "exact" }).eq("is_deleted", false);
+      if (q) mq = mq.ilike("body", `%${q}%`);
+      if (authorQ) {
+        // 비회원은 guest_name, 회원은 프로필 닉네임으로 검색
+        const safeQ = authorQ.replace(/[,()%*]/g, " ").trim();
+        let orParts = [`guest_name.ilike.%${safeQ}%`];
+        const { data: nickHits } = await supabaseAdmin.from("profiles").select("id").ilike("nickname", `%${safeQ}%`).limit(200);
+        if (nickHits && nickHits.length > 0) orParts.push(`user_id.in.(${nickHits.map(h => h.id).join(",")})`);
+        mq = mq.or(orParts.join(","));
+      }
+      mq = mq.order("created_at", { ascending: false });
+      if (source !== "all") mq = mq.range(offset, offset + limit - 1);
+      else mq = mq.range(0, allFetchLimit - 1);
+
+      const { data: mData, count: mCount, error: mErr } = await mq;
+      if (mErr) console.error("admin/all-comments community_comments error:", mErr);
+      if (mData) {
+        const postIds = [...new Set(mData.map(c => c.post_id))];
+        const postMap = {};
+        if (postIds.length > 0) {
+          const { data: posts } = await supabaseAdmin.from("community_posts").select("id, title").in("id", postIds);
+          if (posts) posts.forEach(pp => { postMap[pp.id] = pp.title; });
+        }
+        const userIds = [...new Set(mData.map(c => c.user_id).filter(Boolean))];
+        const nickMap = {};
+        if (userIds.length > 0) {
+          const { data: profs } = await supabaseAdmin.from("profiles").select("id, nickname").in("id", userIds);
+          if (profs) profs.forEach(pf => { nickMap[pf.id] = pf.nickname; });
+        }
+        const cIds = mData.map(c => c.id);
+        const reportMap = {};
+        if (cIds.length > 0) {
+          const { data: rpts } = await supabaseAdmin.from("community_reports").select("target_id").eq("target_type", "comment").in("target_id", cIds);
+          if (rpts) rpts.forEach(r => { reportMap[r.target_id] = (reportMap[r.target_id] || 0) + 1; });
+        }
+        mData.forEach(c => {
+          results.push({
+            id: c.id,
+            source: "community",
+            content_type: "community",
+            content_id: c.post_id,
+            content_title: postMap[c.post_id] || "(삭제됨)",
+            user_id: c.user_id,
+            author_name: c.user_id ? (nickMap[c.user_id] || "(회원)") : ((c.guest_name || "익명") + " (비회원)"),
+            body: c.body,
+            parent_id: c.parent_id || null,
+            report_count: reportMap[c.id] || 0,
+            created_at: c.created_at,
+          });
+        });
+        totalCount += mCount || 0;
       }
     }
 
