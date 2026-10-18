@@ -8931,6 +8931,10 @@ function safeQuestion(q, index, total) {
       payload.muteVideo = !!q.muteVideo;
       payload.loopVideo = !!q.loopVideo;
     }
+    // 객관식 형식(보기 2개 이상 문자열): 클라이언트가 입력칸 대신 보기 버튼을 렌더. 채점은 answer[0] 텍스트 비교 그대로.
+    if (Array.isArray(q.choices) && q.choices.length >= 2 && q.choices.every(c => typeof c === "string")) {
+      payload.choices = q.choices;
+    }
   }
   // image/gif/mp4 미디어가 있으면 클라이언트에 전달 (audio_youtube/video_youtube 제외)
   if (q.type !== "audio_youtube" && q.type !== "video_youtube" && q.mediaUrl && q.mediaType) {
