@@ -72,6 +72,7 @@ function makeMath() {
 
 // 숫자 터치: 전원 같은 판 배치 (서버가 1~9를 섞어서 전달)
 const TAP_LIMIT_MS = 12000;
+const MASH_MAX = 100; // 연타 상한 (클라이언트 화면도 같은 값에서 멈춤 — 화면 숫자와 결과가 어긋나지 않게)
 const TAP_MIN_MS = 1200; // 사람이 9번 순서대로 누르는 하한 — 미만이면 비정상 입력(반칙)
 function makeTapCells() {
   const cells = [1, 2, 3, 4, 5, 6, 7, 8, 9];
@@ -80,6 +81,14 @@ function makeTapCells() {
     [cells[i], cells[j]] = [cells[j], cells[i]];
   }
   return cells;
+}
+
+// 지속시간을 겨루는 게임(3초 맞추기/숫자 터치)은 클라이언트가 직접 잰 시간을 쓰면 핑(왕복 지연) 차이로 인한 불공정이 없다.
+// 서버가 본 시간(= 클라 시간 + 왕복 지연)보다 클 수 없고, 너무 작게(1.5초 초과 차이) 주장하면 조작으로 보고 서버 시간을 쓴다.
+function pickElapsed(payload, serverMs) {
+  const c = Number(payload?.elapsedMs);
+  if (Number.isFinite(c) && c > 0 && c <= serverMs + 150 && c >= serverMs - 1500) return Math.round(c);
+  return serverMs;
 }
 
 function clearTimers(mini) {
@@ -186,18 +195,19 @@ export function handleMiniAct(room, userId, payload) {
       else mini.acts.set(userId, { value: ms, display: `${ms}ms` });
     }
   } else if (mini.kind === "mash") {
-    const count = Math.max(0, Math.min(70, Math.floor(Number(payload?.count) || 0)));
+    const count = Math.max(0, Math.min(MASH_MAX, Math.floor(Number(payload?.count) || 0)));
     // 0회 = 자리비움. 순위(2~3등 보상)에 끼지 않도록 기록 없음 처리
     if (count === 0) mini.acts.set(userId, { foul: true, display: "0회 (참여 안 함)" });
     else mini.acts.set(userId, { value: count, display: `${count}회` });
   } else if (mini.kind === "stop") {
-    const elapsed = now - mini.goAt;
+    const elapsed = pickElapsed(payload, now - mini.goAt);
     const diff = Math.abs(elapsed - 3000);
     mini.acts.set(userId, { value: diff, display: `${(elapsed / 1000).toFixed(2)}초 (${diff}ms 차이)` });
   } else if (mini.kind === "tap") {
-    const ms = now - mini.goAt;
-    if (ms < TAP_MIN_MS) mini.acts.set(userId, { foul: true, display: "비정상 기록 😵" });
-    else if (payload?.timeout || ms > TAP_LIMIT_MS + 2000) mini.acts.set(userId, { foul: true, display: "시간 초과 ⏰" });
+    const serverMs = now - mini.goAt;
+    const ms = pickElapsed(payload, serverMs);
+    if (payload?.timeout || serverMs > TAP_LIMIT_MS + 2000) mini.acts.set(userId, { foul: true, display: "시간 초과 ⏰" });
+    else if (ms < TAP_MIN_MS) mini.acts.set(userId, { foul: true, display: "비정상 기록 😵" });
     else mini.acts.set(userId, { value: ms, display: `${(ms / 1000).toFixed(2)}초` });
   } else if (mini.kind === "math") {
     if (Number(payload?.choiceIdx) === mini.math.answerIdx) {
