@@ -14614,7 +14614,8 @@ async function fetchMemoryLeaderboard(supabase, { difficulty, dailyOnly = false 
   }
 
   const { data, error } = await base
-    .order("score", { ascending: false })
+    .order("duration_sec", { ascending: true })
+    .order("attempts", { ascending: true })
     .order("created_at", { ascending: true })
     .limit(MEMORY_TOP_LIMIT);
   if (error) return { error };
@@ -14660,13 +14661,16 @@ app.post("/memory/score", async (req, res) => {
     const userId = user?.id || null;
     if (!userId) return res.status(401).json({ ok: false, error: "LOGIN_REQUIRED" });
 
+    // 랭킹 = 클리어 시간(빠른 순). 끝까지 맞춘 판만 등록
+    const pairs = (difficulty * difficulty) / 2;
+    if (matches < pairs) return res.json({ ok: true, official: false, notComplete: true });
+
     // 닉네임 스냅샷
     const { data: prof } = await supabaseAdmin
       .from("profiles").select("nickname").eq("id", userId).maybeSingle();
     const nickname = String(prof?.nickname || "익명").slice(0, 14);
 
     // sanity 검증
-    const pairs = (difficulty * difficulty) / 2;
     let flagged = false;
     if (durationSec < 3) flagged = true; // 너무 빠름
     if (durationSec > 600) flagged = true; // 너무 느림 (10분 초과)
@@ -14677,14 +14681,16 @@ app.post("/memory/score", async (req, res) => {
     // 기존 row 조회 (난이도별 유저당 1 row)
     const { data: existing } = await supabaseAdmin
       .from("memory_scores")
-      .select("id, score")
+      .select("id, score, duration_sec, attempts")
       .eq("user_id", userId)
       .eq("difficulty", difficulty)
       .maybeSingle();
 
     const newScore = Math.round(score);
+    const newDur = Math.max(0, Math.min(999, Math.round(durationSec)));
+    const newAtt = Math.max(0, Math.min(999, Math.round(attempts)));
     const prevBest = existing?.score ?? -1;
-    const isNewBest = newScore > prevBest;
+    const isNewBest = !existing || newDur < existing.duration_sec || (newDur === existing.duration_sec && newAtt < existing.attempts);
 
     const payload = {
       user_id: userId,
@@ -14726,20 +14732,22 @@ app.post("/memory/score", async (req, res) => {
     let globalRank = null, dailyRank = null, official = false;
     if (!flagged) {
       official = true;
-      const myBest = isNewBest ? newScore : prevBest;
+      const myDur = isNewBest ? newDur : existing.duration_sec;
+      const myAtt = isNewBest ? newAtt : existing.attempts;
+      const betterOr = `duration_sec.lt.${myDur},and(duration_sec.eq.${myDur},attempts.lt.${myAtt})`;
 
       const { data: higher } = await supabaseAdmin
         .from("memory_scores")
-        .select("user_id, score")
-        .eq("flagged", false).eq("difficulty", difficulty).not("user_id", "is", null).gt("score", myBest);
+        .select("user_id")
+        .eq("flagged", false).eq("difficulty", difficulty).not("user_id", "is", null).or(betterOr);
       globalRank = (higher?.length || 0) + 1;
       if (globalRank > MEMORY_TOP_LIMIT) globalRank = null;
 
       const today = new Date().toISOString().slice(0, 10);
       const { data: higherDaily } = await supabaseAdmin
         .from("memory_scores")
-        .select("user_id, score")
-        .eq("flagged", false).eq("difficulty", difficulty).not("user_id", "is", null).gt("score", myBest)
+        .select("user_id")
+        .eq("flagged", false).eq("difficulty", difficulty).not("user_id", "is", null).or(betterOr)
         .gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
       dailyRank = (higherDaily?.length || 0) + 1;
       if (dailyRank > MEMORY_TOP_LIMIT) dailyRank = null;
@@ -14804,7 +14812,8 @@ app.get("/memory/leaderboard/:difficulty/me", async (req, res) => {
       const { data: higher } = await supabaseAdmin
         .from("memory_scores")
         .select("user_id")
-        .eq("flagged", false).eq("difficulty", difficulty).not("user_id", "is", null).gt("score", row.score);
+        .eq("flagged", false).eq("difficulty", difficulty).not("user_id", "is", null)
+        .or(`duration_sec.lt.${row.duration_sec},and(duration_sec.eq.${row.duration_sec},attempts.lt.${row.attempts})`);
       let myRank = (higher?.length || 0) + 1;
       row.global_rank = myRank > MEMORY_TOP_LIMIT ? null : myRank;
     }
