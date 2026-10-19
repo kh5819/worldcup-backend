@@ -24,6 +24,8 @@ const BOSS_DATA = {
   splitter:     { hp: 2400, name: '분열체', emoji: '🦠' },
   timelord:     { hp: 2300, name: '시간왕', emoji: '🌀' },
   vampire:      { hp: 2400, name: '흡혈귀', emoji: '🦇' },
+  dragon:       { hp: 2600, name: '용왕',   emoji: '🐉' },   // v2 (솔로와 동일)
+  shadow:       { hp: 2300, name: '그림자군주', emoji: '🦹' }, // v2
   mahwang:      { hp: 5500, name: '마왕',   emoji: '👹' },
 };
 
@@ -479,14 +481,15 @@ export function registerGachatd(io, supabaseAdmin) {
         if (room.players.size < 2) return cb?.({ ok: false, error: "NEED_2_OR_MORE" });
 
         // 보스 순서 셔플
+        // v2: 일반 보스 11종 중 9종만 한 판에 등장 (솔로와 동일) + 마지막은 항상 마왕 = 10칸
         const REGULAR_BOSSES = ['berserker', 'giant', 'summoner', 'phantom', 'aoeking',
-                                'shieldbearer', 'splitter', 'timelord', 'vampire'];
+                                'shieldbearer', 'splitter', 'timelord', 'vampire', 'dragon', 'shadow'];
         const shuffled = [...REGULAR_BOSSES];
         for (let i = shuffled.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
           [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
         }
-        room.bossOrder = [...shuffled, 'mahwang'];
+        room.bossOrder = [...shuffled.slice(0, 9), 'mahwang'];
 
         room.status = "playing";
         room.startedAt = Date.now();
