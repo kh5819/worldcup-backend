@@ -17,11 +17,14 @@
 //   node scripts/compress-existing-media.js --limit=20                 (실제로 20건만 처리)
 //   node scripts/compress-existing-media.js                            (전체 처리)
 //   node scripts/compress-existing-media.js --only=worldcup            (worldcup_candidates만)
-//   --only= worldcup | thumbnails | quiz | tier
+//   --only= worldcup | thumbnails | quiz | tier | extra
+//   extra = 멀티 티어 결과(tier_multi_results)·티어 인스턴스·프로필 사진·빙고·심리테스트·한줄평 우승 썸네일·명예의 전당·커뮤니티 글
+//           (행의 모든 컬럼에서 '값 전체가 우리 storage 이미지 URL'인 문자열만 찾아 교체. JSON 안쪽도 탐색. 같은 URL은 1번만 압축)
 
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
 import sharp from "sharp";
+import { createHash } from "node:crypto";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -398,6 +401,78 @@ async function migrateTierThumbnails() {
   );
 }
 
+
+// ───────────────────────── 추가 대상(extra) ─────────────────────────
+// 위 4종 외에 이미지 URL이 들어 있는 테이블들. 행의 모든 컬럼(JSON 안쪽 포함)에서
+// "문자열 값 전체가 우리 storage의 jpg/png/webp URL"인 것만 대상으로 한다(문장 속 URL·영상·gif·외부 URL은 건드리지 않음).
+const EXTRA_TABLES = ["tier_multi_results", "tier_instances", "profiles", "bingos", "personality_tests", "content_comments", "ranking_hall_of_fame", "community_posts"];
+const EXTRA_IMG_EXT = /\.(jpe?g|png|webp)$/i;
+function isExtraImageUrl(v) {
+  if (typeof v !== "string" || !isOwnStorageUrl(v) || isAlreadyMigrated(v)) return false;
+  const path = v.split("?")[0].split("#")[0];
+  return EXTRA_IMG_EXT.test(path);
+}
+function bucketOfUrl(url) {
+  const m = /\/object\/public\/([^/]+)\//.exec(url);
+  return m ? m[1] : null;
+}
+function collectUrls(node, out) {
+  if (typeof node === "string") { if (isExtraImageUrl(node)) out.add(node); return; }
+  if (Array.isArray(node)) { for (const x of node) collectUrls(x, out); return; }
+  if (node && typeof node === "object") for (const k of Object.keys(node)) collectUrls(node[k], out);
+}
+function replaceUrl(node, oldUrl, newUrl) {
+  if (typeof node === "string") return node === oldUrl ? newUrl : node;
+  if (Array.isArray(node)) return node.map((x) => replaceUrl(x, oldUrl, newUrl));
+  if (node && typeof node === "object") { const o = {}; for (const k of Object.keys(node)) o[k] = replaceUrl(node[k], oldUrl, newUrl); return o; }
+  return node;
+}
+
+async function migrateExtra() {
+  // url -> Map("table|id|col" -> {table,id,col})
+  const byUrl = new Map();
+  const perTable = {};
+  for (const table of EXTRA_TABLES) {
+    let rows;
+    try { rows = await fetchAllRows(table, (q) => q, "*"); }
+    catch (e) { console.error(`[extra] ${table} 조회 실패: ${e?.message || JSON.stringify(e)}`); stats.errors++; continue; }
+    let refs = 0;
+    for (const row of rows) {
+      for (const col of Object.keys(row)) {
+        if (col === "id") continue;
+        const urls = new Set(); collectUrls(row[col], urls);
+        for (const u of urls) {
+          if (!byUrl.has(u)) byUrl.set(u, new Map());
+          byUrl.get(u).set(`${table}|${row.id}|${col}`, { table, id: row.id, col }); refs++;
+        }
+      }
+    }
+    perTable[table] = { rows: rows.length, refs };
+  }
+  const targets = [...byUrl.entries()].slice(0, LIMIT);
+  const refTotal = targets.reduce((n, [, m]) => n + m.size, 0);
+  console.log(`[extra] 고유 이미지 ${targets.length}개 (참조 ${refTotal}건)`, JSON.stringify(perTable));
+  progressTotal = targets.length; processedCount = 0;
+  await runPool(targets, ([url, refMap]) => {
+    const bucket = bucketOfUrl(url);
+    if (!bucket) { tickProgress(); return; }
+    const h = createHash("sha1").update(url).digest("hex").slice(0, 20);
+    const newPath = bucket === BUCKET_MEDIA ? `extra/migrated/${h}_c` : `migrated/x_${h}_c`;
+    return processOne("extra", url, newPath, bucket, async (newUrl) => {
+      // 같은 (테이블,id,컬럼)은 1번만, 교체 직전에 최신 값을 다시 읽어 '그 URL과 정확히 같은 문자열'만 바꿈
+      for (const { table, id, col } of refMap.values()) {
+        const { data, error } = await supabase.from(table).select(col).eq("id", id).single();
+        if (error) throw error;
+        const cur = data[col];
+        const next = replaceUrl(cur, url, newUrl);
+        if (JSON.stringify(next) === JSON.stringify(cur)) continue; // 그 사이 바뀐 경우 등 — 건드리지 않음
+        const { error: upErr } = await supabase.from(table).update({ [col]: next }).eq("id", id);
+        if (upErr) throw upErr;
+      }
+    });
+  }, 6);
+}
+
 async function main() {
   await resolveTopContentIds();
   console.log(`=== 기존 이미지 압축 마이그레이션 ${DRY_RUN ? "(DRY RUN — 실제 변경 없음)" : "(실제 적용)"} ${LIMIT !== Infinity ? `(limit=${LIMIT})` : ""}${CONTENT_IDS ? ` [콘텐츠 ${CONTENT_IDS.length}개 범위]` : ""} ===`);
@@ -410,6 +485,7 @@ async function main() {
     if (!ONLY || ONLY === "thumbnails") await migrateContentThumbnails();
     if (!ONLY || ONLY === "quiz") await migrateQuizMedia();
     if (!ONLY || ONLY === "tier") { await migrateTierCards(); await migrateTierThumbnails(); }
+    if (!ONLY || ONLY === "extra") await migrateExtra();
   }
 
   console.log("\n=== 결과 ===");

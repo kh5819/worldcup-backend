@@ -1,21 +1,22 @@
 // =========================
-// DUO GAME ZONE — 인생게임 멀티 (서버)
+// DUO GAME ZONE — 인생게임 멀티 (서버) v2: 1살부터 사망까지
 // 기존 worldcup/quiz/tier 멀티 시스템과 완전 격리.
-// - 별도 Map(lifegameRooms)
-// - 별도 invite code Map
-// - 'lifegame:*' 이벤트 prefix 전용
+// - 별도 Map(lifegameRooms) / 별도 invite code Map / 'lifegame:*' 이벤트 prefix
 // - socket.io room name = `lifegame:${roomId}`
+// - v2: 모두가 각자의 인생을 산다. 나이는 함께 먹고(한 해 = 한 라운드), 사건이 있는 사람만 동시에 선택.
+//   코어(lifegame-core.js)·데이터는 프론트가 원본 → scripts/sync-lifegame-data.js 로 복사
 // =========================
 
-import {
-  STAGES, STAGE_TURNS, STAT_DEFS, EVENTS, ENDINGS, ANALYSIS_LINES,
-} from "./lifegame-data.js";
+import * as LEG from "./lifegame-data.js";
+import { buildLife, MINI_AGES } from "./lifegame-life-data.js";
+import { createCore, MAX_AGE } from "./lifegame-core.js";
 
 import {
   startMinigame, handleMiniAct, recheckMinigame, abortMinigame, isMinigameActive,
 } from "./lifegame-minigames.js";
 
-const STAT_KEYS = STAT_DEFS.map(d => d.key);
+const core = createCore(buildLife(LEG));
+const STAT_DEFS = core.STAT_DEFS;
 
 // ===== Room storage =====
 const lifegameRooms = new Map();      // roomId → room
@@ -26,11 +27,12 @@ const lifegameUserRoom = new Map();   // userId → roomId (단일 방 제약)
 const MIN_PLAYERS = 2;
 const MAX_PLAYERS_HARD_CAP = 8;
 const ALLOWED_TURN_SECS = [5, 10, 15, 20, 30];
-const RESULT_DELAY_MS = 1500;
 const EMPTY_ROOM_TTL_MS = 30_000;
-const TOTAL_ROUNDS = STAGES.reduce((a, s) => a + (STAGE_TURNS[s.id] || 1), 0);
-// 이 라운드(0-based)를 마친 직후 미니게임 삽입 (4·9·14번째 라운드 뒤)
-const MINIGAME_AFTER_ROUNDS = new Set([3, 8, 13]);
+const BIRTH_MS = 7000;          // 탄생 카드 보는 시간
+const YEAR_MS = 1300;           // 아무 일 없는 해
+const YEAR_MS_NOTABLE = 2600;   // 운명·마일스톤·사망이 있던 해
+const RESULT_HOLD_MS = 2600;    // 모두 고른 뒤 결과 보여 주는 시간
+const MINI_MONEY_MUL = 20;      // 미니게임 돈 보상(구 단위) → 만원
 
 // ===== Utils =====
 function genInviteCode() {
@@ -41,55 +43,65 @@ function genInviteCode() {
   return String(Math.floor(Math.random() * 10_000_000)).padStart(7, "0");
 }
 
-function pickWeighted(items, weightFn) {
-  const ws = items.map(it => Math.max(0.01, weightFn ? weightFn(it) : 1));
-  const total = ws.reduce((a, b) => a + b, 0);
-  let r = Math.random() * total;
-  for (let i = 0; i < items.length; i++) {
-    r -= ws[i];
-    if (r <= 0) return items[i];
-  }
-  return items[items.length - 1];
-}
-
-function pickByChance(outcomes) {
-  const total = outcomes.reduce((a, o) => a + (o.chance || 0), 0) || 1;
-  let r = Math.random() * total;
-  for (const o of outcomes) {
-    r -= (o.chance || 0);
-    if (r <= 0) return o;
-  }
-  return outcomes[outcomes.length - 1];
-}
-
 function clampStat(key, val) {
-  if (key === "money") return val;
+  if (key === "money") return Math.round(val);
   return Math.max(0, Math.min(100, val));
 }
 
+function lobbyStats() {
+  const s = {};
+  for (const d of STAT_DEFS) s[d.key] = d.initial;
+  return s;
+}
+
 function newPlayerState(name, isGuest, avatarUrl, gender) {
-  const stats = {};
-  for (const def of STAT_DEFS) stats[def.key] = def.initial;
   return {
     name: String(name || "익명").slice(0, 20),
     isGuest: !!isGuest,
     avatar_url: avatarUrl || null,
-    gender: gender || null, // 'M' | 'F' | 'X' | null — 효과/엔딩에만 영향, 멀티는 이벤트 필터링은 하지 않음
+    gender: gender || null, // 'M' | 'F' | 'X' | null
     joinedAt: Date.now(),
     connected: true,
-    stats,
-    routes: new Set(),
-    relations: { romance: null, friends: {}, foes: [] },
-    flags: new Set(),
-    history: [],
+    stats: lobbyStats(),    // 게임 시작 후엔 life.stats 와 같은 객체를 가리킨다(미니게임 보상이 그대로 반영)
+    life: null,
     finished: false,
-    ending: null,
-    analysis: null,
   };
 }
 
+function startLifeFor(p) {
+  p.life = core.createPlayer(p.name, { gender: p.gender });
+  p.stats = p.life.stats;
+  p.finished = false;
+}
+
 // ===== 공개용 직렬화 =====
-function publicPlayer(userId, p, opts = {}) {
+function publicLife(L) {
+  if (!L) return null;
+  return {
+    age: L.age, alive: L.alive, deathAge: L.deathAge, cause: L.cause,
+    housing: L.housing, job: L.job ? { title: L.job.title, salary: L.job.salary } : null,
+    careerTitle: L.careerTitle || null, careerYears: L.careerYears,
+    spouse: L.spouse ? { name: L.spouse.name, bond: L.spouse.bond, since: L.spouse.since } : null,
+    kids: L.kids.map(k => ({ name: k.name, born: k.born, gender: k.gender })),
+    pets: (L.pets || []).map(x => ({ kind: x.kind, breed: x.breed, name: x.name, born: x.born, startAge: x.startAge || 0, alive: x.alive, diedAt: x.diedAt ?? null })),
+    birth: L.birth || null,
+    flags: Array.from(L.flags),
+    routes: Array.from(L.routes),
+    relations: {
+      romance: L.relations?.romance || null,
+      friends: { ...(L.relations?.friends || {}) },
+      foes: [...(L.relations?.foes || [])],
+    },
+    ending: L.ending && !L.alive ? endingPublic(L.ending) : null,
+    titles: !L.alive ? (L.titles || []) : [],
+  };
+}
+
+function endingPublic(e) {
+  return e ? { id: e.id, title: e.title, emoji: e.emoji, badge: e.badge, rarity: e.rarity, quote: e.quote } : null;
+}
+
+function publicPlayer(userId, p) {
   if (!p) return null;
   return {
     userId,
@@ -99,290 +111,52 @@ function publicPlayer(userId, p, opts = {}) {
     gender: p.gender || null,
     connected: p.connected,
     stats: { ...p.stats },
-    routes: Array.from(p.routes),
-    relations: {
-      romance: p.relations?.romance || null,
-      friends: { ...(p.relations?.friends || {}) },
-      foes: [...(p.relations?.foes || [])],
-    },
-    flags: Array.from(p.flags || []),
     finished: p.finished,
+    life: publicLife(p.life),
   };
 }
 
 function publicRoom(room) {
   return {
     id: room.id,
+    v: 2,
     inviteCode: room.inviteCode,
     hostUserId: room.hostUserId,
     status: room.status,
     maxPlayers: room.maxPlayers,
     turnTimeSec: room.turnTimeSec,
     minigames: room.minigames !== false,
-    currentRoundIndex: room.currentRoundIndex,
-    totalRounds: TOTAL_ROUNDS,
-    currentTurnUserId: room.playerOrder[room.currentTurnPlayerIdx] || null,
-    turnDeadline: room.turnDeadline,
-    currentEvent: room.currentEvent
-      ? publicEvent(room.currentEvent)
-      : null,
+    year: room.year || 0,
+    maxAge: MAX_AGE,
+    miniAges: MINI_AGES,
+    deadline: room.deadline || null,
+    pendingUserIds: room.pending ? [...room.pending.keys()] : [],
+    lastEntries: room.lastEntries || [],
     players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
-    stage: STAGES[room.stageIdx] || null,
   };
-}
-
-function publicEvent(ev) {
-  return {
-    id: ev.id,
-    stage: ev.stage,
-    type: ev.type || "normal",
-    emoji: ev.emoji,
-    title: ev.title,
-    desc: ev.desc,
-    routeRequired: ev.routeRequired || null,
-    choices: ev.choices.map(c => ({
-      id: c.id,
-      emoji: c.emoji,
-      text: c.text,
-      sub: c.sub || null,
-      hasOutcomes: !!c.outcomes,
-      hasLongTerm: !!c.longTerm,
-    })),
-  };
-}
-
-// ===== 게임 진행 (room 단위) =====
-function getStage(room) {
-  return STAGES[room.stageIdx] || null;
-}
-
-function pickRoomEvent(room) {
-  const stage = getStage(room);
-  if (!stage) return null;
-  // 멀티에서는 모든 플레이어가 같은 이벤트를 보므로
-  // 개인 조건(gender/flag/relation/longterm 결과) 이벤트는 제외한다.
-  const candidates = EVENTS.filter(ev => {
-    if (ev.type === "longterm") return false;
-    if (ev.stage !== stage.id) return false;
-    if (room.seenEventIds.has(ev.id)) return false;
-    if (ev.genderRequired) return false;
-    if (ev.flagRequired) return false;
-    if (ev.relationRequired) return false;
-    if (ev.routeRequired) {
-      const anyHas = room.playerOrder.some(uid => {
-        const p = room.players.get(uid);
-        return p && ev.routeRequired.some(r => p.routes.has(r));
-      });
-      if (!anyHas) return false;
-    }
-    return true;
-  });
-  if (candidates.length === 0) {
-    const fallback = EVENTS.filter(ev =>
-      ev.stage === stage.id && !ev.routeRequired && !ev.genderRequired &&
-      !ev.flagRequired && !ev.relationRequired && ev.type !== "longterm"
-    );
-    return fallback.length ? pickWeighted(fallback) : null;
-  }
-  return pickWeighted(candidates, (ev) => {
-    let w = ev.weight != null ? ev.weight : 1;
-    if (ev.routeRequired && ev.routeRequired.some(r =>
-      room.playerOrder.some(uid => room.players.get(uid)?.routes?.has?.(r))
-    )) w *= 1.6;
-    if (ev.type === "special") w *= 0.7;
-    return w;
-  });
-}
-
-function applyChoiceForPlayer(player, event, choiceId) {
-  const choice = event.choices.find(c => c.id === choiceId);
-  if (!choice) return null;
-
-  let outcome = null;
-  let baseEffects = choice.effects || {};
-  if (choice.outcomes && choice.outcomes.length) {
-    outcome = pickByChance(choice.outcomes);
-  }
-
-  // statRequired 미달 페널티
-  if (choice.statRequired) {
-    let met = true;
-    for (const k of Object.keys(choice.statRequired)) {
-      if ((player.stats[k] ?? 0) < choice.statRequired[k]) { met = false; break; }
-    }
-    if (!met) {
-      baseEffects = { ...baseEffects };
-      for (const k of Object.keys(baseEffects)) baseEffects[k] = Math.round(baseEffects[k] * 0.5);
-      baseEffects.happy = (baseEffects.happy || 0) - 3;
-    }
-  }
-
-  const deltas = {};
-  for (const k of STAT_KEYS) deltas[k] = 0;
-  for (const [k, v] of Object.entries(baseEffects)) {
-    if (deltas.hasOwnProperty(k)) deltas[k] += v;
-  }
-  if (outcome) {
-    for (const [k, v] of Object.entries(outcome.effects || {})) {
-      if (deltas.hasOwnProperty(k)) deltas[k] += v;
-    }
-  }
-
-  // 운 보정
-  const luckBonus = (player.stats.luck - 50) / 200;
-  for (const k of STAT_KEYS) {
-    if (k === "luck" || k === "money") continue;
-    if (deltas[k] > 0) deltas[k] = Math.round(deltas[k] * (1 + luckBonus));
-  }
-
-  for (const [k, v] of Object.entries(deltas)) {
-    player.stats[k] = clampStat(k, (player.stats[k] || 0) + v);
-  }
-
-  if (choice.route) player.routes.add(choice.route);
-  if (outcome?.route) player.routes.add(outcome.route);
-
-  // 관계 처리 (멀티에서도 솔로와 동일 시맨틱)
-  const applyRelation = (rel) => {
-    if (!rel) return;
-    if (rel.romance) player.relations.romance = rel.romance;
-    if (rel.breakup) player.relations.romance = null;
-    if (rel.friend && rel.delta != null) {
-      player.relations.friends[rel.friend] = (player.relations.friends[rel.friend] || 0) + rel.delta;
-      if (player.relations.friends[rel.friend] <= -50) {
-        player.relations.foes.push(rel.friend);
-        delete player.relations.friends[rel.friend];
-      }
-    }
-    if (rel.foe) player.relations.foes.push(rel.foe);
-  };
-  applyRelation(choice.relation);
-  applyRelation(outcome?.relation);
-
-  // 플래그 처리
-  const applyFlag = (fl) => {
-    if (!fl) return;
-    if (fl.add) (Array.isArray(fl.add) ? fl.add : [fl.add]).forEach(f => player.flags.add(f));
-    if (fl.remove) (Array.isArray(fl.remove) ? fl.remove : [fl.remove]).forEach(f => player.flags.delete(f));
-  };
-  applyFlag(choice.flag);
-  applyFlag(outcome?.flag);
-  // 주: choice.longTerm은 멀티 v1에서는 큐 미구현 — 효과만 적용되고 결과 이벤트는 발생 X
-
-  // narrative
-  let narrative = "";
-  if (outcome?.narrative) narrative = outcome.narrative;
-  else if (choice.narratives && choice.narratives.length) {
-    narrative = choice.narratives[Math.floor(Math.random() * choice.narratives.length)];
-  } else {
-    narrative = "그렇게 시간이 흘렀다.";
-  }
-
-  // grade
-  let grade = choice.grade || "mid";
-  if (outcome) {
-    const sum = Object.values(outcome.effects || {}).reduce((a, b) => a + b, 0);
-    if (sum > 30) grade = "crit";
-    else if (sum < -20) grade = "bad";
-  }
-
-  player.history.push({
-    eventTitle: event.title,
-    eventEmoji: event.emoji,
-    choiceText: choice.text,
-    deltas,
-    narrative,
-    grade,
-  });
-
-  return { choiceId: choice.id, choiceText: choice.text, choiceEmoji: choice.emoji, deltas, narrative, grade };
-}
-
-function computeEndingFor(player) {
-  const r = { has: (k) => player.routes.has(k) };
-  const ctx = {
-    gender: player.gender,
-    flags: { has: (k) => player.flags.has(k) },
-    relations: player.relations,
-    history: player.history,
-  };
-  for (const ending of ENDINGS) {
-    if (ending.match(player.stats, r, ctx)) {
-      player.ending = ending;
-      break;
-    }
-  }
-  if (!player.ending) player.ending = ENDINGS[ENDINGS.length - 1];
-
-  const lines = [];
-  for (const a of ANALYSIS_LINES) {
-    if (a.when(player.stats, r, ctx)) lines.push(a.text);
-    if (lines.length >= 4) break;
-  }
-  if (!lines.length) lines.push("어느 한 쪽에 치우치지 않은 균형형. 그냥저냥 살아간다.");
-  player.analysis = lines;
-}
-
-function rankPlayers(room) {
-  const arr = room.playerOrder.map(uid => {
-    const p = room.players.get(uid);
-    // 종합 점수: 돈/10 + 행복 + 지능 + 사회성 + 체력 + 인터넷력 + 운 (가중평균)
-    const score = Math.round(
-      (p.stats.money / 10) +
-      p.stats.happy + p.stats.intel + p.stats.social +
-      p.stats.power + p.stats.internet + p.stats.luck
-    );
-    return {
-      userId: uid,
-      name: p.name,
-      avatar_url: p.avatar_url,
-      gender: p.gender || null,
-      score,
-      stats: { ...p.stats },
-      ending: p.ending,
-      analysis: p.analysis,
-      routes: Array.from(p.routes),
-      relations: {
-        romance: p.relations?.romance || null,
-        friends: { ...(p.relations?.friends || {}) },
-        foes: [...(p.relations?.foes || [])],
-      },
-      flags: Array.from(p.flags || []),
-    };
-  });
-  arr.sort((a, b) => b.score - a.score);
-
-  // 카테고리별 1위 — 동률은 첫번째가 가져감
-  const cats = [];
-  if (arr.length) {
-    const byMoney = [...arr].sort((a, b) => b.stats.money - a.stats.money)[0];
-    cats.push({ key: "money", emoji: "💰", label: "돈 1위", winnerUserId: byMoney.userId, value: byMoney.stats.money });
-
-    const byHappy = [...arr].sort((a, b) => b.stats.happy - a.stats.happy)[0];
-    cats.push({ key: "happy", emoji: "❤️", label: "행복 1위", winnerUserId: byHappy.userId, value: byHappy.stats.happy });
-
-    const byInternet = [...arr].sort((a, b) => b.stats.internet - a.stats.internet)[0];
-    cats.push({ key: "internet", emoji: "🌐", label: "인터넷력 1위", winnerUserId: byInternet.userId, value: byInternet.stats.internet });
-
-    const worst = [...arr].sort((a, b) => a.score - b.score)[0];
-    cats.push({ key: "worst", emoji: "🪦", label: "가장 망한 인생", winnerUserId: worst.userId, value: worst.score });
-  }
-
-  return { ranking: arr, categories: cats };
 }
 
 // ===== 타이머 =====
-function clearTurnTimer(room) {
-  if (room.turnTimer) { clearTimeout(room.turnTimer); room.turnTimer = null; }
+function clearYearTimer(room) {
+  if (room.yearTimer) { clearTimeout(room.yearTimer); room.yearTimer = null; }
 }
-
 function clearEmptyRoomTimer(room) {
   if (room.emptyRoomTimer) { clearTimeout(room.emptyRoomTimer); room.emptyRoomTimer = null; }
+}
+/** 게임 흐름용 지연 실행 — 게임이 바뀌면(재시작·종료) 무효 */
+function later(room, fn, ms) {
+  const gen = room.gen;
+  clearYearTimer(room);
+  room.yearTimer = setTimeout(() => {
+    room.yearTimer = null;
+    if (room.status !== "playing" || room.gen !== gen) return;
+    fn();
+  }, ms);
 }
 
 function deleteRoom(io, room, reason = "UNKNOWN") {
   abortMinigame(room);
-  clearTurnTimer(room);
+  clearYearTimer(room);
   clearEmptyRoomTimer(room);
   lifegameRooms.delete(room.id);
   lifegameInvites.delete(room.inviteCode);
@@ -401,166 +175,220 @@ function broadcastRoomState(io, room) {
 }
 
 // ===== 게임 흐름 =====
-function startNextRound(io, room) {
-  if (room.status !== "playing") return;
-  if (room.currentRoundIndex >= TOTAL_ROUNDS) return endGame(io, room);
-
-  // stage 진행도 계산
-  let remaining = room.currentRoundIndex;
-  let stageIdx = 0;
-  for (let i = 0; i < STAGES.length; i++) {
-    const turns = STAGE_TURNS[STAGES[i].id] || 1;
-    if (remaining < turns) { stageIdx = i; break; }
-    remaining -= turns;
-  }
-  room.stageIdx = stageIdx;
-
-  const event = pickRoomEvent(room);
-  if (!event) {
-    // 이벤트가 없으면 다음 라운드로 (또는 종료)
-    room.currentRoundIndex += 1;
-    return startNextRound(io, room);
-  }
-  room.currentEvent = event;
-  room.seenEventIds.add(event.id);
-  room.currentTurnPlayerIdx = 0;
-  room.turnResultsThisRound = [];
-
-  io.to(socketRoomName(room.id)).emit("lifegame:roundStart", {
-    roundIndex: room.currentRoundIndex,
-    totalRounds: TOTAL_ROUNDS,
-    stage: STAGES[stageIdx],
-    event: publicEvent(event),
-  });
-
-  startCurrentTurn(io, room);
+function aliveIds(room) {
+  return room.playerOrder.filter(uid => room.players.get(uid)?.life?.alive);
 }
 
-function startCurrentTurn(io, room) {
-  if (room.status !== "playing") return;
-  // 살아있고 연결된 플레이어 찾을 때까지 인덱스 진행
-  while (room.currentTurnPlayerIdx < room.playerOrder.length) {
-    const uid = room.playerOrder[room.currentTurnPlayerIdx];
+function startGame(io, room) {
+  abortMinigame(room);
+  room.status = "playing";
+  room.gen = (room.gen || 0) + 1;
+  room.year = 0;
+  room.pending = new Map();
+  room.deadline = null;
+  room.lastEntries = [];
+  room.miniUsed = new Set();
+  const first = {};
+  const births = {};
+  for (const uid of room.playerOrder) {
     const p = room.players.get(uid);
-    if (p && p.connected && !p.finished) break;
-    room.currentTurnPlayerIdx += 1;
+    if (!p) continue;
+    startLifeFor(p);
+    const rec = core.beginLife(p.life);
+    first[uid] = rec;
+    births[uid] = rec.birth;
   }
-
-  if (room.currentTurnPlayerIdx >= room.playerOrder.length) {
-    // 라운드 종료
-    return endRound(io, room);
-  }
-
-  const turnUserId = room.playerOrder[room.currentTurnPlayerIdx];
-  const turnSec = room.turnTimeSec;
-  room.turnLocked = false; // 이 턴의 선택은 1회만 허용
-  room.turnDeadline = Date.now() + turnSec * 1000;
-
-  io.to(socketRoomName(room.id)).emit("lifegame:turnStart", {
-    roundIndex: room.currentRoundIndex,
-    turnUserId,
-    turnSec,
-    turnDeadline: room.turnDeadline,
+  io.to(socketRoomName(room.id)).emit("lifegame:gameStart", {
+    v: 2, maxAge: MAX_AGE, miniAges: MINI_AGES, birthMs: BIRTH_MS, births,
+    players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
   });
-
-  clearTurnTimer(room);
-  room.turnTimer = setTimeout(() => {
-    // 시간초과 — 자동 첫번째 선택
-    const ev = room.currentEvent;
-    if (!ev) return;
-    const firstChoice = ev.choices[0];
-    submitChoice(io, room, turnUserId, firstChoice.id, /*timedOut*/ true);
-  }, turnSec * 1000);
+  later(room, () => runYear(io, room, first), BIRTH_MS);
 }
 
-function submitChoice(io, room, userId, choiceId, timedOut) {
+/** 한 해 진행. first = 1살(탄생 직후) 기록 */
+function runYear(io, room, first = null) {
   if (room.status !== "playing") return;
-  const turnUid = room.playerOrder[room.currentTurnPlayerIdx];
-  if (turnUid !== userId) return;
-  // 시간초과 자동선택 / 연속 클릭 / 끊김 자동선택이 겹쳐도 한 턴에 한 번만 적용
-  if (room.turnLocked) return;
+  room.year += 1;
+  room.pending = new Map();
+  const entries = [];
+  let notable = false;
+  for (const uid of room.playerOrder) {
+    const p = room.players.get(uid);
+    if (!p?.life?.alive) continue;
+    const rec = first ? first[uid] : core.advanceYear(p.life);
+    if (!rec) continue;
+    const e = {
+      userId: uid, age: p.life.age,
+      milestone: rec.milestone || null,
+      quiet: rec.quiet || null,
+      lines: rec.lines || [],
+      lineKeys: rec.lineKeys || [],
+      fate: rec.fate || null,
+      net: p.life.age >= 19 && rec.economy ? rec.economy.net : null,
+    };
+    if (rec.milestone || rec.fate) notable = true;
+    if (rec.death) {
+      e.death = { age: rec.death.age, cause: rec.death.cause, ending: endingPublic(rec.death.ending) };
+      p.finished = true;
+      notable = true;
+    } else if (rec.event) {
+      e.event = core.publicEvent(p.life, rec.event);
+      room.pending.set(uid, rec.event);
+    }
+    entries.push(e);
+  }
+  room.lastEntries = entries;
+  const turnMs = room.turnTimeSec * 1000;
+  room.deadline = room.pending.size ? Date.now() + turnMs : null;
 
-  clearTurnTimer(room);
+  io.to(socketRoomName(room.id)).emit("lifegame:year", {
+    year: room.year,
+    entries,
+    deadline: room.deadline,
+    turnSec: room.turnTimeSec,
+    players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
+  });
 
-  const player = room.players.get(userId);
-  const event = room.currentEvent;
-  if (!player || !event) return;
-
-  const result = applyChoiceForPlayer(player, event, choiceId);
-  if (!result) return;
-  room.turnLocked = true;
-
-  const payload = {
-    roundIndex: room.currentRoundIndex,
-    userId,
-    name: player.name,
-    avatar_url: player.avatar_url,
-    timedOut: !!timedOut,
-    ...result,
-    statsAfter: { ...player.stats },
-    routes: Array.from(player.routes),
-  };
-  room.turnResultsThisRound.push(payload);
-  io.to(socketRoomName(room.id)).emit("lifegame:turnResult", payload);
-
-  // 다음 턴
-  setTimeout(() => {
-    if (room.status !== "playing") return;
-    room.currentTurnPlayerIdx += 1;
-    startCurrentTurn(io, room);
-  }, RESULT_DELAY_MS);
+  // 연결 끊긴 사람의 사건은 바로 자동 선택
+  for (const uid of [...room.pending.keys()]) {
+    if (!room.players.get(uid)?.connected) autoPick(io, room, uid);
+  }
+  if (room.status !== "playing") return;
+  if (!room.pending.size) {
+    if (!aliveIds(room).length) return later(room, () => endGame(io, room), YEAR_MS_NOTABLE);
+    return later(room, () => afterYear(io, room), notable ? YEAR_MS_NOTABLE : YEAR_MS);
+  }
+  later(room, () => {
+    for (const uid of [...room.pending.keys()]) autoPick(io, room, uid, true);
+  }, turnMs + 300);
 }
 
-function endRound(io, room) {
-  io.to(socketRoomName(room.id)).emit("lifegame:roundEnd", {
-    roundIndex: room.currentRoundIndex,
-    results: room.turnResultsThisRound,
+function autoPick(io, room, uid, timedOut = false) {
+  const p = room.players.get(uid);
+  const ev = room.pending.get(uid);
+  if (!p || !ev) return;
+  const list = core.choicesFor(p.life, ev);
+  const c = list[Math.floor(Math.random() * list.length)];
+  applyPick(io, room, uid, c.id, timedOut);
+}
+
+function applyPick(io, room, uid, choiceId, timedOut) {
+  const p = room.players.get(uid);
+  const ev = room.pending.get(uid);
+  if (!p || !ev) return false;
+  const res = core.applyChoice(p.life, ev, choiceId);
+  if (!res) return false;
+  room.pending.delete(uid);
+  if (res.death) p.finished = true;
+  io.to(socketRoomName(room.id)).emit("lifegame:choiceResult", {
+    year: room.year,
+    userId: uid,
+    name: p.name,
+    timedOut: !!timedOut,
+    eventId: ev.id,
+    eventEmoji: ev.emoji,
+    eventTitle: core.fill(p.life, ev.title),
+    choiceId: res.choiceId,
+    choiceText: res.choiceText,
+    choiceEmoji: res.choiceEmoji,
+    narrative: res.narrative,
+    deltas: res.deltas,
+    grade: res.grade,
+    src: res.src || null,
+    death: res.death ? { age: res.death.age, cause: res.death.cause, ending: endingPublic(res.death.ending) } : null,
+    player: publicPlayer(uid, p),
   });
-  const doneIdx = room.currentRoundIndex;
-  room.currentRoundIndex += 1;
-  // 잠깐 텀 두고 (미니게임 or 다음 라운드)
-  setTimeout(() => {
-    if (room.status !== "playing") return;
-    const wantMini = room.minigames !== false
-      && MINIGAME_AFTER_ROUNDS.has(doneIdx)
-      && room.currentRoundIndex < TOTAL_ROUNDS;
-    if (wantMini) {
-      const started = startMinigame({
-        room,
-        emit: (ev, payload) => io.to(socketRoomName(room.id)).emit(ev, payload),
-        clampStat,
-        onFinish: () => {
-          if (room.status !== "playing") return;
-          broadcastRoomState(io, room);
-          startNextRound(io, room);
-        },
-      });
-      if (started) return;
-    }
-    startNextRound(io, room);
-  }, 800);
+  if (!room.pending.size) {
+    room.deadline = null;
+    later(room, () => afterYear(io, room), RESULT_HOLD_MS);
+  }
+  return true;
+}
+
+function afterYear(io, room) {
+  if (room.status !== "playing") return;
+  const alive = aliveIds(room);
+  if (!alive.length) return endGame(io, room);
+  if (room.minigames !== false && MINI_AGES.includes(room.year)) {
+    const started = startMinigame({
+      room,
+      emit: (ev, payload) => io.to(socketRoomName(room.id)).emit(ev, payload),
+      clampStat,
+      eligible: (uid) => !!room.players.get(uid)?.life?.alive,
+      minPlayers: 1,
+      moneyMul: MINI_MONEY_MUL,
+      onFinish: () => {
+        if (room.status !== "playing") return;
+        broadcastRoomState(io, room);
+        runYear(io, room);
+      },
+    });
+    if (started) return;
+  }
+  runYear(io, room);
+}
+
+function rankPlayers(room) {
+  const arr = room.playerOrder.map(uid => {
+    const p = room.players.get(uid);
+    const L = p.life;
+    if (L && !L.ending) core.computeEnding(L);
+    const highlights = (L?.history || []).filter(h => h.grade === "crit" || h.grade === "bad" || h.fate || /결혼|아기|프러포즈|첫 직장|입영|수능|투병|손주|이혼/.test(h.eventTitle || "")).slice(-10)
+      .map(h => ({ age: h.age, emoji: h.eventEmoji, title: h.eventTitle, choice: h.choiceText, grade: h.grade, src: h.src || null }));
+    return {
+      userId: uid,
+      name: p.name,
+      avatar_url: p.avatar_url,
+      gender: p.gender || null,
+      score: L ? core.lifeScore(L) : 0,
+      stats: { ...p.stats },
+      ending: endingPublic(L?.ending),
+      titles: L?.titles || [],
+      analysis: L?.analysis || [],
+      analysisKeys: L?.analysisKeys || null,
+      life: publicLife(L),
+      highlights,
+    };
+  });
+  arr.sort((a, b) => b.score - a.score);
+
+  const cats = [];
+  if (arr.length) {
+    const top = (f, asc) => [...arr].sort((a, b) => asc ? f(a) - f(b) : f(b) - f(a))[0];
+    const age = r => r.life?.deathAge ?? r.life?.age ?? 0;
+    const a1 = top(age);
+    cats.push({ key: "age", emoji: "🐢", label: "최장수", winnerUserId: a1.userId, value: `${age(a1)}세` });
+    const m1 = top(r => r.stats.money);
+    cats.push({ key: "money", emoji: "💰", label: "최고 부자", winnerUserId: m1.userId, value: m1.stats.money, money: true });
+    const h1 = top(r => r.stats.happy);
+    cats.push({ key: "happy", emoji: "❤️", label: "가장 행복", winnerUserId: h1.userId, value: h1.stats.happy });
+    const k1 = top(r => r.life?.kids?.length || 0);
+    if ((k1.life?.kids?.length || 0) > 0) cats.push({ key: "family", emoji: "👨‍👩‍👧", label: "대가족", winnerUserId: k1.userId, value: `자녀 ${k1.life.kids.length}명` });
+    const w = top(r => r.score, true);
+    cats.push({ key: "worst", emoji: "🪦", label: "가장 파란만장", winnerUserId: w.userId, value: w.score });
+  }
+  return { ranking: arr, categories: cats };
 }
 
 function endGame(io, room) {
+  if (room.status !== "playing") return;
   room.status = "ended";
+  room.gen = (room.gen || 0) + 1;
   abortMinigame(room);
-  clearTurnTimer(room);
+  clearYearTimer(room);
+  room.pending = new Map();
+  room.deadline = null;
 
   for (const uid of room.playerOrder) {
     const p = room.players.get(uid);
-    if (p && !p.ending) {
-      p.finished = true;
-      computeEndingFor(p);
-    }
+    if (p?.life?.alive) core.die(p.life, "natural");      // 안전망(최대 나이 도달 등)
+    if (p) p.finished = true;
   }
 
   const { ranking, categories } = rankPlayers(room);
-  io.to(socketRoomName(room.id)).emit("lifegame:gameEnd", {
-    ranking, categories,
-    totalRounds: TOTAL_ROUNDS,
-  });
+  io.to(socketRoomName(room.id)).emit("lifegame:gameEnd", { v: 2, ranking, categories, years: room.year });
 
-  // ✅ 결과 카드 충분히 읽고 친구들이랑 얘기할 시간 (10분)
+  // 결과 카드 충분히 읽고 친구들이랑 얘기할 시간 (10분)
   setTimeout(() => {
     if (room.status === "ended") deleteRoom(io, room, "GAME_END_TTL");
   }, 10 * 60_000);
@@ -577,13 +405,12 @@ export function registerLifegame(io, supabaseAdmin) {
       try {
         if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
         if (lifegameUserRoom.has(me.id)) {
-          // 이미 다른 방에 있으면 정리
           const old = lifegameRooms.get(lifegameUserRoom.get(me.id));
           if (old) leavePlayer(io, old, me.id, /*forced*/ true);
         }
 
         const turnSec = ALLOWED_TURN_SECS.includes(Number(payload?.turnTimeSec))
-          ? Number(payload.turnTimeSec) : 10;
+          ? Number(payload.turnTimeSec) : 15;
         const maxPlayers = Math.min(MAX_PLAYERS_HARD_CAP, Math.max(MIN_PLAYERS, Number(payload?.maxPlayers) || 6));
 
         const roomId = `lg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -602,21 +429,17 @@ export function registerLifegame(io, supabaseAdmin) {
           players: new Map(),
           playerOrder: [],
 
-          stageIdx: 0,
-          currentRoundIndex: 0,
-          currentTurnPlayerIdx: 0,
-          currentEvent: null,
-          turnDeadline: null,
-          turnTimer: null,
-
-          seenEventIds: new Set(),
-          turnResultsThisRound: [],
+          gen: 0,
+          year: 0,
+          pending: new Map(),
+          deadline: null,
+          lastEntries: [],
+          yearTimer: null,
           emptyRoomTimer: null,
         };
         lifegameRooms.set(roomId, room);
         lifegameInvites.set(inviteCode, roomId);
 
-        // 호스트 등록
         let avatar = null;
         try {
           const { data } = await supabaseAdmin.from("profiles").select("nickname, avatar_url").eq("id", me.id).single();
@@ -647,18 +470,19 @@ export function registerLifegame(io, supabaseAdmin) {
         const roomId = lifegameInvites.get(code);
         const room = roomId ? lifegameRooms.get(roomId) : null;
         if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
-        if (room.status !== "lobby") return cb?.({ ok: false, error: "GAME_ALREADY_STARTED" });
-        if (room.players.size >= room.maxPlayers) return cb?.({ ok: false, error: "ROOM_FULL" });
         if (room.players.has(me.id)) {
           // 재접속
           const p = room.players.get(me.id);
           p.connected = true;
           socket.join(socketRoomName(roomId));
           lifegameUserRoom.set(me.id, roomId);
-          cb?.({ ok: true, roomId, inviteCode: room.inviteCode, room: publicRoom(room) });
+          clearEmptyRoomTimer(room);
+          cb?.({ ok: true, roomId, inviteCode: room.inviteCode, room: publicRoom(room), myEvent: myPendingEvent(room, me.id) });
           broadcastRoomState(io, room);
           return;
         }
+        if (room.status !== "lobby") return cb?.({ ok: false, error: "GAME_ALREADY_STARTED" });
+        if (room.players.size >= room.maxPlayers) return cb?.({ ok: false, error: "ROOM_FULL" });
 
         let avatar = null;
         if (!me.isGuest) {
@@ -691,7 +515,7 @@ export function registerLifegame(io, supabaseAdmin) {
       const room = roomId ? lifegameRooms.get(roomId) : null;
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
-      if (room.status !== "lobby") return cb?.({ ok: false, error: "GAME_ALREADY_STARTED" });
+      if (room.status === "playing") return cb?.({ ok: false, error: "GAME_ALREADY_STARTED" });
 
       if (payload?.turnTimeSec != null && ALLOWED_TURN_SECS.includes(Number(payload.turnTimeSec))) {
         room.turnTimeSec = Number(payload.turnTimeSec);
@@ -705,6 +529,18 @@ export function registerLifegame(io, supabaseAdmin) {
       broadcastRoomState(io, room);
     });
 
+    // ===== setGender (lobby, 본인) =====
+    socket.on("lifegame:setGender", (payload, cb) => {
+      const roomId = lifegameUserRoom.get(me.id);
+      const room = roomId ? lifegameRooms.get(roomId) : null;
+      const p = room?.players.get(me.id);
+      if (!room || !p) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.status === "playing") return cb?.({ ok: false, error: "GAME_ALREADY_STARTED" });
+      if (["M", "F", "X"].includes(payload?.gender)) p.gender = payload.gender;
+      cb?.({ ok: true });
+      broadcastRoomState(io, room);
+    });
+
     // ===== startGame (host only) =====
     socket.on("lifegame:startGame", (_payload, cb) => {
       const roomId = lifegameUserRoom.get(me.id);
@@ -712,19 +548,10 @@ export function registerLifegame(io, supabaseAdmin) {
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
       if (room.status === "playing") return cb?.({ ok: false, error: "ALREADY_PLAYING" });
-      // rematch: ended 상태에서 새 게임 허용
-      if (room.status === "ended") { room.endedAt = null; }
       if (room.players.size < MIN_PLAYERS) return cb?.({ ok: false, error: "NOT_ENOUGH_PLAYERS" });
 
-      abortMinigame(room);
-      room.miniUsed = new Set();
-      room.status = "playing";
-      room.currentRoundIndex = 0;
-      room.seenEventIds = new Set();
-
       cb?.({ ok: true });
-      io.to(socketRoomName(room.id)).emit("lifegame:gameStart", { totalRounds: TOTAL_ROUNDS });
-      startNextRound(io, room);
+      startGame(io, room);
     });
 
     // ===== submitChoice =====
@@ -733,19 +560,13 @@ export function registerLifegame(io, supabaseAdmin) {
       const room = roomId ? lifegameRooms.get(roomId) : null;
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (room.status !== "playing") return cb?.({ ok: false, error: "NOT_PLAYING" });
-
-      const turnUid = room.playerOrder[room.currentTurnPlayerIdx];
-      if (turnUid !== me.id) return cb?.({ ok: false, error: "NOT_YOUR_TURN" });
-
-      if (room.turnLocked) return cb?.({ ok: false, error: "ALREADY_SUBMITTED" });
+      const ev = room.pending.get(me.id);
+      if (!ev) return cb?.({ ok: false, error: "NO_PENDING_EVENT" });
       const choiceId = String(payload?.choiceId || "");
-      const ev = room.currentEvent;
-      if (!ev || !ev.choices.find(c => c.id === choiceId)) {
-        return cb?.({ ok: false, error: "INVALID_CHOICE" });
-      }
-
-      cb?.({ ok: true });
-      submitChoice(io, room, me.id, choiceId, false);
+      const p = room.players.get(me.id);
+      if (!core.choicesFor(p.life, ev).some(c => c.id === choiceId)) return cb?.({ ok: false, error: "INVALID_CHOICE" });
+      const ok = applyPick(io, room, me.id, choiceId, false);
+      cb?.({ ok });
     });
 
     // ===== miniAct (미니게임 입력) =====
@@ -775,8 +596,7 @@ export function registerLifegame(io, supabaseAdmin) {
       const targetId = String(payload?.targetUserId || "");
       if (!targetId || targetId === me.id) return cb?.({ ok: false, error: "INVALID_TARGET" });
       if (!room.players.has(targetId)) return cb?.({ ok: false, error: "TARGET_NOT_IN_ROOM" });
-      const target = room.players.get(targetId);
-      if (target?.socketId) io.to(target.socketId).emit("lifegame:kicked", { reason: "KICKED_BY_HOST" });
+      io.to(socketRoomName(room.id)).emit("lifegame:kicked", { userId: targetId, reason: "KICKED_BY_HOST" });
       leavePlayer(io, room, targetId, false);
       cb?.({ ok: true });
     });
@@ -786,8 +606,11 @@ export function registerLifegame(io, supabaseAdmin) {
       const roomId = lifegameUserRoom.get(me.id);
       const room = roomId ? lifegameRooms.get(roomId) : null;
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      const p = room.players.get(me.id);
+      if (p) p.connected = true;
       socket.join(socketRoomName(room.id));
-      cb?.({ ok: true, room: publicRoom(room) });
+      clearEmptyRoomTimer(room);
+      cb?.({ ok: true, room: publicRoom(room), myEvent: myPendingEvent(room, me.id) });
     });
 
     socket.on("disconnect", () => {
@@ -799,18 +622,12 @@ export function registerLifegame(io, supabaseAdmin) {
       p.connected = false;
 
       if (room.status === "lobby") {
-        // 로비에서 나가면 즉시 제거
         leavePlayer(io, room, me.id, false);
       } else if (room.status === "playing") {
-        // 진행 중: 현재 턴이면 자동 패스
-        const turnUid = room.playerOrder[room.currentTurnPlayerIdx];
-        if (turnUid === me.id) {
-          const ev = room.currentEvent;
-          if (ev) submitChoice(io, room, me.id, ev.choices[0].id, true);
-        }
+        // 내 사건이 남아 있으면 자동 선택(다른 사람이 기다리지 않게)
+        if (room.pending?.has(me.id)) autoPick(io, room, me.id, true);
         if (isMinigameActive(room)) recheckMinigame(room);
         broadcastRoomState(io, room);
-        // 모두 끊기면 방 정리
         const anyConnected = room.playerOrder.some(uid => room.players.get(uid)?.connected);
         if (!anyConnected) {
           clearEmptyRoomTimer(room);
@@ -821,10 +638,16 @@ export function registerLifegame(io, supabaseAdmin) {
   });
 }
 
+function myPendingEvent(room, uid) {
+  const ev = room.pending?.get(uid);
+  const p = room.players.get(uid);
+  return ev && p?.life ? { year: room.year, deadline: room.deadline, event: core.publicEvent(p.life, ev) } : null;
+}
+
 function leavePlayer(io, room, userId, forced) {
   if (!room.players.has(userId)) return;
   const wasHost = room.hostUserId === userId;
-  const wasTurn = room.playerOrder[room.currentTurnPlayerIdx] === userId;
+  const hadPending = room.pending?.has(userId);
 
   room.players.delete(userId);
   room.playerOrder = room.playerOrder.filter(u => u !== userId);
@@ -841,10 +664,14 @@ function leavePlayer(io, room, userId, forced) {
 
   if (room.status === "playing") {
     if (isMinigameActive(room)) recheckMinigame(room);
-    if (wasTurn) {
-      // 다음 턴으로 자동 진행 (인덱스는 그대로 두고 startCurrentTurn이 알아서 skip)
-      startCurrentTurn(io, room);
+    if (hadPending) {
+      room.pending.delete(userId);
+      if (!room.pending.size) { room.deadline = null; later(room, () => afterYear(io, room), RESULT_HOLD_MS); }
     }
+    if (!aliveIds(room).length && !isMinigameActive(room)) later(room, () => endGame(io, room), 800);
   }
   broadcastRoomState(io, room);
 }
+
+// 시험용
+export const __lifegameTest = { core, lifegameRooms, runYear, afterYear, rankPlayers };

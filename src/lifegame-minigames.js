@@ -109,7 +109,8 @@ function activeParticipants(room, mini) {
 }
 
 /**
- * @param {object} ctx { room, emit(event,payload), clampStat(key,val), onFinish() }
+ * @param {object} ctx { room, emit(event,payload), clampStat(key,val), onFinish(),
+ *   eligible?(uid) 참가 자격(v2: 살아있는 사람만), minPlayers? 최소 인원(기본 2), moneyMul? 돈 보상 배율(v2: 만원 환산) }
  * @returns {boolean} 시작 여부 (연결된 인원 2명 미만이면 false)
  */
 export function startMinigame(ctx) {
@@ -117,9 +118,9 @@ export function startMinigame(ctx) {
   // 이미 진행 중이면 중복 시작 금지 (endRound 이중 호출 방어). 진행 중이므로 "처리됨"으로 반환
   if (room.mini && room.mini.phase !== "done") return true;
   const participants = new Set(
-    room.playerOrder.filter(uid => room.players.get(uid)?.connected)
+    room.playerOrder.filter(uid => room.players.get(uid)?.connected && (!ctx.eligible || ctx.eligible(uid)))
   );
-  if (participants.size < 2) return false;
+  if (participants.size < (ctx.minPlayers ?? 2)) return false;
 
   room.miniUsed = room.miniUsed || new Set();
   let pool = KIND_IDS.filter(k => !room.miniUsed.has(k));
@@ -288,6 +289,7 @@ function finish(room, mini) {
     let reward = r.valid ? (REWARDS[r.rank - 1] || REWARD_REST) : REWARD_DNF;
     reward = { ...reward };
     if (r.valid && r.rank === 1) reward[def.flavor] = (reward[def.flavor] || 0) + FLAVOR_BONUS;
+    if (reward.money && mini.ctx.moneyMul) reward.money = Math.round(reward.money * mini.ctx.moneyMul);
     r.reward = reward;
     for (const [k, v] of Object.entries(reward)) {
       p.stats[k] = clampStat(k, (p.stats[k] || 0) + v);

@@ -881,7 +881,7 @@ export const EVENTS = [
           { chance: 0.5, effects: { money: +50, social: +5 }, narrative: "위자료 받아냈다." },
           { chance: 0.5, effects: { money: -10 }, narrative: "기각. 변호사비만 까먹음." },
         ] },
-      { id: "hide", emoji: "🫥", text: "잠수 + SNS 폭파", grade: "bad",
+      { id: "hide", emoji: "🌿", text: "잠수 + SNS 폭파", grade: "bad",
         effects: { happy: -8, internet: -10, social: -5 } },
     ],
   },
@@ -1744,7 +1744,7 @@ export const EVENTS = [
           { chance: 0.25, effects: { money: +120, happy: +8 }, narrative: "2배 됐다. 익절 잘했다." },
           { chance: 0.6, effects: { money: -120, happy: -15 }, narrative: "그럴 줄 알았다. 영끌의 끝.", flag: { add: ["coin_doom"] } },
         ] },
-      { id: "ignore", emoji: "🫥", text: "안 본다", grade: "bad",
+      { id: "ignore", emoji: "🌿", text: "안 본다", grade: "bad",
         effects: { money: -80, happy: -10 },
         narratives: ["몇 년 뒤 확인. 이미 0이었다.", "0이면 0이다."] },
     ],
@@ -2554,7 +2554,7 @@ export const ENDINGS = [
     badge: "VOICE",
     rarity: "rare",
     quote: "마이크 한 자루로 인생 2막을 열었다. 시상식 트로피가 거실 한가운데 자리잡았다.",
-    match: (s) => s.happy >= 70 && s.social >= 65 && s.money >= 100,
+    match: (s) => s.happy >= 76 && s.social >= 70 && s.money >= 100,
   },
   // 인생 결과 엔딩
   // ===== v20261018 신규 엔딩 =====
@@ -2700,7 +2700,7 @@ export const ENDINGS = [
   {
     id: "bankrupt",
     title: "패가망신 엔딩",
-    emoji: "🪦",
+    emoji: "⚰️",
     badge: "WRECK",
     quote: "코인, 영끌, 그리고 또 코인. 다음 생에는 적금부터 해보라는 게 그의 마지막 한마디였다.",
     match: (s) => s.money <= -50,
