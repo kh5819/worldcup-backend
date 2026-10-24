@@ -26,10 +26,8 @@ import { registerCardGame } from "./cardgame.js";
 import { registerMerge } from "./merge.js";
 import { registerDraw } from "./draw.js";
 import { registerSuspect } from "./suspect.js";
-import { registerMakak } from "./makak.js";
 import { registerDodge } from "./dodge.js";
 import { registerGachatd } from "./gachatd.js";
-import { registerFit } from "./fit.js";
 import { registerGolf } from "./golf.js";
 import { registerDodogo } from "./dodogo.js";
 import { registerAppleMulti } from "./apple-multi.js";
@@ -9977,10 +9975,8 @@ registerCardGame(io, supabaseAdmin);
 registerMerge(io, supabaseAdmin);
 registerDraw(io, supabaseAdmin);
 registerSuspect(io, supabaseAdmin);
-registerMakak(io, supabaseAdmin);
 registerDodge(io, supabaseAdmin);
 registerGachatd(io, supabaseAdmin);
-registerFit(io, supabaseAdmin);
 registerGolf(io, supabaseAdmin);
 registerDodogo(io, supabaseAdmin);
 registerAppleMulti(io, supabaseAdmin);
@@ -14811,183 +14807,6 @@ app.get("/memory/leaderboard/:difficulty/me", async (req, res) => {
         .or(`duration_sec.lt.${row.duration_sec},and(duration_sec.eq.${row.duration_sec},attempts.lt.${row.attempts})`);
       let myRank = (higher?.length || 0) + 1;
       row.global_rank = myRank > MEMORY_TOP_LIMIT ? null : myRank;
-    }
-    res.json({ ok: true, row });
-  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
-});
-
-// ============================================================
-// 끼워끼워 (DUO Fit) — 솔로 5라운드 총 클리어 시간 랭킹 (빠른 순)
-// 2026-10-19
-// 로그인 유저만. 모드(easy/normal)별 유저당 최고(최단) 1개. TOP 10.
-// ============================================================
-const FIT_TOP_LIMIT = 10;
-const FIT_ALLOWED_MODES = ["easy", "normal"];
-const FIT_ROUNDS = 5;
-
-async function fetchFitLeaderboard(supabase, { mode, dailyOnly = false }) {
-  const base = supabase
-    .from("fit_scores")
-    .select("user_id, nickname, total_ms, best_round_ms, mode, created_at")
-    .eq("flagged", false)
-    .eq("mode", mode);
-  if (dailyOnly) {
-    const today = new Date().toISOString().slice(0, 10);
-    base.gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
-  }
-  const { data, error } = await base
-    .order("total_ms", { ascending: true })
-    .order("created_at", { ascending: true })
-    .limit(FIT_TOP_LIMIT);
-  if (error) return { error };
-  const rows = data || [];
-  if (rows.length > 0) {
-    const { data: profiles } = await supabase
-      .from("profiles").select("id, nickname, avatar_url").in("id", rows.map(r => r.user_id));
-    const profMap = new Map((profiles || []).map(p => [p.id, p]));
-    for (const r of rows) {
-      const p = profMap.get(r.user_id);
-      if (p) {
-        if (p.nickname) r.nickname = p.nickname;
-        r.avatar_url = p.avatar_url || null;
-      }
-    }
-  }
-  return { rows };
-}
-
-app.post("/fit/score", async (req, res) => {
-  try {
-    const body = req.body || {};
-    const mode = String(body.mode || "");
-    const totalMs = Math.round(Number(body.totalMs));
-    const roundsIn = Array.isArray(body.rounds) ? body.rounds.map(Number) : [];
-    const clientRunId = body.clientRunId ? String(body.clientRunId).slice(0, 64) : null;
-
-    if (!FIT_ALLOWED_MODES.includes(mode)) return res.status(400).json({ ok: false, error: "INVALID_MODE" });
-    if (!Number.isFinite(totalMs) || totalMs <= 0) return res.status(400).json({ ok: false, error: "INVALID_TIME" });
-    if (roundsIn.length !== FIT_ROUNDS || roundsIn.some(v => !Number.isFinite(v) || v <= 0)) {
-      return res.status(400).json({ ok: false, error: "INVALID_ROUNDS" });
-    }
-
-    const user = await getOptionalUser(req);
-    const userId = user?.id || null;
-    if (!userId) return res.status(401).json({ ok: false, error: "LOGIN_REQUIRED" });
-
-    const rounds = roundsIn.map(v => Math.max(0, Math.min(3_600_000, Math.round(v))));
-    const sum = rounds.reduce((a, b) => a + b, 0);
-    // 클라 총합과 라운드 합이 크게 다르면 조작 의심
-    let flagged = Math.abs(sum - totalMs) > 1500;
-    if (rounds.some(v => v < 1500)) flagged = true;      // 한 라운드 1.5초 미만은 사실상 불가
-    if (totalMs < 12_000) flagged = true;
-    if (totalMs > 3_600_000) flagged = true;
-    if (flagged) return res.json({ ok: true, isNewBest: false, official: false, flagged: true });
-    const bestRound = Math.min(...rounds);
-
-    const { data: prof } = await supabaseAdmin
-      .from("profiles").select("nickname").eq("id", userId).maybeSingle();
-    const nickname = String(prof?.nickname || "익명").slice(0, 14);
-
-    const { data: existing } = await supabaseAdmin
-      .from("fit_scores").select("id, total_ms")
-      .eq("user_id", userId).eq("mode", mode).maybeSingle();
-
-    const prevBest = existing?.total_ms ?? null;
-    const isNewBest = !existing || totalMs < existing.total_ms;
-
-    const payload = {
-      user_id: userId, nickname, mode,
-      total_ms: totalMs, best_round_ms: bestRound, rounds,
-      flagged, client_run_id: clientRunId,
-      created_at: new Date().toISOString(),
-    };
-    if (!existing) {
-      const { error } = await supabaseAdmin.from("fit_scores").insert(payload);
-      if (error) {
-        if (String(error.code) === "23505") return res.json({ ok: true, isNewBest: false, bestMs: prevBest });
-        console.error("[fit/score] insert error:", error);
-        return res.status(500).json({ ok: false, error: "INSERT_FAIL" });
-      }
-    } else if (isNewBest) {
-      const { error } = await supabaseAdmin.from("fit_scores").update(payload)
-        .eq("user_id", userId).eq("mode", mode);
-      if (error) {
-        console.error("[fit/score] update error:", error);
-        return res.status(500).json({ ok: false, error: "UPDATE_FAIL" });
-      }
-    }
-
-    // 내 최고 기록 기준 순위 (TOP 10 안일 때만)
-    let globalRank = null, dailyRank = null, official = false;
-    const myBest = isNewBest ? totalMs : prevBest;
-    if (!flagged) {
-      official = true;
-      const { data: faster } = await supabaseAdmin
-        .from("fit_scores").select("user_id")
-        .eq("flagged", false).eq("mode", mode).lt("total_ms", myBest);
-      globalRank = (faster?.length || 0) + 1;
-      if (globalRank > FIT_TOP_LIMIT) globalRank = null;
-      const today = new Date().toISOString().slice(0, 10);
-      const { data: fasterDaily } = await supabaseAdmin
-        .from("fit_scores").select("user_id")
-        .eq("flagged", false).eq("mode", mode).lt("total_ms", myBest)
-        .gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
-      dailyRank = (fasterDaily?.length || 0) + 1;
-      if (dailyRank > FIT_TOP_LIMIT) dailyRank = null;
-    }
-
-    res.json({ ok: true, isNewBest, bestMs: myBest, flagged, official, globalRank, dailyRank });
-  } catch (err) {
-    console.error("[fit/score]", err);
-    res.status(500).json({ ok: false, error: "INTERNAL" });
-  }
-});
-
-app.get("/fit/leaderboard/:mode/global", async (req, res) => {
-  try {
-    const mode = String(req.params.mode);
-    if (!FIT_ALLOWED_MODES.includes(mode)) return res.status(400).json({ ok: false, error: "INVALID_MODE" });
-    const result = await fetchFitLeaderboard(supabaseAdmin, { mode, dailyOnly: false });
-    if (result.error) { console.error("[fit/leaderboard/global]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
-    res.json({ ok: true, rows: result.rows });
-  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
-});
-
-app.get("/fit/leaderboard/:mode/daily", async (req, res) => {
-  try {
-    const mode = String(req.params.mode);
-    if (!FIT_ALLOWED_MODES.includes(mode)) return res.status(400).json({ ok: false, error: "INVALID_MODE" });
-    const result = await fetchFitLeaderboard(supabaseAdmin, { mode, dailyOnly: true });
-    if (result.error) { console.error("[fit/leaderboard/daily]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
-    res.json({ ok: true, rows: result.rows });
-  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
-});
-
-app.get("/fit/leaderboard/:mode/me", async (req, res) => {
-  try {
-    const mode = String(req.params.mode);
-    if (!FIT_ALLOWED_MODES.includes(mode)) return res.status(400).json({ ok: false, error: "INVALID_MODE" });
-    const user = await getOptionalUser(req);
-    const userId = user?.id || null;
-    if (!userId) return res.json({ ok: true, row: null });
-    const { data, error } = await supabaseAdmin
-      .from("fit_scores")
-      .select("nickname, total_ms, best_round_ms, mode, created_at")
-      .eq("flagged", false).eq("user_id", userId).eq("mode", mode).maybeSingle();
-    if (error) { console.error("[fit/leaderboard/me]", error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
-    let row = data || null;
-    if (row) {
-      const { data: prof } = await supabaseAdmin
-        .from("profiles").select("nickname, avatar_url").eq("id", userId).maybeSingle();
-      if (prof) {
-        if (prof.nickname) row.nickname = prof.nickname;
-        row.avatar_url = prof.avatar_url || null;
-      }
-      const { data: faster } = await supabaseAdmin
-        .from("fit_scores").select("user_id")
-        .eq("flagged", false).eq("mode", mode).lt("total_ms", row.total_ms);
-      const myRank = (faster?.length || 0) + 1;
-      row.global_rank = myRank > FIT_TOP_LIMIT ? null : myRank;
     }
     res.json({ ok: true, row });
   } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }

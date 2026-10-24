@@ -622,6 +622,19 @@ export function registerSuspect(io, supabaseAdmin) {
         // 정답 → 한 번 더 추리 또는 턴 종료 선택지로 진입
         room.turnPhase = "continue";
         broadcastRoomState(io, room);
+        // 고르지 않고 버티면 게임이 멈추므로 시간이 지나면 턴 종료로 처리 (뽑은 카드는 비공개 유지)
+        if (room.guessTimeSec > 0) {
+          clearGuessTimer(room);
+          const uid = me.id;
+          room.guessTimer = setTimeout(() => {
+            const r = scRooms.get(room.id);
+            if (!r || r.status !== "playing" || r.currentTurnPlayerId !== uid || r.turnPhase !== "continue") return;
+            const pp = r.players.get(uid);
+            if (pp) pp.drawnCardId = null;
+            io.to(socketRoomName(r.id)).emit("suspect:continueChoice", { playerId: uid, continue: false, auto: true });
+            advanceTurn(io, r);
+          }, room.guessTimeSec * 1000);
+        }
         cb?.({ ok: true, correct: true });
       } else {
         // 오답 — 방금 뽑은 카드 공개 + 턴 종료
@@ -663,19 +676,13 @@ export function registerSuspect(io, supabaseAdmin) {
         room.turnPhase = "guess";
         io.to(socketRoomName(room.id)).emit("suspect:continueChoice", { playerId: me.id, continue: true });
         broadcastRoomState(io, room);
-        // 시간 타이머 재시작
-        if (room.guessTimeSec > 0) {
-          clearGuessTimer(room);
-          room.guessTimer = setTimeout(() => {
-            const r = scRooms.get(room.id);
-            if (!r || r.status !== "playing" || r.currentTurnPlayerId !== me.id) return;
-            io.to(socketRoomName(r.id)).emit("suspect:turnTimeout", { playerId: me.id });
-            advanceTurn(io, r);
-          }, room.guessTimeSec * 1000);
-        }
+        // 시간 타이머 재시작 — 계속하기로 했다가 시간이 다 되면 일반 추리 시간 초과와 같게 (뽑은 카드 공개)
+        clearGuessTimer(room);
+        startGuessTimer(io, room, me.id);
         cb?.({ ok: true });
       } else {
         // 턴 종료 — 뽑은 카드 그대로 비공개 손에 합류
+        clearGuessTimer(room);
         const p = room.players.get(me.id);
         if (p) p.drawnCardId = null;
         io.to(socketRoomName(room.id)).emit("suspect:continueChoice", { playerId: me.id, continue: false });
