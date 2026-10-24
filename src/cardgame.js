@@ -193,6 +193,7 @@ function publicRoom(room) {
     status: room.status,
     solo: !!room.solo,
     botDiff: room.botDiff || null,
+    soloMode: room.soloMode || null,
     mode: room.mode,
     lang: room.lang || "ko",
     maxPlayers: room.maxPlayers,
@@ -232,8 +233,7 @@ function clearEmptyRoomTimer(room) {
 function deleteRoom(io, room, reason = "UNKNOWN") {
   // 남아 있는 타이머(기절 자동 넘김 등)가 지운 방을 다시 돌리지 않게
   room.status = "deleted";
-  if (room.botTimer) clearTimeout(room.botTimer);
-  if (room.botReactTimer) clearTimeout(room.botReactTimer);
+  clearBotTimers(room);
   clearTurnTimer(room);
   clearReactionTimer(room);
   clearEmptyRoomTimer(room);
@@ -467,11 +467,12 @@ function applyDamageDirect(io, room, userId, dmg, source, attackerId = null) {
 
 // ===== Turn flow =====
 function teamsAlive(room) {
-  // 살아있고 connected인 사람만 카운트 — disconnect만 된 채로 게임이 안 끝나는 멈춤 방지
+  // 쓰러지지 않은 사람 기준. 끊긴 사람은 차례만 건너뛰고(멈춤 없음) 60초 뒤 자동으로 빠짐.
+  // (예전엔 끊기는 순간 탈락 취급 → 1초만 끊겨도 1:1에서 바로 패배)
   const set = new Set();
   for (const uid of room.playerOrder) {
     const p = room.players.get(uid);
-    if (p && !p.isDown && p.connected) set.add(p.team);
+    if (p && !p.isDown) set.add(p.team);
   }
   return set;
 }
@@ -488,7 +489,7 @@ function checkWinCondition(io, room) {
     // 개인전: 마지막 alive+connected 생존자
     const winnerUid = room.playerOrder.find(uid => {
       const p = room.players.get(uid);
-      return p && !p.isDown && p.connected;
+      return p && !p.isDown;
     }) || null;
     const winnerP = winnerUid ? room.players.get(winnerUid) : null;
     room.winnerTeam = winnerP?.team ?? null;
@@ -500,8 +501,7 @@ function checkWinCondition(io, room) {
 
 function endGame(io, room) {
   room.status = "ended";
-  if (room.botTimer) { clearTimeout(room.botTimer); room.botTimer = null; }
-  if (room.botReactTimer) { clearTimeout(room.botReactTimer); room.botReactTimer = null; }
+  clearBotTimers(room);
   clearTurnTimer(room);
   clearReactionTimer(room);
   io.to(socketRoomName(room.id)).emit("cg:gameEnd", {
@@ -1284,6 +1284,11 @@ function leavePlayer(io, room, userId, hardLeave) {
   } else {
     p.connected = false;
   }
+  // AI판에 사람이 아무도 안 남으면 바로 닫음
+  if (room.solo && !room.playerOrder.some(uid => !room.players.get(uid)?.isBot)) {
+    deleteRoom(io, room, "SOLO_EMPTY");
+    return;
+  }
   // 호스트 위임
   if (room.hostUserId === userId && room.playerOrder.length > 0) {
     room.hostUserId = room.playerOrder[0];
@@ -1331,11 +1336,15 @@ function botDelay(room, base) {
 }
 function clearBotTimers(room) {
   if (room.botTimer) { clearTimeout(room.botTimer); room.botTimer = null; }
-  if (room.botReactTimer) { clearTimeout(room.botReactTimer); room.botReactTimer = null; }
+  if (room.botReactTimers) { for (const t of room.botReactTimers.values()) clearTimeout(t); room.botReactTimers.clear(); }
 }
+// 봇마다 난이도 (2:2의 AI 팀원은 항상 보통)
+function botDiffOf(room, bp) { return bp?.botDiff || room.botDiff || "normal"; }
 // 지금 차례가 AI고 스택이 비었으면 다음 행동 예약
 function scheduleBot(io, room, base = 1100) {
   if (!room.solo || room.status !== "playing" || room.actionStack.length > 0) return;
+  // 사람이 잠깐 끊겼으면 AI도 기다림 (돌아오면 cg:requestState에서 재개)
+  if (![...room.players.values()].some(p => !p.isBot && p.connected)) return;
   const uid = room.playerOrder[room.currentTurnIdx];
   const bp = room.players.get(uid);
   if (!bp?.isBot || bp.isDown) return;
@@ -1348,16 +1357,18 @@ function scheduleBot(io, room, base = 1100) {
 // 공격받은 AI의 반응 예약
 function scheduleBotReact(io, room, frame) {
   if (!room.solo) return;
+  if (!room.botReactTimers) room.botReactTimers = new Map();
   for (const uid of frame.awaiting || []) {
     if (!room.players.get(uid)?.isBot) continue;
-    if (room.botReactTimer) clearTimeout(room.botReactTimer);
+    if (room.botReactTimers.has(uid)) clearTimeout(room.botReactTimers.get(uid));
     const fid = frame.id;
-    room.botReactTimer = setTimeout(() => {
-      room.botReactTimer = null;
+    room.botReactTimers.set(uid, setTimeout(() => {
+      room.botReactTimers.delete(uid);
       const top = room.actionStack[room.actionStack.length - 1];
       if (room.status !== "playing" || !top || top.id !== fid) return;
+      if (!top.awaiting.includes(uid) || top.passes.has(uid)) return;
       try { botReact(io, room, uid, top); } catch (e) { console.error("[cg bot react]", e); try { tryPassReaction(io, room, uid); } catch {} }
-    }, botDelay(room, 900));
+    }, botDelay(room, 900)));
   }
 }
 
@@ -1370,14 +1381,24 @@ function botEnemies(room, bp) {
   }
   return out;
 }
+function botAllies(room, bp) {
+  const out = [];
+  for (const uid of room.playerOrder) {
+    const t = room.players.get(uid);
+    if (!t || t.isDown || t.team !== bp.team) continue;
+    out.push({ uid, p: t });
+  }
+  return out;
+}
 const BAD_STATUS = ["poison", "burn", "bleed", "stun", "silence", "slip", "frog", "marked", "timebomb"];
 
 // 카드 1장의 가치 (높을수록 먼저 씀). 0 이하면 안 씀
-function botScore(room, bp, card, enemy) {
+function botScore(room, bp, card, enemy, ally) {
   const ef = card.effect || {};
   const myHp = bp.hp, maxHp = bp.maxHp;
   const eHp = enemy?.p.hp ?? 0;
-  const hard = room.botDiff === "hard";
+  const hard = botDiffOf(room, bp) === "hard";
+  const tgtAlly = ally?.p || bp;
   const attacksInHand = bp.hand.filter(id => getCard(id)?.type === "attack").length;
   let dmg = ef.damage || 0;
   if (bp.statuses.rage) dmg += 3;
@@ -1404,11 +1425,11 @@ function botScore(room, bp, card, enemy) {
   if (card.type === "support" || card.type === "special") {
     if (ef.heal || ef.healTarget) {
       const h = ef.heal || ef.healTarget;
-      const missing = maxHp - myHp;
+      const missing = tgtAlly.maxHp - tgtAlly.hp;
       if (missing <= 1) return -1;
-      return Math.min(h, missing) * (myHp <= 10 ? 2.4 : 1.2);
+      return Math.min(h, missing) * (tgtAlly.hp <= 10 ? 2.4 : 1.2);
     }
-    if (ef.clearStatus) return BAD_STATUS.some(k => bp.statuses[k]) ? 9 : -1;
+    if (ef.clearStatus) return BAD_STATUS.some(k => tgtAlly.statuses?.[k]) ? 9 : -1;
     if (ef.applyStatus?.rage) return (bp.statuses.rage ? -1 : attacksInHand >= 1 ? 6 + attacksInHand : -1);
     if (ef.applyStatus?.shield_buff) return bp.statuses.shield_buff ? -1 : myHp <= 14 ? 6 : 2;
     if (ef.applyStatus?.lifesteal) return attacksInHand >= 1 && myHp < maxHp - 4 ? 5 : -1;
@@ -1435,12 +1456,23 @@ function botScore(room, bp, card, enemy) {
     if (ef.applyStatus?.frog) return enemy?.p.statuses?.frog ? -1 : 6;
     if (ef.applyStatus?.marked) return enemy?.p.statuses?.marked ? -1 : (attacksInHand >= 1 ? 6 : 2);
     if (ef.timebomb) return enemy?.p.statuses?.timebomb ? -1 : 8;
-    if (ef.taunt) return -1;                          // 1:1에선 의미 없음
+    if (ef.taunt) {
+      // 적이 여럿일 때만: 내 아군을 노리는 걸 막고 나에게 끌어옴 (내가 튼튼할 때)
+      const foes = botEnemies(room, bp).length;
+      const mates = botAllies(room, bp).length;
+      return foes >= 2 && mates >= 2 && myHp >= 15 && !enemy?.p.statuses?.taunt ? 4 : -1;
+    }
     if (ef.swapHp) return eHp - myHp >= 6 ? (eHp - myHp) : -1;
     if (ef.nuke) {
-      if (enemyInvuln) return -1;
-      if (ef.nuke >= eHp && myHp > ef.nuke) return 50;
-      return myHp - eHp >= 6 && myHp > ef.nuke + 4 ? 5 : -1;
+      // 전원(나·아군 포함) 피해 — 아군이 쓰러지면 안 씀
+      if (myHp <= ef.nuke) return -1;
+      const mates = botAllies(room, bp).filter(a => a.uid !== bp.__uid);
+      if (mates.some(a => a.p.hp <= ef.nuke && a.p !== bp)) return -1;
+      const foes = botEnemies(room, bp).filter(e => (e.p.invulnTurns || 0) <= 0);
+      const kills = foes.filter(e => e.p.hp <= ef.nuke).length;
+      if (kills) return 40 * kills;
+      const net = foes.length - mates.length;
+      return net >= 1 && myHp - eHp >= 6 ? 3 + net : -1;
     }
     if (ef.swapHand) return enemy && enemy.p.hand.length - bp.hand.length >= 2 ? 4 : -1;
     if (ef.stealCard || ef.magnet) return enemy?.p.hand.length ? (bp.hand.length < MAX_HAND ? 5 : -1) : -1;
@@ -1464,11 +1496,12 @@ function botAct(io, room, uid) {
   const enemy = enemies[0];
 
   // 궁극기: 게이지 다 차면 상황 보고 사용
-  if ((bp.gauge || 0) >= ULTIMATE_GAUGE_MAX && room.botDiff !== "easy" || ((bp.gauge || 0) >= ULTIMATE_GAUGE_MAX && Math.random() < 0.5)) {
+  if ((bp.gauge || 0) >= ULTIMATE_GAUGE_MAX && botDiffOf(room, bp) !== "easy" || ((bp.gauge || 0) >= ULTIMATE_GAUGE_MAX && Math.random() < 0.5)) {
     let ult = null, target = null;
     const eRatio = enemy.p.hp / enemy.p.maxHp;
+    const teamLow = botAllies(room, bp).some(a => a.p.hp <= 8);
     if ((enemy.p.invulnTurns || 0) <= 0 && eRatio <= 0.35) { ult = "execute"; target = enemy.uid; }
-    else if (bp.hp <= 9) ult = "heal";
+    else if (bp.hp <= 9 || teamLow) ult = "heal";
     else if ((enemy.p.invulnTurns || 0) <= 0 && enemy.p.hp <= 5) ult = "blast";
     else if (bp.hp <= 14) ult = "invuln";
     else ult = room.cardsPlayedThisTurn < DEFAULT_PLAY_PER_TURN ? "timestop" : "blast";
@@ -1483,25 +1516,44 @@ function botAct(io, room, uid) {
     return scheduleBot(io, room, 900);
   }
 
+  // 같은 팀 중 가장 급한 사람 (회복·해독 대상)
+  const allies = botAllies(room, bp);
+  const neediest = allies.slice().sort((a, b) => (a.p.hp / a.p.maxHp) - (b.p.hp / b.p.maxHp))[0] || { uid, p: bp };
+  const statusAlly = allies.find(a => BAD_STATUS.some(k => a.p.statuses?.[k])) || neediest;
+  // 도발당했으면 도발한 사람만 노릴 수 있음
+  const taunter = bp.statuses.taunt && bp.tauntBy ? enemies.find(e => e.uid === bp.tauntBy) : null;
+  const byMax = (f) => enemies.slice().sort((a, b) => f(b) - f(a))[0];
+  const enemyFor = (c) => {
+    if (taunter && c.targeting === "enemy") return taunter;
+    const ef = c.effect || {};
+    if (ef.swapHp) return byMax(e => e.p.hp);
+    if (ef.swapHand || ef.stealCard || ef.discardTarget) return byMax(e => e.p.hand.length);
+    if (ef.applyStatus?.stun || ef.applyStatus?.slip || ef.applyStatus?.frog || ef.timebomb) return byMax(e => e.p.hp + e.p.hand.length);
+    return enemy;
+  };
   // 낼 수 있는 카드 점수 매기기
   const plays = [];
+  bp.__uid = uid;
   for (const id of new Set(bp.hand)) {
     const c = getCard(id);
     if (!c || c.type === "defense" || c.type === "reaction") continue;
     if (bp.statuses.silence && c.type === "special") continue;
-    let target = null;
-    if (c.targeting === "enemy" || c.targeting === "any") target = enemy.uid;
-    else if (c.targeting === "ally" || c.targeting === "self") target = uid;
-    plays.push({ id, target, score: botScore(room, bp, c, enemy) });
+    const foe = enemyFor(c);
+    let target = null, ally = null;
+    if (c.targeting === "enemy" || c.targeting === "any") target = foe.uid;
+    else if (c.targeting === "ally") { ally = c.effect?.clearStatus ? statusAlly : neediest; target = ally.uid; }
+    else if (c.targeting === "self") target = uid;
+    plays.push({ id, target, score: botScore(room, bp, c, foe, ally) });
   }
   let pick = null;
   const good = plays.filter(x => x.score > 0).sort((a, b) => b.score - a.score);
-  if (room.botDiff === "easy") {
+  const diff = botDiffOf(room, bp);
+  if (diff === "easy") {
     // 쉬움: 절반은 아무 카드나 (점수 무시)
     const any = plays.filter(x => x.score > -20);
     if (any.length && Math.random() < 0.5) pick = any[Math.floor(Math.random() * any.length)];
     else if (good.length && Math.random() < 0.7) pick = good[Math.floor(Math.random() * Math.min(3, good.length))];
-  } else if (room.botDiff === "normal") {
+  } else if (diff === "normal") {
     pick = good.length ? (good.length > 1 && Math.random() < 0.3 ? good[1] : good[0]) : null;
   } else {
     pick = good[0] || null;
@@ -1522,8 +1574,16 @@ function botAct(io, room, uid) {
 
 function botReact(io, room, uid, frame) {
   const bp = room.players.get(uid);
-  if (!bp || bp.isDown || frame.targetUserId !== uid) return tryPassReaction(io, room, uid);
+  if (!bp || bp.isDown) return tryPassReaction(io, room, uid);
   const dmg = frame.pendingDamage || 0;
+  if (frame.targetUserId !== uid) {
+    // 아군이 맞는 중: 크게 맞거나 쓰러질 것 같으면 보호(대신 맞기), 내가 버틸 수 있을 때만
+    const mate = room.players.get(frame.targetUserId);
+    const protect = bp.hand.find(id => (getCard(id)?.reactsTo || []).includes("attack:targetTeam"));
+    const worth = mate && mate.team === bp.team && (dmg >= mate.hp || dmg >= 5) && bp.hp > dmg + 4;
+    if (protect && worth && botDiffOf(room, bp) !== "easy") return tryPlayReaction(io, room, uid, protect);
+    return tryPassReaction(io, room, uid);
+  }
   const card = getCard(frame.cardId);
   const hasStatus = !!card?.effect?.applyStatus;
   const opts = [];
@@ -1546,12 +1606,12 @@ function botReact(io, room, uid, frame) {
   if (!opts.length) return tryPassReaction(io, room, uid);
   opts.sort((a, b) => b.v - a.v);
   const lethal = dmg >= bp.hp;
-  if (room.botDiff === "easy") {
+  if (botDiffOf(room, bp) === "easy") {
     if (Math.random() < 0.35) return tryPlayReaction(io, room, uid, opts[Math.floor(Math.random() * opts.length)].id);
     return tryPassReaction(io, room, uid);
   }
   // 보통/어려움: 약한 공격엔 좋은 반응 카드 아끼기 (어려움은 더 아낌)
-  const keepFor = room.botDiff === "hard" ? 3 : 0;
+  const keepFor = botDiffOf(room, bp) === "hard" ? 3 : 0;
   if (!lethal && dmg < keepFor && !hasStatus && opts[0].v > dmg + 2) return tryPassReaction(io, room, uid);
   return tryPlayReaction(io, room, uid, opts[0].id);
 }
@@ -1794,12 +1854,14 @@ export function registerCardGame(io, supabaseAdmin) {
           }
         }
         const diff = BOT_DIFFS.includes(payload?.difficulty) ? payload.difficulty : "normal";
+        const soloMode = ["1v1", "2v2", "ffa3"].includes(payload?.soloMode) ? payload.soloMode : "1v1";
         const lang = ["ko", "ja", "en"].includes(payload?.lang) ? payload.lang : "ko";
         const roomId = `cg_solo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const botId = `bot_${roomId}`;
         const room = {
-          id: roomId, inviteCode: "", hostUserId: me.id, solo: true, botDiff: diff,
-          status: "lobby", mode: "1v1", lang, maxPlayers: 2,
+          id: roomId, inviteCode: "", hostUserId: me.id, solo: true, botDiff: diff, soloMode,
+          status: "lobby", mode: soloMode === "2v2" ? "2v2" : soloMode === "ffa3" ? "ffa8" : "1v1", lang,
+          maxPlayers: soloMode === "2v2" ? 4 : soloMode === "ffa3" ? 3 : 2,
           turnSec: ALLOWED_TURN_SECS.includes(Number(payload?.turnSec)) ? Number(payload.turnSec) : 60,
           reactionSec: 10,
           createdAt: Date.now(),
@@ -1815,16 +1877,29 @@ export function registerCardGame(io, supabaseAdmin) {
         const name = String(payload?.nickname || (me.isGuest ? "게스트" : "나")).slice(0, 20);
         room.players.set(me.id, newPlayerState(name, !!me.isGuest, null));
         room.playerOrder.push(me.id);
-        const bot = newPlayerState(BOT_NAMES[diff], false, null);
-        bot.isBot = true;
-        room.players.set(botId, bot);
-        room.playerOrder.push(botId);
+        const addBot = (id, name, d) => {
+          const b = newPlayerState(name, false, null);
+          b.isBot = true; b.botDiff = d;
+          room.players.set(id, b);
+          room.playerOrder.push(id);
+        };
+        if (soloMode === "2v2") {
+          // 차례: 나 → 적A → AI 팀원 → 적B (팀이 번갈아). assignTeams가 순서대로 0,1,0,1 배정
+          addBot(`${botId}_a`, "🤖 AI A", diff);
+          addBot(`${botId}_ally`, "🤝 AI 팀원", "normal");
+          addBot(`${botId}_b`, "🤖 AI B", diff);
+        } else if (soloMode === "ffa3") {
+          addBot(`${botId}_a`, "🤖 AI A", diff);
+          addBot(`${botId}_b`, "🤖 AI B", diff);
+        } else {
+          addBot(botId, BOT_NAMES[diff], diff);
+        }
         cgUserRoom.set(me.id, roomId);
         assignTeams(room);
         socket.join(socketRoomName(roomId));
         cb?.({ ok: true, roomId, room: publicRoom(room) });
         beginGame(io, room);
-        console.log(`[cg] solo room ${roomId} diff=${diff}`);
+        console.log(`[cg] solo room ${roomId} diff=${diff} mode=${soloMode}`);
       } catch (e) {
         console.error("[cg:startSolo]", e);
         cb?.({ ok: false, error: "INTERNAL" });
@@ -1954,8 +2029,12 @@ export function registerCardGame(io, supabaseAdmin) {
       const room = roomId ? cgRooms.get(roomId) : null;
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       socket.join(socketRoomName(room.id));
-      cb?.({ ok: true, room: publicRoom(room) });
+      const p = room.players.get(me.id);
+      if (p) { p.connected = true; p.discAt = null; }
+      cb?.({ ok: true, room: publicRoom(room), cards: room.status === "playing" ? publicCardListByLang(room.lang || "ko") : null });
       sendHandTo(io, room, me.id);
+      broadcastRoomState(io, room);
+      scheduleBot(io, room, 1200); // AI판: 사람이 돌아오면 AI 재개
     });
 
     socket.on("disconnect", () => {
@@ -1964,13 +2043,17 @@ export function registerCardGame(io, supabaseAdmin) {
       const room = cgRooms.get(roomId);
       if (!room) return;
       const p = room.players.get(me.id);
-      if (p) p.connected = false;
+      // 같은 사람이 다른 탭/새 소켓으로 이미 붙어 있으면 끊김 처리 안 함
+      const still = [...(io.sockets.adapter.rooms.get(socketRoomName(room.id)) || [])].some(sid => sid !== socket.id && io.sockets.sockets.get(sid)?.user?.id === me.id);
+      if (still) return;
+      const stamp = Date.now();
+      if (p) { p.connected = false; p.discAt = stamp; }
       // 진행 중 끊김 → 60초 후 자동 leave
       setTimeout(() => {
         const r = cgRooms.get(roomId);
         if (!r) return;
         const pp = r.players.get(me.id);
-        if (!pp || pp.connected) return;
+        if (!pp || pp.connected || pp.discAt !== stamp) return;
         leavePlayer(io, r, me.id, true);
       }, 60_000);
       if (room.status === "lobby") {
