@@ -15,6 +15,11 @@ const EMPTY_ROOM_TTL_MS = 30_000;
 const PEER_UPDATE_THROTTLE_MS = 700;
 const SNAPSHOT_THROTTLE_MS = 1000;
 const MAX_NICK_LEN = 14;
+// 팀전(2인 1팀, 한 화면 협동): 팀 화면 계산은 팀장 브라우저가 하고 서버는 팀원끼리 중계만 한다
+const TEAM_SIZE = 2;
+const TEAM_RELAY_MAX_BYTES = 256 * 1024;
+const TEAM_RELAY_MAX_PER_SEC = 80;
+const TEAM_GONE_GRACE_MS = 6000;      // 게임 중 팀원 연결이 끊겨도 이 시간 안에 돌아오면 유지
 
 // ===== util =====
 function genInviteCode() {
@@ -45,6 +50,7 @@ function newPlayerState(name, isGuest, avatarUrl, socketId) {
     joinedAt: Date.now(),
     connected: true,
     socketId,
+    team: 0,
     score: 0,
     hp: 100,
     maxHp: 100,
@@ -74,6 +80,7 @@ function publicPlayer(userId, p) {
     alive: p.alive,
     snapshot: p.snapshot || [],
     elapsedMs: p.elapsedMs,
+    team: p.team || 0,
   };
 }
 
@@ -86,6 +93,8 @@ function publicRoom(room) {
     maxPlayers: room.maxPlayers,
     timeLimitSec: room.timeLimitSec || 0,
     interfereEnabled: !!room.interfereEnabled,
+    teamMode: !!room.teamMode,
+    teams: room.teams || null,
     startedAt: room.startedAt || null,
     endedAt: room.endedAt || null,
     players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
@@ -94,6 +103,100 @@ function publicRoom(room) {
 
 function broadcastRoomState(io, room) {
   io.to(socketRoomName(room.id)).emit("dodge:roomState", publicRoom(room));
+}
+
+// ===== 팀전 =====
+function maxTeams(room) { return Math.max(1, Math.ceil(room.maxPlayers / TEAM_SIZE)); }
+function teamCount(room, team, exceptUid) {
+  let n = 0;
+  for (const [uid, p] of room.players) if (uid !== exceptUid && p.team === team) n++;
+  return n;
+}
+function pickOpenTeam(room, exceptUid) {
+  for (let t = 1; t <= maxTeams(room); t++) if (teamCount(room, t, exceptUid) < TEAM_SIZE) return t;
+  return 0;
+}
+function assignAllTeams(room) {
+  for (const p of room.players.values()) p.team = 0;
+  for (const uid of room.playerOrder) {
+    const p = room.players.get(uid);
+    if (p) p.team = pickOpenTeam(room, uid) || 1;
+  }
+}
+// 시작 시 팀 확정: [{team, leader, members}] — 팀장 = 그 팀에 먼저 들어온 사람
+function buildTeams(room) {
+  const byTeam = new Map();
+  for (const uid of room.playerOrder) {
+    const p = room.players.get(uid);
+    if (!p) continue;
+    let t = p.team || 1;
+    if ((byTeam.get(t) || []).length >= TEAM_SIZE) {
+      t = 1;
+      while ((byTeam.get(t) || []).length >= TEAM_SIZE) t++;
+    }
+    p.team = t;
+    if (!byTeam.has(t)) byTeam.set(t, []);
+    byTeam.get(t).push(uid);
+  }
+  return [...byTeam.entries()].sort((a, b) => a[0] - b[0])
+    .map(([team, members]) => ({ team, leader: members[0], members }));
+}
+function teamOf(room, uid) {
+  return (room.teams || []).find(t => t.members.includes(uid)) || null;
+}
+function teamAlive(room, t) {
+  return t.members.some(uid => room.players.get(uid)?.alive);
+}
+// 팀 전체 탈락 (팀장이 보낸 dead 또는 팀장 이탈)
+function killTeam(io, room, t, info = {}) {
+  for (const uid of t.members) {
+    const p = room.players.get(uid);
+    if (!p || !p.alive) continue;
+    p.alive = false; p.hp = 0;
+    if (info.score !== undefined) p.score = safeNumber(info.score, p.score);
+    if (info.kills !== undefined) p.kills = safeNumber(info.kills, p.kills);
+    if (info.elapsedMs !== undefined) p.elapsedMs = safeNumber(info.elapsedMs, p.elapsedMs);
+    io.to(socketRoomName(room.id)).emit("dodge:peerUpdate", {
+      playerId: uid, score: p.score, hp: 0, kills: p.kills, alive: false, elapsedMs: p.elapsedMs,
+    });
+  }
+}
+// 게임 중 팀원이 완전히 빠짐: 팀장이면 팀 탈락, 팀원이면 팀장에게 알림
+function handleTeamMemberGone(io, room, uid) {
+  if (!room.teamMode || room.status !== "playing") return;
+  const t = teamOf(room, uid);
+  if (!t) return;
+  const isLeader = t.leader === uid;
+  for (const o of t.members) {
+    if (o === uid) continue;
+    const op = room.players.get(o);
+    if (op?.socketId) io.to(op.socketId).emit("dodge:tmGone", { playerId: uid, role: isLeader ? "leader" : "partner" });
+  }
+  if (isLeader) killTeam(io, room, t);
+  else {
+    const p = room.players.get(uid);
+    if (p && p.alive) {
+      p.alive = false; p.hp = 0;
+      io.to(socketRoomName(room.id)).emit("dodge:peerUpdate", { playerId: uid, hp: 0, alive: false });
+    }
+  }
+  checkGameEnd(io, room);
+}
+function clearGoneTimer(p) {
+  if (p?._goneTimer) { clearTimeout(p._goneTimer); p._goneTimer = null; }
+}
+// 끝 판정 — 팀전은 팀 단위, 개인전은 기존 규칙
+function checkGameEnd(io, room) {
+  if (room.status !== "playing") return;
+  if (room.teamMode && room.teams) {
+    const alive = room.teams.filter(t => teamAlive(room, t));
+    if (alive.length === 0) finishGame(io, room, "ALL_DEAD");
+    else if (room.teams.length > 1 && alive.length === 1) finishGame(io, room, "LAST_STANDING");
+    return;
+  }
+  const aliveN = [...room.players.values()].filter(x => x.alive).length;
+  if (aliveN === 0) finishGame(io, room, "ALL_DEAD");
+  else if (aliveN === 1 && room.players.size > 1) finishGame(io, room, "LAST_STANDING");
 }
 
 function deleteRoom(io, room, reason) {
@@ -123,6 +226,8 @@ function maybeScheduleEmptyRoomDelete(io, room) {
 
 function leavePlayer(io, room, userId) {
   if (!room.players.has(userId)) return;
+  clearGoneTimer(room.players.get(userId));
+  if (room.teamMode && room.status === "playing") handleTeamMemberGone(io, room, userId);
   const wasHost = room.hostUserId === userId;
   room.players.delete(userId);
   const idx = room.playerOrder.indexOf(userId);
@@ -134,9 +239,14 @@ function leavePlayer(io, room, userId) {
     deleteRoom(io, room, "ALL_LEFT");
     return;
   }
+  if (room.teams) {
+    for (const t of room.teams) t.members = t.members.filter(x => x !== userId);
+    room.teams = room.teams.filter(t => t.members.length > 0);
+  }
   if (room.status === "playing") {
     const anyAlive = [...room.players.values()].some(p => p.alive);
     if (!anyAlive) finishGame(io, room, "ALL_DEAD");
+    else if (room.teamMode) checkGameEnd(io, room);
   }
   broadcastRoomState(io, room);
 }
@@ -153,14 +263,28 @@ function finishGame(io, room, reason) {
     const p = room.players.get(uid);
     return p ? { playerId: uid, ...publicPlayer(uid, p) } : null;
   }).filter(Boolean);
-  ranking.sort((a, b) => {
+  const cmp = (a, b) => {
     if (!ignoreAlive && !!a.alive !== !!b.alive) return a.alive ? -1 : 1;
     if ((b.score || 0) !== (a.score || 0)) return (b.score || 0) - (a.score || 0);
     if ((b.kills || 0) !== (a.kills || 0)) return (b.kills || 0) - (a.kills || 0);
     return (b.elapsedMs || 0) - (a.elapsedMs || 0);
-  });
+  };
+  let teams = null;
+  if (room.teamMode && room.teams) {
+    // 팀 점수 = 팀장 값(팀 공유 점수). 팀 순위대로 팀원끼리 붙여서 정렬
+    teams = room.teams.map(t => {
+      const ps = t.members.map(uid => ranking.find(r => r.playerId === uid)).filter(Boolean);
+      const lead = ps.find(r => r.playerId === t.leader) || ps[0] || {};
+      return { team: t.team, members: t.members, score: lead.score || 0, kills: lead.kills || 0,
+        elapsedMs: lead.elapsedMs || 0, alive: ps.some(r => r.alive) };
+    }).sort(cmp);
+    const order = new Map(teams.map((t, i) => [t.team, i]));
+    ranking.sort((a, b) => ((order.get(a.team) ?? 99) - (order.get(b.team) ?? 99)) || cmp(a, b));
+  } else {
+    ranking.sort(cmp);
+  }
 
-  io.to(socketRoomName(room.id)).emit("dodge:gameEnded", { reason, ranking });
+  io.to(socketRoomName(room.id)).emit("dodge:gameEnded", { reason, ranking, teams });
   broadcastRoomState(io, room);
   console.log(`[dodge] room ${room.id} game ended: ${reason}`);
 }
@@ -193,6 +317,7 @@ export function registerDodge(io, supabaseAdmin) {
           id: roomId, inviteCode, hostUserId: me.id,
           status: "lobby", maxPlayers, timeLimitSec,
           interfereEnabled: true, // 방해모드 호스트 토글 (기본 ON)
+          teamMode: false, teams: null,
           createdAt: Date.now(), startedAt: null, endedAt: null,
           players: new Map(), playerOrder: [],
           emptyRoomTimer: null, gameTimer: null,
@@ -232,6 +357,7 @@ export function registerDodge(io, supabaseAdmin) {
         if (room.players.has(me.id)) {
           const p = room.players.get(me.id);
           p.connected = true; p.socketId = socket.id;
+          clearGoneTimer(p);
           socket.join(socketRoomName(roomId));
           dgUserRoom.set(me.id, roomId);
           clearEmptyRoomTimer(room);
@@ -253,6 +379,7 @@ export function registerDodge(io, supabaseAdmin) {
         const playerName = nick || (me.isGuest ? "게스트" : "유저");
         room.players.set(me.id, newPlayerState(playerName, !!me.isGuest, avatar, socket.id));
         room.playerOrder.push(me.id);
+        if (room.teamMode) room.players.get(me.id).team = pickOpenTeam(room, me.id) || 1;
         dgUserRoom.set(me.id, roomId);
         socket.join(socketRoomName(roomId));
         clearEmptyRoomTimer(room);
@@ -276,8 +403,52 @@ export function registerDodge(io, supabaseAdmin) {
       if (!ALLOWED_MAX_PLAYERS.includes(n)) return cb?.({ ok: false, error: "INVALID_MAX" });
       if (n < room.players.size) return cb?.({ ok: false, error: "BELOW_CURRENT" });
       room.maxPlayers = n;
+      if (room.teamMode) {
+        for (const [uid, p] of room.players) if (p.team > maxTeams(room)) p.team = pickOpenTeam(room, uid) || 1;
+      }
       broadcastRoomState(io, room);
       cb?.({ ok: true });
+    });
+
+    // ----- 팀 바꾸기 (팀전, 대기실) -----
+    socket.on("dodge:setTeam", (payload, cb) => {
+      const roomId = dgUserRoom.get(me.id);
+      const room = roomId ? dgRooms.get(roomId) : null;
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (!room.teamMode) return cb?.({ ok: false, error: "NOT_TEAM_MODE" });
+      if (room.status === "playing") return cb?.({ ok: false, error: "NOT_LOBBY" });
+      const t = Number(payload?.team);
+      if (!Number.isInteger(t) || t < 1 || t > maxTeams(room)) return cb?.({ ok: false, error: "INVALID_TEAM" });
+      const p = room.players.get(me.id);
+      if (!p) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (p.team === t) return cb?.({ ok: true });
+      if (teamCount(room, t, me.id) >= TEAM_SIZE) return cb?.({ ok: false, error: "TEAM_FULL" });
+      p.team = t;
+      broadcastRoomState(io, room);
+      cb?.({ ok: true });
+    });
+
+    // ----- 팀원 중계 (팀전: 팀장 <-> 팀원 화면 동기화, 서버는 내용 해석 X) -----
+    socket.on("dodge:tm", (payload) => {
+      const roomId = dgUserRoom.get(me.id);
+      const room = roomId ? dgRooms.get(roomId) : null;
+      if (!room || !room.teamMode || room.status !== "playing") return;
+      const t = teamOf(room, me.id);
+      if (!t || t.members.length < 2) return;
+      const p = room.players.get(me.id);
+      if (!p) return;
+      const now = Date.now();
+      if (!p._relayWin || now - p._relayWin >= 1000) { p._relayWin = now; p._relayN = 0; }
+      if (++p._relayN > TEAM_RELAY_MAX_PER_SEC) return;
+      if (typeof payload !== "object" || payload === null) return;
+      let size = 0;
+      try { size = JSON.stringify(payload).length; } catch { return; }
+      if (size > TEAM_RELAY_MAX_BYTES) return;
+      for (const uid of t.members) {
+        if (uid === me.id) continue;
+        const op = room.players.get(uid);
+        if (op?.connected && op.socketId) io.to(op.socketId).emit("dodge:tm", { from: me.id, d: payload });
+      }
     });
 
     socket.on("dodge:setRoomOptions", (payload, cb) => {
@@ -292,6 +463,11 @@ export function registerDodge(io, supabaseAdmin) {
       }
       if (payload?.interfereEnabled !== undefined) {
         room.interfereEnabled = !!payload.interfereEnabled;
+      }
+      if (payload?.teamMode !== undefined && !!payload.teamMode !== !!room.teamMode) {
+        room.teamMode = !!payload.teamMode;
+        if (room.teamMode) assignAllTeams(room);
+        else for (const p of room.players.values()) p.team = 0;
       }
       broadcastRoomState(io, room);
       cb?.({ ok: true });
@@ -311,14 +487,23 @@ export function registerDodge(io, supabaseAdmin) {
       // 살아있는 다른 플레이어 중 랜덤 1명 (자기 자신 제외 — Map의 키 사용)
       const others = [];
       for (const [uid, p] of room.players.entries()) {
-        if (uid !== me.id && p.alive) others.push({ uid, ...p });
+        if (uid === me.id || !p.alive) continue;
+        if (room.teamMode && p.team === sender.team) continue;   // 팀전: 우리 팀은 대상 아님
+        others.push({ uid, ...p });
       }
       if (others.length === 0) return cb?.({ ok: false, error: "NO_TARGET" });
       const target = others[Math.floor(Math.random() * others.length)];
       const senderName = sender.name || sender.nickname || "익명";
-      io.to(target.socketId).emit("dodge:interfered", { effect, fromNickname: senderName });
+      // 팀전: 같은 화면을 쓰는 상대 팀 전원이 받음
+      const hitIds = room.teamMode
+        ? [...room.players.entries()].filter(([, p]) => p.team === target.team && p.connected).map(([uid]) => uid)
+        : [target.uid];
+      for (const uid of hitIds) {
+        const sid = room.players.get(uid)?.socketId;
+        if (sid) io.to(sid).emit("dodge:interfered", { effect, fromNickname: senderName });
+      }
       // 다른 모두에게 발동 알림 (토스트)
-      io.to(roomId).emit("dodge:interfereSent", {
+      io.to(socketRoomName(roomId)).emit("dodge:interfereSent", {
         fromUserId: me.id, fromNickname: senderName,
         toUserId: target.uid, toNickname: target.name || target.nickname || "익명",
         effect,
@@ -339,6 +524,7 @@ export function registerDodge(io, supabaseAdmin) {
 
       room.status = "playing";
       room.startedAt = Date.now();
+      room.teams = room.teamMode ? buildTeams(room) : null;
       for (const p of room.players.values()) {
         p.score = 0; p.hp = p.maxHp = 100; p.kills = 0; p.level = 1;
         p.alive = true; p.snapshot = []; p.elapsedMs = 0;
@@ -348,6 +534,8 @@ export function registerDodge(io, supabaseAdmin) {
       io.to(socketRoomName(room.id)).emit("dodge:roundStart", {
         startedAt: room.startedAt,
         timeLimitSec: room.timeLimitSec || 0,
+        teamMode: !!room.teamMode,
+        teams: room.teams,
         players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
       });
       broadcastRoomState(io, room);
@@ -416,6 +604,15 @@ export function registerDodge(io, supabaseAdmin) {
       const p = room.players.get(me.id);
       if (!p) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (!p.alive) return cb?.({ ok: true, alreadyDead: true });
+      if (room.teamMode && room.teams) {
+        // 팀전: 팀 전체 탈락 (팀 점수는 팀장 브라우저가 계산한 값)
+        const t = teamOf(room, me.id);
+        if (t) {
+          killTeam(io, room, t, payload || {});
+          checkGameEnd(io, room);
+          return cb?.({ ok: true });
+        }
+      }
       p.alive = false; p.hp = 0;
       p.score = safeNumber(payload?.score, p.score);
       p.kills = safeNumber(payload?.kills, p.kills);
@@ -480,6 +677,13 @@ export function registerDodge(io, supabaseAdmin) {
         leavePlayer(io, room, me.id);
       } else {
         io.to(socketRoomName(room.id)).emit("dodge:peerUpdate", { playerId: me.id, connected: false });
+        if (room.teamMode && room.status === "playing" && !p._goneTimer) {
+          p._goneTimer = setTimeout(() => {
+            p._goneTimer = null;
+            const r = dgRooms.get(room.id);
+            if (r && r.players.get(me.id) === p && !p.connected) handleTeamMemberGone(io, r, me.id);
+          }, TEAM_GONE_GRACE_MS);
+        }
         maybeScheduleEmptyRoomDelete(io, room);
       }
     });

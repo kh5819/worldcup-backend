@@ -22,8 +22,6 @@ import { registerFibbage } from "./fibbage.js";
 import { registerOmok } from "./omok.js";
 // DUO GAME ZONE — 난장 카드게임 (별도 모듈)
 import { registerCardGame } from "./cardgame.js";
-// DUO GAME ZONE — 보드파티 (별도 모듈)
-import { registerBoardParty } from "./boardparty.js";
 // DUO GAME ZONE — 수라상 멀티 (한식 합성 대회형, 별도 모듈)
 import { registerMerge } from "./merge.js";
 import { registerDraw } from "./draw.js";
@@ -35,7 +33,6 @@ import { registerFit } from "./fit.js";
 import { registerGolf } from "./golf.js";
 import { registerDodogo } from "./dodogo.js";
 import { registerAppleMulti } from "./apple-multi.js";
-import { registerFightMulti } from "./fight-multi.js";
 import { registerMemoryMulti } from "./memory-multi.js";
 import { registerBlockBlastMulti } from "./blockblast-multi.js";
 import { registerYachtMulti } from "./yacht-multi.js";
@@ -2945,6 +2942,8 @@ const io = new Server(server, {
     credentials: true
   }
 });
+// 게임 모듈마다 io.on("connection") 1개씩 등록(시작 시 1회) → 기본 한도 10 초과 경고 방지
+io.sockets.setMaxListeners(50);
 
 
 
@@ -9973,11 +9972,6 @@ registerOmok(io, supabaseAdmin);
 registerCardGame(io, supabaseAdmin);
 
 // =========================
-// 보드파티 — 독립 모듈 등록 (bp:* 이벤트 prefix)
-// =========================
-registerBoardParty(io, supabaseAdmin);
-
-// =========================
 // 수라상 멀티 — 독립 모듈 등록 (merge:* 이벤트 prefix)
 // =========================
 registerMerge(io, supabaseAdmin);
@@ -9990,7 +9984,6 @@ registerFit(io, supabaseAdmin);
 registerGolf(io, supabaseAdmin);
 registerDodogo(io, supabaseAdmin);
 registerAppleMulti(io, supabaseAdmin);
-registerFightMulti(io);   // 플듀 파이터 온라인 1:1
 registerMemoryMulti(io, supabaseAdmin);
 registerBlockBlastMulti(io, supabaseAdmin);
 registerYachtMulti(io, supabaseAdmin);
