@@ -35,6 +35,7 @@ import { registerFit } from "./fit.js";
 import { registerGolf } from "./golf.js";
 import { registerDodogo } from "./dodogo.js";
 import { registerAppleMulti } from "./apple-multi.js";
+import { registerFightMulti } from "./fight-multi.js";
 import { registerMemoryMulti } from "./memory-multi.js";
 import { registerBlockBlastMulti } from "./blockblast-multi.js";
 import { registerYachtMulti } from "./yacht-multi.js";
@@ -9989,6 +9990,7 @@ registerFit(io, supabaseAdmin);
 registerGolf(io, supabaseAdmin);
 registerDodogo(io, supabaseAdmin);
 registerAppleMulti(io, supabaseAdmin);
+registerFightMulti(io);   // 플듀 파이터 온라인 1:1
 registerMemoryMulti(io, supabaseAdmin);
 registerBlockBlastMulti(io, supabaseAdmin);
 registerYachtMulti(io, supabaseAdmin);
