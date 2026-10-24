@@ -126,6 +126,29 @@ function addGauge(room, userId, amount) {
   }
 }
 
+// 새로 들어온 사람/AI 자리: 팀전이면 원하는 팀(꽉 찼으면 가장 빈 팀), 개인전이면 고유 번호
+function placeNewcomer(room, uid, wantTeam = null) {
+  const info = MODE_INFO[room.mode];
+  const p = room.players.get(uid);
+  if (!info || !p) return;
+  if (info.teams === 0) {
+    const used = new Set(room.playerOrder.filter(u => u !== uid).map(u => room.players.get(u)?.team));
+    let t = 0; while (used.has(t)) t++;
+    p.team = t;
+    return;
+  }
+  const counts = new Array(info.teams).fill(0);
+  for (const u of room.playerOrder) {
+    if (u === uid) continue;
+    const t = room.players.get(u)?.team;
+    if (t != null && t >= 0 && t < info.teams) counts[t]++;
+  }
+  if (wantTeam != null && wantTeam >= 0 && wantTeam < info.teams && counts[wantTeam] < (info.perTeam || 99)) { p.team = wantTeam; return; }
+  let best = 0;
+  for (let t = 1; t < info.teams; t++) if (counts[t] < counts[best]) best = t;
+  p.team = best;
+}
+
 // 팀 자동 배정: 입장 순서로 round-robin (팀 수 만큼 회전)
 // 개인전(ffa8)이면 각자 다른 team id
 function assignTeams(room) {
@@ -165,6 +188,7 @@ function publicPlayer(userId, p, includeHandCount = true) {
     invulnTurns: p.invulnTurns || 0,
     tauntBy: p.statuses?.taunt ? (p.tauntBy || null) : null,
     isBot: !!p.isBot,
+    botDiff: p.isBot ? (p.botDiff || "normal") : null,
   };
 }
 
@@ -1284,14 +1308,14 @@ function leavePlayer(io, room, userId, hardLeave) {
   } else {
     p.connected = false;
   }
-  // AI판에 사람이 아무도 안 남으면 바로 닫음
-  if (room.solo && !room.playerOrder.some(uid => !room.players.get(uid)?.isBot)) {
-    deleteRoom(io, room, "SOLO_EMPTY");
+  // AI가 있는 방에 사람이 아무도 안 남으면 바로 닫음 (AI끼리 계속 도는 것 방지)
+  if (room.playerOrder.length > 0 && !room.playerOrder.some(uid => !room.players.get(uid)?.isBot)) {
+    deleteRoom(io, room, room.solo ? "SOLO_EMPTY" : "ONLY_BOTS_LEFT");
     return;
   }
-  // 호스트 위임
+  // 호스트 위임 (AI 말고 사람에게)
   if (room.hostUserId === userId && room.playerOrder.length > 0) {
-    room.hostUserId = room.playerOrder[0];
+    room.hostUserId = room.playerOrder.find(uid => !room.players.get(uid)?.isBot) || room.playerOrder[0];
   }
   // 빈 방
   if (room.playerOrder.length === 0) {
@@ -1341,8 +1365,12 @@ function clearBotTimers(room) {
 // 봇마다 난이도 (2:2의 AI 팀원은 항상 보통)
 function botDiffOf(room, bp) { return bp?.botDiff || room.botDiff || "normal"; }
 // 지금 차례가 AI고 스택이 비었으면 다음 행동 예약
+function roomHasBots(room) {
+  for (const p of room.players.values()) if (p.isBot) return true;
+  return false;
+}
 function scheduleBot(io, room, base = 1100) {
-  if (!room.solo || room.status !== "playing" || room.actionStack.length > 0) return;
+  if (!roomHasBots(room) || room.status !== "playing" || room.actionStack.length > 0) return;
   // 사람이 잠깐 끊겼으면 AI도 기다림 (돌아오면 cg:requestState에서 재개)
   if (![...room.players.values()].some(p => !p.isBot && p.connected)) return;
   const uid = room.playerOrder[room.currentTurnIdx];
@@ -1356,7 +1384,7 @@ function scheduleBot(io, room, base = 1100) {
 }
 // 공격받은 AI의 반응 예약
 function scheduleBotReact(io, room, frame) {
-  if (!room.solo) return;
+  if (!roomHasBots(room)) return;
   if (!room.botReactTimers) room.botReactTimers = new Map();
   for (const uid of frame.awaiting || []) {
     if (!room.players.get(uid)?.isBot) continue;
@@ -1752,7 +1780,7 @@ export function registerCardGame(io, supabaseAdmin) {
         room.players.set(me.id, newPlayerState(name, !!me.isGuest, avatar));
         room.playerOrder.push(me.id);
         cgUserRoom.set(me.id, roomId);
-        assignTeams(room);
+        placeNewcomer(room, me.id);
         socket.join(socketRoomName(roomId));
         clearEmptyRoomTimer(room);
 
@@ -1792,6 +1820,41 @@ export function registerCardGame(io, supabaseAdmin) {
       }
       broadcastRoomState(io, room);
       cb?.({ ok: true, room: publicRoom(room) });
+    });
+
+    // ----- 대기실 빈자리에 AI 추가 (방장) — 빼기는 기존 강퇴(cg:kickPlayer)로 -----
+    socket.on("cg:addBot", (payload, cb) => {
+      const roomId = cgUserRoom.get(me.id);
+      const room = roomId ? cgRooms.get(roomId) : null;
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
+      if (room.status !== "lobby") return cb?.({ ok: false, error: "GAME_ALREADY_STARTED" });
+      if (room.players.size >= room.maxPlayers) return cb?.({ ok: false, error: "ROOM_FULL" });
+      const diff = BOT_DIFFS.includes(payload?.difficulty) ? payload.difficulty : "normal";
+      room.botSeq = (room.botSeq || 0) + 1;
+      const botId = `bot_${room.id}_${room.botSeq}`;
+      const b = newPlayerState(`🤖 AI ${room.botSeq}`, false, null);
+      b.isBot = true; b.botDiff = diff;
+      room.players.set(botId, b);
+      room.playerOrder.push(botId);
+      placeNewcomer(room, botId, payload?.team != null ? Number(payload.team) : null);
+      broadcastRoomState(io, room);
+      cb?.({ ok: true, botId });
+    });
+    socket.on("cg:setBotTeam", (payload, cb) => {
+      const roomId = cgUserRoom.get(me.id);
+      const room = roomId ? cgRooms.get(roomId) : null;
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
+      if (room.status !== "lobby") return cb?.({ ok: false, error: "GAME_ALREADY_STARTED" });
+      const bp = room.players.get(String(payload?.botId || ""));
+      if (!bp?.isBot) return cb?.({ ok: false, error: "NOT_BOT" });
+      const tc = modeTeamCount(room.mode);
+      const team = Number(payload?.team);
+      if (tc === 0 || !Number.isInteger(team) || team < 0 || team >= tc) return cb?.({ ok: false, error: "INVALID_TEAM" });
+      bp.team = team;
+      broadcastRoomState(io, room);
+      cb?.({ ok: true });
     });
 
     socket.on("cg:setTeam", (payload, cb) => {
