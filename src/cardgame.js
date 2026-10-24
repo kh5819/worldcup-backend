@@ -54,6 +54,8 @@ const TURN_SEC = 30;
 const REACTION_SEC = 7;
 const REACTION_DEPTH_LIMIT = 3;
 const EVENT_EVERY_N_TURNS = 4;
+const TIMEBOMB_DAMAGE = 8;
+const MARKED_BONUS = 2;
 const EMPTY_ROOM_TTL_MS = 30_000;
 const ENDED_ROOM_TTL_MS = 10 * 60_000;
 // 팀 색상 (최대 4팀까지)
@@ -161,6 +163,8 @@ function publicPlayer(userId, p, includeHandCount = true) {
     gauge: Math.round(p.gauge || 0),
     gaugeMax: ULTIMATE_GAUGE_MAX,
     invulnTurns: p.invulnTurns || 0,
+    tauntBy: p.statuses?.taunt ? (p.tauntBy || null) : null,
+    isBot: !!p.isBot,
   };
 }
 
@@ -187,6 +191,8 @@ function publicRoom(room) {
     inviteCode: room.inviteCode,
     hostUserId: room.hostUserId,
     status: room.status,
+    solo: !!room.solo,
+    botDiff: room.botDiff || null,
     mode: room.mode,
     lang: room.lang || "ko",
     maxPlayers: room.maxPlayers,
@@ -204,6 +210,11 @@ function publicRoom(room) {
     winnerUserId: room.winnerUserId,
     deckLeft: room.deck.length,
     discardLeft: room.discard.length,
+    discardTop: room.discard.length ? room.discard[room.discard.length - 1] : null,
+    cardsPlayedThisTurn: room.cardsPlayedThisTurn || 0,
+    allowedPlays: room.status === "playing"
+      ? Math.max(1, DEFAULT_PLAY_PER_TURN + (room.players.get(room.playerOrder[room.currentTurnIdx])?.extraPlays || 0))
+      : DEFAULT_PLAY_PER_TURN,
   };
 }
 
@@ -219,6 +230,10 @@ function clearEmptyRoomTimer(room) {
 }
 
 function deleteRoom(io, room, reason = "UNKNOWN") {
+  // 남아 있는 타이머(기절 자동 넘김 등)가 지운 방을 다시 돌리지 않게
+  room.status = "deleted";
+  if (room.botTimer) clearTimeout(room.botTimer);
+  if (room.botReactTimer) clearTimeout(room.botReactTimer);
   clearTurnTimer(room);
   clearReactionTimer(room);
   clearEmptyRoomTimer(room);
@@ -485,6 +500,8 @@ function checkWinCondition(io, room) {
 
 function endGame(io, room) {
   room.status = "ended";
+  if (room.botTimer) { clearTimeout(room.botTimer); room.botTimer = null; }
+  if (room.botReactTimer) { clearTimeout(room.botReactTimer); room.botReactTimer = null; }
   clearTurnTimer(room);
   clearReactionTimer(room);
   io.to(socketRoomName(room.id)).emit("cg:gameEnd", {
@@ -548,6 +565,22 @@ function tickStatusesAtTurnStart(io, room, userId) {
     p.statuses.lifesteal -= 1;
     if (p.statuses.lifesteal <= 0) delete p.statuses.lifesteal;
   }
+  for (const k of ["slip", "frog", "marked", "taunt"]) {
+    if (p.statuses[k]) {
+      p.statuses[k] -= 1;
+      if (p.statuses[k] <= 0) { delete p.statuses[k]; if (k === "taunt") p.tauntBy = null; }
+    }
+  }
+  // 시한폭탄: 0이 되면 펑
+  if (p.statuses.timebomb) {
+    p.statuses.timebomb -= 1;
+    if (p.statuses.timebomb <= 0) {
+      delete p.statuses.timebomb;
+      totalTick += TIMEBOMB_DAMAGE;
+      io.to(socketRoomName(room.id)).emit("cg:bomb", { userId, name: p.name, damage: TIMEBOMB_DAMAGE });
+      applyDamageDirect(io, room, userId, TIMEBOMB_DAMAGE, "시한폭탄");
+    }
+  }
   // ward는 자동 감소 X — 공격 받을 때 소모됨
   if (totalTick > 0) {
     io.to(socketRoomName(room.id)).emit("cg:statusTick", {
@@ -589,6 +622,10 @@ function startTurn(io, room) {
     turnP.extraPlays += turnP.statuses.extraPlayNext;
     delete turnP.statuses.extraPlayNext;
   }
+  // 바나나 껍질: 이번 턴 카드 1장 덜 (최소 1장은 사용 가능)
+  if (turnP.statuses?.slip > 0) {
+    turnP.extraPlays = Math.max(1 - DEFAULT_PLAY_PER_TURN, turnP.extraPlays - 1);
+  }
   addGauge(room, turnUid, ULTIMATE_GAIN_TURN_START); // 턴 시작 게이지
 
   // 불사신 카운트다운 (이 턴 시작 시 -1)
@@ -602,6 +639,16 @@ function startTurn(io, room) {
 
   // 카드 드로우
   drawIntoHand(room, turnUid, DEFAULT_DRAW_PER_TURN);
+  // 부메랑: 지난 턴에 던진 부메랑이 버린 더미에서 돌아옴
+  if (turnP.statuses?.boomerang > 0) {
+    for (let n = turnP.statuses.boomerang; n > 0; n--) {
+      const di = room.discard.lastIndexOf("a_boomerang");
+      if (di < 0 || turnP.hand.length >= MAX_HAND) break;
+      room.discard.splice(di, 1);
+      turnP.hand.push("a_boomerang");
+    }
+    delete turnP.statuses.boomerang;
+  }
   sendHandTo(io, room, turnUid);
 
   // 랜덤 이벤트 (매 N턴마다, 게임 전체 턴 기준)
@@ -634,6 +681,7 @@ function startTurn(io, room) {
     if (room.playerOrder[room.currentTurnIdx] !== turnUid) return;
     endTurn(io, room, turnUid, "TIMEOUT");
   }, room.turnSec * 1000);
+  scheduleBot(io, room, 1300);
 }
 
 function endTurn(io, room, userId, reason) {
@@ -714,6 +762,7 @@ function openReactionWindow(io, room, frame) {
     // 타임아웃 → 미응답자 전부 pass 처리 후 resolve
     resolveTopFrame(io, room);
   }, room.reactionSec * 1000);
+  scheduleBotReact(io, room, frame);
 }
 
 function resolveTopFrame(io, room) {
@@ -736,18 +785,25 @@ function resolveTopFrame(io, room) {
       let dmg = frame.pendingDamage;
       if (frame.halved) dmg = Math.ceil(dmg / 2);
       if (frame.reduceBy) dmg = Math.max(0, dmg - frame.reduceBy);
+      // 현상수배: 받는 공격 피해 +2
+      if (target.statuses?.marked && !frame.reflectTo) dmg += MARKED_BONUS;
       // shield_buff (받는 모든 피해 -2)
       if (target.statuses?.shield_buff) dmg = Math.max(0, dmg - 2);
       // 반사 (reflectTo): 공격자 또는 redirect 대상이 받음
       if (frame.reflectTo) {
         applyDamageDirect(io, room, frame.reflectTo, dmg, "반사");
       } else {
-        applyDamageDirect(io, room, frame.targetUserId, dmg, "공격");
+        applyDamageDirect(io, room, frame.targetUserId, dmg, "공격", frame.actorUserId);
         // lifesteal: actor의 statuses.lifesteal가 있으면 절반 회복
-        if (actor && actor.statuses?.lifesteal && dmg > 0) {
+        if (actor && !actor.isDown && actor.statuses?.lifesteal && dmg > 0) {
           const heal = Math.ceil(dmg / 2);
           actor.hp = Math.min(actor.maxHp, actor.hp + heal);
         }
+        // 흡혈 이빨: 준 만큼 회복
+        if (actor && !actor.isDown && getCard(frame.cardId)?.effect?.drain && dmg > 0) {
+          actor.hp = Math.min(actor.maxHp, actor.hp + dmg);
+        }
+        if (dmg > 0) passTimebomb(io, room, frame.actorUserId, frame.targetUserId);
       }
       // 카드의 applyStatus (negateStatus면 무효)
       const card = getCard(frame.cardId);
@@ -804,6 +860,10 @@ function resolveTopFrame(io, room) {
           sendHandTo(io, room, frame.actorUserId);
         }
       }
+      if (ef.drawOnReact) {
+        drawIntoHand(room, frame.actorUserId, ef.drawOnReact);
+        sendHandTo(io, room, frame.actorUserId);
+      }
       if (ef.silenceAttacker) {
         const att = room.players.get(parent.actorUserId);
         if (att && !att.isDown) {
@@ -841,7 +901,9 @@ function resolveTopFrame(io, room) {
   const allowedPlays = DEFAULT_PLAY_PER_TURN + (turnP?.extraPlays || 0);
   if (room.cardsPlayedThisTurn >= allowedPlays) {
     endTurn(io, room, turnUid, "PLAYS_DONE");
+    return;
   }
+  scheduleBot(io, room, 900);
 }
 
 // ===== Play / React =====
@@ -874,6 +936,11 @@ function tryPlayCard(io, room, userId, cardId, targetUserId) {
   }
   // 타겟 검증
   const targetP = targetUserId ? room.players.get(targetUserId) : null;
+  // 도발: 도발한 사람이 살아 있으면 적을 노리는 카드는 그 사람에게만
+  if (p.statuses.taunt && p.tauntBy && card.targeting === "enemy") {
+    const tb = room.players.get(p.tauntBy);
+    if (tb && !tb.isDown && tb.connected && targetUserId !== p.tauntBy) return { ok: false, error: "TAUNTED" };
+  }
   if (card.targeting === "enemy") {
     if (!targetP || targetP.isDown) return { ok: false, error: "INVALID_TARGET" };
     if (targetP.team === p.team && modeTeamCount(room.mode) > 0) return { ok: false, error: "TARGET_NOT_ENEMY" };
@@ -899,6 +966,10 @@ function tryPlayCard(io, room, userId, cardId, targetUserId) {
   // 공격력 보정 (rage: +3, executeBonus: 대상 HP 임계 이하면 추가, selfDamage: 자기도 피해)
   let dmg = card.effect?.damage || 0;
   if (p.statuses.rage) dmg += 3;
+  // 개구리 저주: 공격 데미지 절반
+  if (p.statuses.frog && dmg > 0) dmg = Math.ceil(dmg / 2);
+  // 부메랑: 다음 내 턴에 돌아옴
+  if (card.effect?.boomerang) p.statuses.boomerang = (p.statuses.boomerang || 0) + 1;
   if (card.effect?.executeBonus && targetP) {
     const eb = card.effect.executeBonus;
     if (targetP.hp <= eb.threshold) dmg += eb.bonus;
@@ -930,7 +1001,11 @@ function tryPlayCard(io, room, userId, cardId, targetUserId) {
       frame: null, cardId, actorUserId: userId, actorName: p.name,
       targetUserId, targetName: targetP?.name || null, pierce: true,
     });
-    applyDamageDirect(io, room, targetUserId, dmg, "관통");
+    const pierceT = room.players.get(targetUserId);
+    if (pierceT?.statuses?.marked) dmg += MARKED_BONUS;
+    if (pierceT?.statuses?.shield_buff) dmg = Math.max(0, dmg - 2);
+    applyDamageDirect(io, room, targetUserId, dmg, "관통", userId);
+    if (dmg > 0) passTimebomb(io, room, userId, targetUserId);
     if (card.effect?.applyStatus) {
       const tp = room.players.get(targetUserId);
       if (tp && !tp.isDown) {
@@ -960,7 +1035,9 @@ function afterImmediatePlay(io, room, userId) {
   const allowedPlays = DEFAULT_PLAY_PER_TURN + (p?.extraPlays || 0);
   if (room.cardsPlayedThisTurn >= allowedPlays) {
     endTurn(io, room, userId, "PLAYS_DONE");
+    return;
   }
+  scheduleBot(io, room, 900);
 }
 
 function applyImmediateEffect(io, room, actorId, card, targetUserId) {
@@ -985,6 +1062,7 @@ function applyImmediateEffect(io, room, actorId, card, targetUserId) {
       actorUserId: actorId, targetUserId, win,
     });
     if (branch?.damage) ctx.damage(targetUserId, branch.damage, "운빨");
+    if (branch?.heal) ctx.heal(targetUserId, branch.heal);
   }
   if (ef.swapHand) {
     const a = room.players.get(actorId);
@@ -1066,6 +1144,65 @@ function applyImmediateEffect(io, room, actorId, card, targetUserId) {
     }
   }
   if (ef.triggerEvent === "random") fireRandomEvent(io, room);
+  // ===== v5 신규 =====
+  if (ef.gauge) addGauge(room, actorId, ef.gauge);
+  if (ef.rewind) {
+    // 방금 쓴 이 카드는 빼고, 버린 더미 맨 위 카드 1장
+    const a = room.players.get(actorId);
+    for (let i = room.discard.length - 1; i >= 0; i--) {
+      if (i === room.discard.length - 1 && room.discard[i] === card.id) continue;
+      if (a && a.hand.length < MAX_HAND) {
+        const [got] = room.discard.splice(i, 1);
+        a.hand.push(got);
+        sendHandTo(io, room, actorId);
+      }
+      break;
+    }
+  }
+  if (ef.reroll) {
+    const a = room.players.get(actorId);
+    if (a) {
+      const n = a.hand.length;
+      for (const cid of a.hand) discardCard(room, cid);
+      a.hand = [];
+      drawIntoHand(room, actorId, n + 1);
+      sendHandTo(io, room, actorId);
+    }
+  }
+  if (ef.magnet) {
+    const a = room.players.get(actorId);
+    const isTeam = modeTeamCount(room.mode) > 0;
+    for (const uid of room.playerOrder) {
+      if (!a || uid === actorId || a.hand.length >= MAX_HAND) continue;
+      const t = room.players.get(uid);
+      if (!t || t.isDown || t.hand.length === 0) continue;
+      if (isTeam && t.team === a.team) continue;
+      const [taken] = t.hand.splice(Math.floor(Math.random() * t.hand.length), 1);
+      a.hand.push(taken);
+      sendHandTo(io, room, uid);
+    }
+    sendHandTo(io, room, actorId);
+  }
+  if (ef.timebomb) {
+    const t = room.players.get(targetUserId);
+    if (t && !t.isDown) t.statuses.timebomb = Math.max(t.statuses.timebomb || 0, ef.timebomb);
+  }
+  if (ef.taunt) {
+    const t = room.players.get(targetUserId);
+    // 다음 자기 턴 동안 유지 (턴 시작 때 1 줄어듦)
+    if (t && !t.isDown) { t.statuses.taunt = 2; t.tauntBy = actorId; }
+  }
+}
+
+// 시한폭탄을 가진 사람이 공격을 맞히면 폭탄이 맞은 사람에게 넘어감
+function passTimebomb(io, room, fromId, toId) {
+  const a = room.players.get(fromId);
+  const b = room.players.get(toId);
+  if (!a?.statuses?.timebomb || !b || b.isDown || fromId === toId) return;
+  if (b.statuses.timebomb) return; // 이미 폭탄 있으면 안 넘김
+  b.statuses.timebomb = a.statuses.timebomb;
+  delete a.statuses.timebomb;
+  io.to(socketRoomName(room.id)).emit("cg:bombPassed", { fromUserId: fromId, toUserId: toId, fromName: a.name, toName: b.name });
 }
 
 function tryPlayReaction(io, room, userId, cardId) {
@@ -1117,7 +1254,9 @@ function tryPlayReaction(io, room, userId, cardId) {
   // 반응 카드는 체인을 만들지 않음 — 즉시 LIFO resolve 시작.
   // (모든 반응 카드의 reactsTo는 'attack' 한정이라 reaction frame에는 어차피 반응 불가.
   //  윈도우를 열면 원래 공격자에게 의미없는 윈도우가 다시 열려 "다시 A 턴" 버그 발생.)
-  return resolveTopFrame(io, room);
+  resolveTopFrame(io, room);
+  // (예전엔 resolveTopFrame의 반환값 undefined를 그대로 돌려줘서, 성공해도 화면에 오류 토스트가 떴음)
+  return { ok: true };
 }
 
 function tryPassReaction(io, room, userId) {
@@ -1176,6 +1315,282 @@ function leavePlayer(io, room, userId, hardLeave) {
     if (checkWinCondition(io, room)) return;
   }
   broadcastRoomState(io, room);
+}
+
+
+// =========================
+// AI 1:1 (솔로) — 서버 엔진에 AI 플레이어를 앉혀서 같은 규칙으로 진행
+// 난이도: easy(대충) / normal(계산) / hard(계산 + 아끼기·마무리 우선)
+// =========================
+const BOT_DIFFS = ["easy", "normal", "hard"];
+const BOT_NAMES = { easy: "🤖 AI Lv.1", normal: "🤖 AI Lv.2", hard: "🤖 AI Lv.3" };
+
+function botDelay(room, base) {
+  const k = room.botDiff === "hard" ? 0.85 : room.botDiff === "easy" ? 1.15 : 1;
+  return Math.round((base + Math.random() * base * 0.6) * k);
+}
+function clearBotTimers(room) {
+  if (room.botTimer) { clearTimeout(room.botTimer); room.botTimer = null; }
+  if (room.botReactTimer) { clearTimeout(room.botReactTimer); room.botReactTimer = null; }
+}
+// 지금 차례가 AI고 스택이 비었으면 다음 행동 예약
+function scheduleBot(io, room, base = 1100) {
+  if (!room.solo || room.status !== "playing" || room.actionStack.length > 0) return;
+  const uid = room.playerOrder[room.currentTurnIdx];
+  const bp = room.players.get(uid);
+  if (!bp?.isBot || bp.isDown) return;
+  if (room.botTimer) clearTimeout(room.botTimer);
+  room.botTimer = setTimeout(() => {
+    room.botTimer = null;
+    try { botAct(io, room, uid); } catch (e) { console.error("[cg bot act]", e); try { endTurn(io, room, uid, "BOT_ERROR"); } catch {} }
+  }, botDelay(room, base));
+}
+// 공격받은 AI의 반응 예약
+function scheduleBotReact(io, room, frame) {
+  if (!room.solo) return;
+  for (const uid of frame.awaiting || []) {
+    if (!room.players.get(uid)?.isBot) continue;
+    if (room.botReactTimer) clearTimeout(room.botReactTimer);
+    const fid = frame.id;
+    room.botReactTimer = setTimeout(() => {
+      room.botReactTimer = null;
+      const top = room.actionStack[room.actionStack.length - 1];
+      if (room.status !== "playing" || !top || top.id !== fid) return;
+      try { botReact(io, room, uid, top); } catch (e) { console.error("[cg bot react]", e); try { tryPassReaction(io, room, uid); } catch {} }
+    }, botDelay(room, 900));
+  }
+}
+
+function botEnemies(room, bp) {
+  const out = [];
+  for (const uid of room.playerOrder) {
+    const t = room.players.get(uid);
+    if (!t || t.isDown || t.team === bp.team) continue;
+    out.push({ uid, p: t });
+  }
+  return out;
+}
+const BAD_STATUS = ["poison", "burn", "bleed", "stun", "silence", "slip", "frog", "marked", "timebomb"];
+
+// 카드 1장의 가치 (높을수록 먼저 씀). 0 이하면 안 씀
+function botScore(room, bp, card, enemy) {
+  const ef = card.effect || {};
+  const myHp = bp.hp, maxHp = bp.maxHp;
+  const eHp = enemy?.p.hp ?? 0;
+  const hard = room.botDiff === "hard";
+  const attacksInHand = bp.hand.filter(id => getCard(id)?.type === "attack").length;
+  let dmg = ef.damage || 0;
+  if (bp.statuses.rage) dmg += 3;
+  if (bp.statuses.frog && dmg > 0) dmg = Math.ceil(dmg / 2);
+  if (enemy && ef.executeBonus && eHp <= ef.executeBonus.threshold) dmg += ef.executeBonus.bonus;
+  if (enemy?.p.statuses?.marked && dmg > 0) dmg += MARKED_BONUS;
+  if (enemy?.p.statuses?.shield_buff && dmg > 0) dmg = Math.max(0, dmg - 2);
+  const enemyInvuln = (enemy?.p.invulnTurns || 0) > 0;
+
+  if (card.type === "attack") {
+    if (enemyInvuln) return -1;
+    let v = dmg * 2;
+    if (card.pierce) v += 3;                         // 막을 수 없음
+    if (dmg >= eHp) v += 60;                          // 마무리
+    if (ef.applyStatus) v += 3;
+    if (ef.splash) v += ef.splash;
+    if (ef.drain) v += Math.min(dmg, maxHp - myHp);
+    if (ef.boomerang) v += 3;
+    if (ef.selfDamage && myHp <= ef.selfDamage + 2) v -= 30;
+    if (bp.statuses.timebomb) v += 6;                 // 맞히면 폭탄 넘김
+    if (enemy?.p.statuses?.ward) v -= dmg;            // 결계에 막힘
+    return v;
+  }
+  if (card.type === "support" || card.type === "special") {
+    if (ef.heal || ef.healTarget) {
+      const h = ef.heal || ef.healTarget;
+      const missing = maxHp - myHp;
+      if (missing <= 1) return -1;
+      return Math.min(h, missing) * (myHp <= 10 ? 2.4 : 1.2);
+    }
+    if (ef.clearStatus) return BAD_STATUS.some(k => bp.statuses[k]) ? 9 : -1;
+    if (ef.applyStatus?.rage) return (bp.statuses.rage ? -1 : attacksInHand >= 1 ? 6 + attacksInHand : -1);
+    if (ef.applyStatus?.shield_buff) return bp.statuses.shield_buff ? -1 : myHp <= 14 ? 6 : 2;
+    if (ef.applyStatus?.lifesteal) return attacksInHand >= 1 && myHp < maxHp - 4 ? 5 : -1;
+    if (ef.teamWard) return bp.statuses.ward ? -1 : myHp <= 12 ? 7 : 3;
+    if (ef.drawSelf && !ef.gauge) return bp.hand.length <= 4 ? 7 : 3;
+    if (ef.gauge) return (bp.gauge || 0) < ULTIMATE_GAUGE_MAX ? 6 : 1;
+    if (ef.rewind) return room.discard.length > 1 && bp.hand.length < MAX_HAND - 1 ? 4 : -1;
+    if (ef.reroll) {
+      const weak = bp.hand.filter(id => { const c = getCard(id); return c && c.type !== "attack" && !c.effect?.heal; }).length;
+      return bp.hand.length <= 3 || weak >= 3 ? 4 : -1;
+    }
+    if (!enemy || enemyInvuln) {
+      if (ef.nuke) return -1;
+    }
+    if (ef.coinflip) {
+      const win = ef.coinflip.onWin?.damage || 0;
+      if (enemyInvuln) return -1;
+      const lose = ef.coinflip.onLose?.heal ? -2 : 0;
+      return win >= eHp ? 14 : win * 0.5 + lose;
+    }
+    if (ef.applyStatus?.stun) return enemy?.p.statuses?.stun ? -1 : 9;
+    if (ef.applyStatus?.silence) return enemy?.p.statuses?.silence ? -1 : 3;
+    if (ef.applyStatus?.slip) return enemy?.p.statuses?.slip ? -1 : 6;
+    if (ef.applyStatus?.frog) return enemy?.p.statuses?.frog ? -1 : 6;
+    if (ef.applyStatus?.marked) return enemy?.p.statuses?.marked ? -1 : (attacksInHand >= 1 ? 6 : 2);
+    if (ef.timebomb) return enemy?.p.statuses?.timebomb ? -1 : 8;
+    if (ef.taunt) return -1;                          // 1:1에선 의미 없음
+    if (ef.swapHp) return eHp - myHp >= 6 ? (eHp - myHp) : -1;
+    if (ef.nuke) {
+      if (enemyInvuln) return -1;
+      if (ef.nuke >= eHp && myHp > ef.nuke) return 50;
+      return myHp - eHp >= 6 && myHp > ef.nuke + 4 ? 5 : -1;
+    }
+    if (ef.swapHand) return enemy && enemy.p.hand.length - bp.hand.length >= 2 ? 4 : -1;
+    if (ef.stealCard || ef.magnet) return enemy?.p.hand.length ? (bp.hand.length < MAX_HAND ? 5 : -1) : -1;
+    if (ef.discardTarget) return enemy?.p.hand.length ? 4 : -1;
+    if (ef.shuffleAllHands) return enemy && enemy.p.hand.length >= 5 ? 3 : -1;
+    if (ef.triggerEvent) return hard ? -1 : 1;
+    return 1;
+  }
+  return -1;
+}
+
+function botAct(io, room, uid) {
+  if (room.status !== "playing" || room.actionStack.length > 0) return;
+  if (room.playerOrder[room.currentTurnIdx] !== uid) return;
+  const bp = room.players.get(uid);
+  if (!bp || bp.isDown) return;
+  const enemies = botEnemies(room, bp);
+  if (!enemies.length) return;
+  // 적은 체력 낮은 쪽부터
+  enemies.sort((a, b) => a.p.hp - b.p.hp);
+  const enemy = enemies[0];
+
+  // 궁극기: 게이지 다 차면 상황 보고 사용
+  if ((bp.gauge || 0) >= ULTIMATE_GAUGE_MAX && room.botDiff !== "easy" || ((bp.gauge || 0) >= ULTIMATE_GAUGE_MAX && Math.random() < 0.5)) {
+    let ult = null, target = null;
+    const eRatio = enemy.p.hp / enemy.p.maxHp;
+    if ((enemy.p.invulnTurns || 0) <= 0 && eRatio <= 0.35) { ult = "execute"; target = enemy.uid; }
+    else if (bp.hp <= 9) ult = "heal";
+    else if ((enemy.p.invulnTurns || 0) <= 0 && enemy.p.hp <= 5) ult = "blast";
+    else if (bp.hp <= 14) ult = "invuln";
+    else ult = room.cardsPlayedThisTurn < DEFAULT_PLAY_PER_TURN ? "timestop" : "blast";
+    bp.gauge = 0;
+    bp.ultimatesUsed = (bp.ultimatesUsed || 0) + 1;
+    const result = applyUltimate(io, room, uid, ult, target);
+    io.to(socketRoomName(room.id)).emit("cg:ultimateFired", {
+      userId: uid, name: bp.name, ultimateId: ult, emoji: ULTIMATES[ult].emoji, label: ULTIMATES[ult].name, result: result || null,
+    });
+    broadcastRoomState(io, room);
+    if (checkWinCondition(io, room)) return;
+    return scheduleBot(io, room, 900);
+  }
+
+  // 낼 수 있는 카드 점수 매기기
+  const plays = [];
+  for (const id of new Set(bp.hand)) {
+    const c = getCard(id);
+    if (!c || c.type === "defense" || c.type === "reaction") continue;
+    if (bp.statuses.silence && c.type === "special") continue;
+    let target = null;
+    if (c.targeting === "enemy" || c.targeting === "any") target = enemy.uid;
+    else if (c.targeting === "ally" || c.targeting === "self") target = uid;
+    plays.push({ id, target, score: botScore(room, bp, c, enemy) });
+  }
+  let pick = null;
+  const good = plays.filter(x => x.score > 0).sort((a, b) => b.score - a.score);
+  if (room.botDiff === "easy") {
+    // 쉬움: 절반은 아무 카드나 (점수 무시)
+    const any = plays.filter(x => x.score > -20);
+    if (any.length && Math.random() < 0.5) pick = any[Math.floor(Math.random() * any.length)];
+    else if (good.length && Math.random() < 0.7) pick = good[Math.floor(Math.random() * Math.min(3, good.length))];
+  } else if (room.botDiff === "normal") {
+    pick = good.length ? (good.length > 1 && Math.random() < 0.3 ? good[1] : good[0]) : null;
+  } else {
+    pick = good[0] || null;
+  }
+  if (pick) {
+    const res = tryPlayCard(io, room, uid, pick.id, pick.target);
+    if (res.ok) { scheduleBot(io, room, 1000); return; }
+  }
+  // 낼 카드가 없으면: 손패 덜 찼으면 1장 뽑고 끝, 아니면 그냥 끝
+  if (room.cardsPlayedThisTurn === 0 && bp.hand.length < MAX_HAND) {
+    const drew = drawIntoHand(room, uid, 1);
+    io.to(socketRoomName(room.id)).emit("cg:draw", { userId: uid, count: drew, name: bp.name });
+    endTurn(io, room, uid, "DRAW");
+  } else {
+    endTurn(io, room, uid, "MANUAL");
+  }
+}
+
+function botReact(io, room, uid, frame) {
+  const bp = room.players.get(uid);
+  if (!bp || bp.isDown || frame.targetUserId !== uid) return tryPassReaction(io, room, uid);
+  const dmg = frame.pendingDamage || 0;
+  const card = getCard(frame.cardId);
+  const hasStatus = !!card?.effect?.applyStatus;
+  const opts = [];
+  for (const id of new Set(bp.hand)) {
+    const c = getCard(id);
+    if (!c || !isReactionCard(id) || !(c.reactsTo || []).includes("attack")) continue;
+    const ef = c.effect || {};
+    let v = 0;
+    if (ef.reflectAll) v = dmg * 2 + 4;
+    else if (ef.negateDamage && ef.reflectDamage) v = dmg + ef.reflectDamage + 3;
+    else if (ef.negateDamage && ef.negateStatus) v = dmg + (hasStatus ? 4 : 0) + 1;
+    else if (ef.negateDamage && ef.drawOnReact) v = dmg + 2.5;
+    else if (ef.negateDamage && ef.silenceAttacker) v = dmg + 2;
+    else if (ef.negateDamage && ef.absorbCard) v = dmg + 2;
+    else if (ef.negateDamage) v = dmg + 1;
+    else if (ef.halveDamage) v = Math.floor(dmg / 2) + (ef.reflectDamage || 0) + 0.5;
+    else if (ef.reduceDamage) v = Math.min(dmg, ef.reduceDamage) + 0.5;
+    opts.push({ id, v });
+  }
+  if (!opts.length) return tryPassReaction(io, room, uid);
+  opts.sort((a, b) => b.v - a.v);
+  const lethal = dmg >= bp.hp;
+  if (room.botDiff === "easy") {
+    if (Math.random() < 0.35) return tryPlayReaction(io, room, uid, opts[Math.floor(Math.random() * opts.length)].id);
+    return tryPassReaction(io, room, uid);
+  }
+  // 보통/어려움: 약한 공격엔 좋은 반응 카드 아끼기 (어려움은 더 아낌)
+  const keepFor = room.botDiff === "hard" ? 3 : 0;
+  if (!lethal && dmg < keepFor && !hasStatus && opts[0].v > dmg + 2) return tryPassReaction(io, room, uid);
+  return tryPlayReaction(io, room, uid, opts[0].id);
+}
+
+// 게임 시작 (멀티 cg:start · 솔로 cg:startSolo 공용)
+function beginGame(io, room) {
+  clearBotTimers(room);
+  room.status = "playing";
+  room.winnerTeam = null;
+  room.winnerUserId = null;
+  room.deck = shuffleArr(buildDeck());
+  room.discard = [];
+  room.actionStack = [];
+  room.currentTurnIdx = room.solo ? Math.floor(Math.random() * room.playerOrder.length) : 0;
+  room.turnNumber = 0;
+  room.cardsPlayedThisTurn = 0;
+  // 첫 손패 배포
+  for (const uid of room.playerOrder) {
+    const pp = room.players.get(uid);
+    pp.hand = drawN(room, DEFAULT_HAND);
+    pp.hp = DEFAULT_HP;
+    pp.maxHp = DEFAULT_HP;
+    pp.statuses = {};
+    pp.isDown = false;
+    pp.downedAt = null;
+    pp.extraPlays = 0;
+    pp.gauge = 0;
+    pp.invulnTurns = 0;
+    pp.tauntBy = null;
+  }
+  io.to(socketRoomName(room.id)).emit("cg:gameStart", {
+    mode: room.mode,
+    solo: !!room.solo,
+    players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
+    cards: publicCardListByLang(room.lang || "ko"),
+    events: publicEventList(),
+  });
+  sendHandsAll(io, room);
+  startTurn(io, room);
 }
 
 // ===== Register =====
@@ -1359,33 +1774,61 @@ export function registerCardGame(io, supabaseAdmin) {
         if (counts.some(n => n !== pt)) return cb?.({ ok: false, error: "TEAM_UNBALANCED", expected: pt, counts });
       }
 
-      room.status = "playing";
-      room.deck = shuffleArr(buildDeck());
-      room.discard = [];
-      room.actionStack = [];
-      room.currentTurnIdx = 0;
-      room.turnNumber = 0;
-      room.cardsPlayedThisTurn = 0;
-      // 첫 손패 배포
-      for (const uid of room.playerOrder) {
-        const pp = room.players.get(uid);
-        pp.hand = drawN(room, DEFAULT_HAND);
-        pp.hp = DEFAULT_HP;
-        pp.maxHp = DEFAULT_HP;
-        pp.statuses = {};
-        pp.isDown = false;
-        pp.downedAt = null;
-        pp.extraPlays = 0;
-      }
       cb?.({ ok: true });
-      io.to(socketRoomName(room.id)).emit("cg:gameStart", {
-        mode: room.mode,
-        players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
-        cards: publicCardListByLang(room.lang || "ko"),
-        events: publicEventList(),
-      });
-      sendHandsAll(io, room);
-      startTurn(io, room);
+      beginGame(io, room);
+    });
+
+    // ----- AI 1:1 (솔로) — 게스트도 가능, 초대 코드 없음 -----
+    socket.on("cg:startSolo", (payload, cb) => {
+      try {
+        if (cgUserRoom.has(me.id)) {
+          const old = cgRooms.get(cgUserRoom.get(me.id));
+          if (old?.solo) {
+            // 이전 AI 판은 조용히 닫음 (나간 처리 → 패배 화면이 잠깐 뜨는 것 방지)
+            socket.leave(socketRoomName(old.id));
+            cgUserRoom.delete(me.id);
+            deleteRoom(io, old, "SOLO_RESTART");
+          } else if (old) {
+            leavePlayer(io, old, me.id, true);
+            socket.leave(socketRoomName(old.id));
+          }
+        }
+        const diff = BOT_DIFFS.includes(payload?.difficulty) ? payload.difficulty : "normal";
+        const lang = ["ko", "ja", "en"].includes(payload?.lang) ? payload.lang : "ko";
+        const roomId = `cg_solo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+        const botId = `bot_${roomId}`;
+        const room = {
+          id: roomId, inviteCode: "", hostUserId: me.id, solo: true, botDiff: diff,
+          status: "lobby", mode: "1v1", lang, maxPlayers: 2,
+          turnSec: ALLOWED_TURN_SECS.includes(Number(payload?.turnSec)) ? Number(payload.turnSec) : 60,
+          reactionSec: 10,
+          createdAt: Date.now(),
+          players: new Map(), playerOrder: [],
+          deck: [], discard: [],
+          currentTurnIdx: 0, turnNumber: 0,
+          turnDeadline: null, turnTimer: null,
+          actionStack: [], reactionTimer: null,
+          cardsPlayedThisTurn: 0, pendingEvent: null,
+          winnerTeam: null, winnerUserId: null, emptyRoomTimer: null,
+        };
+        cgRooms.set(roomId, room);
+        const name = String(payload?.nickname || (me.isGuest ? "게스트" : "나")).slice(0, 20);
+        room.players.set(me.id, newPlayerState(name, !!me.isGuest, null));
+        room.playerOrder.push(me.id);
+        const bot = newPlayerState(BOT_NAMES[diff], false, null);
+        bot.isBot = true;
+        room.players.set(botId, bot);
+        room.playerOrder.push(botId);
+        cgUserRoom.set(me.id, roomId);
+        assignTeams(room);
+        socket.join(socketRoomName(roomId));
+        cb?.({ ok: true, roomId, room: publicRoom(room) });
+        beginGame(io, room);
+        console.log(`[cg] solo room ${roomId} diff=${diff}`);
+      } catch (e) {
+        console.error("[cg:startSolo]", e);
+        cb?.({ ok: false, error: "INTERNAL" });
+      }
     });
 
     socket.on("cg:playCard", (payload, cb) => {

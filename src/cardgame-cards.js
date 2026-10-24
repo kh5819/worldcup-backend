@@ -1,5 +1,5 @@
 // =========================
-// DUO GAME ZONE — 난장 카드게임 카드 풀 (40장) v20260515_1
+// DUO GAME ZONE — 난장 카드게임 카드 풀 v20261024 (v5: 14장 추가, 중복 id 정리)
 // 갓필드 / 초딩 카드게임 감성, 반응 스택 시스템
 // =========================
 //
@@ -59,7 +59,7 @@ export const CARDS = [
   // ===== 방어 카드 (반응 전용) =====
   { id: "d_shield",  name: "방패",        emoji: "🛡️", type: "defense", reactsTo: ["attack"], copies: 4,
     effect: { halveDamage: true }, text: "받는 피해 절반" },
-  { id: "d_dodge",   name: "회피",        emoji: "💨", type: "defense", reactsTo: ["attack"], copies: 3,
+  { id: "d_dodge",   name: "회피",        emoji: "💨", type: "defense", reactsTo: ["attack"], copies: 5,
     effect: { negateDamage: true }, text: "공격 무효" },
   // (신규)
   { id: "d_barrier", name: "보호막",      emoji: "🟦", type: "defense", reactsTo: ["attack"], copies: 2,
@@ -112,7 +112,7 @@ export const CARDS = [
     effect: { swapHand: true }, text: "대상과 손패 교환" },
   { id: "x_chaos",   name: "운빨난장판",  emoji: "🎲", type: "special", targeting: "self",   copies: 1,
     effect: { triggerEvent: "random" }, text: "랜덤 이벤트 즉시 발동" },
-  { id: "x_steal",   name: "카드 훔치기", emoji: "🫳", type: "special", targeting: "enemy",  copies: 1,
+  { id: "x_steal",   name: "카드 훔치기", emoji: "🧤", type: "special", targeting: "enemy",  copies: 1,
     effect: { stealCard: 1 }, text: "대상의 손패 1장 랜덤으로 가져옴" },
   // (신규)
   { id: "x_burn",    name: "손패 태우기", emoji: "🔥", type: "special", targeting: "enemy",  copies: 1,
@@ -128,8 +128,6 @@ export const CARDS = [
     effect: { damage: 6, hits: 2 }, text: "쌍검 연타 6 데미지" },
   { id: "a_frost",   name: "얼음 창",     emoji: "❄️", type: "attack", targeting: "enemy",  copies: 2,
     effect: { damage: 3, applyStatus: { stun: 1 } }, text: "3 데미지 + 기절(1턴)" },
-  { id: "d_dodge",   name: "회피",        emoji: "💨", type: "defense", reactsTo: ["attack"], copies: 2,
-    effect: { negateDamage: true }, text: "공격 완전 무효" },
   { id: "r_thorns",  name: "가시 갑옷",   emoji: "🌵", type: "reaction", reactsTo: ["attack"], copies: 2,
     effect: { halveDamage: true, reflectDamage: 2 }, text: "데미지 절반 + 반사 2" },
   { id: "s_steal",   name: "강탈",        emoji: "🪙", type: "support", targeting: "enemy", copies: 2,
@@ -138,8 +136,38 @@ export const CARDS = [
     effect: { applyStatus: { rage: 1 } }, text: "다음 공격 +3 데미지" },
   { id: "x_revival", name: "응급처치",    emoji: "💉", type: "special", targeting: "ally",  copies: 1,
     effect: { healTarget: 8 }, text: "대상 +8 HP" },
-  { id: "x_chaos",   name: "혼돈의 외침", emoji: "🌀", type: "special", targeting: "self",  copies: 1,
-    effect: { shuffleAllHands: true }, text: "전원 손패 셔플 + 5장 재분배" },
+  { id: "x_chaoscry", name: "혼돈의 외침", emoji: "📣", type: "special", targeting: "self",  copies: 1,
+    effect: { shuffleAllHands: true }, text: "나 빼고 전원 손패 버리고 5장 다시 받기" },
+
+  // ===== v5 신규 카드 (2026-10-24) — 난장·역전·방송각 =====
+  { id: "a_boomerang", name: "부메랑",     emoji: "🪃", type: "attack", targeting: "enemy",  copies: 2,
+    effect: { damage: 4, boomerang: true }, text: "4 데미지, 다음 내 턴에 손패로 돌아옴" },
+  { id: "a_fang",    name: "흡혈 이빨",    emoji: "🧛", type: "attack", targeting: "enemy",  copies: 2,
+    effect: { damage: 3, drain: true }, text: "3 데미지 + 준 만큼 회복" },
+  { id: "a_volcano", name: "화산 폭발",    emoji: "🌋", type: "attack", targeting: "enemy",  copies: 1,
+    effect: { damage: 3, splash: 1, applyStatus: { burn: 2 } }, text: "대상 3 + 화상(2턴), 다른 적 전원 1" },
+  { id: "d_cloak",   name: "투명 망토",    emoji: "👻", type: "defense", reactsTo: ["attack"], copies: 2,
+    effect: { negateDamage: true, drawOnReact: 1 }, text: "공격 무효 + 카드 1장 뽑기" },
+  { id: "s_clover",  name: "네잎클로버",   emoji: "🍀", type: "support", targeting: "self",   copies: 2,
+    effect: { gauge: 35, drawSelf: 1 }, text: "궁극기 게이지 +35 + 카드 1장" },
+  { id: "s_rewind",  name: "되감기",       emoji: "⏪", type: "support", targeting: "self",   copies: 1,
+    effect: { rewind: true }, text: "방금 버려진 카드 1장을 손패로" },
+  { id: "s_shopping", name: "지름신",      emoji: "🛒", type: "support", targeting: "self",   copies: 1,
+    effect: { reroll: true }, text: "손패 전부 버리고 (버린 수+1)장 새로 뽑기" },
+  { id: "x_banana",  name: "바나나 껍질",  emoji: "🍌", type: "special", targeting: "enemy",  copies: 2,
+    effect: { applyStatus: { slip: 1 } }, text: "대상 다음 턴 카드 1장만 사용 가능" },
+  { id: "x_frog",    name: "개구리 저주",  emoji: "🐸", type: "special", targeting: "enemy",  copies: 1,
+    effect: { applyStatus: { frog: 3 } }, text: "대상 2턴간 공격 데미지 절반" },
+  { id: "x_gift",    name: "수상한 선물",  emoji: "🎁", type: "special", targeting: "enemy",  copies: 2,
+    effect: { coinflip: { onWin: { damage: 7 }, onLose: { heal: 3 } } }, text: "50%: 펑! 7 데미지 / 50%: 대상 +3 회복" },
+  { id: "x_magnet",  name: "자석",         emoji: "🧲", type: "special", targeting: "self",   copies: 1,
+    effect: { magnet: 1 }, text: "모든 적에게서 손패 1장씩 끌어오기" },
+  { id: "x_timebomb", name: "시한폭탄",    emoji: "🧨", type: "special", targeting: "enemy",  copies: 1,
+    effect: { timebomb: 3 }, text: "3턴 뒤 8 데미지! 공격을 맞히면 그 사람에게 넘어감" },
+  { id: "x_taunt",   name: "도발",         emoji: "📢", type: "special", targeting: "enemy",  copies: 2,
+    effect: { taunt: true }, text: "대상은 다음 턴에 나만 공격할 수 있음" },
+  { id: "x_wanted",  name: "현상수배",     emoji: "🎯", type: "special", targeting: "enemy",  copies: 1,
+    effect: { applyStatus: { marked: 2 } }, text: "대상이 받는 공격 피해 +2 (2턴)" },
 ];
 
 // === 다국어 wrapper — 카드 이름/효과 설명 lang별 ===
@@ -240,9 +268,40 @@ const CARD_I18N = {
     x_revival: { name: "Revival",       text: "+8 HP to target" },
   },
 };
-// id에 v4 신규 추가된 'x_chaos' (혼돈의 외침) override
-CARD_I18N.ja.x_chaos = { name: "混沌の叫び", text: "全員手札シャッフル + 5枚再配布" };
-CARD_I18N.en.x_chaos = { name: "Chaos Cry", text: "Shuffle all hands + redeal 5" };
+Object.assign(CARD_I18N.ja, {
+  x_chaoscry:  { name: "混沌の叫び",     text: "自分以外の全員が手札を捨てて5枚引き直す" },
+  a_boomerang: { name: "ブーメラン",     text: "4ダメージ、次の自分のターンに手札へ戻る" },
+  a_fang:      { name: "吸血の牙",       text: "3ダメージ + 与えた分回復" },
+  a_volcano:   { name: "火山噴火",       text: "対象3 + 火傷(2ターン)、他の敵全員1" },
+  d_cloak:     { name: "透明マント",     text: "攻撃無効 + カード1枚ドロー" },
+  s_clover:    { name: "四つ葉のクローバー", text: "必殺ゲージ+35 + カード1枚" },
+  s_rewind:    { name: "巻き戻し",       text: "直前に捨てられたカード1枚を手札へ" },
+  s_shopping:  { name: "爆買い",         text: "手札を全部捨てて(捨てた数+1)枚引く" },
+  x_banana:    { name: "バナナの皮",     text: "対象は次のターン カード1枚しか使えない" },
+  x_frog:      { name: "カエルの呪い",   text: "対象2ターン 攻撃ダメージ半分" },
+  x_gift:      { name: "怪しいプレゼント", text: "50%: ドカン! 7ダメージ / 50%: 対象+3回復" },
+  x_magnet:    { name: "磁石",           text: "敵全員から手札を1枚ずつ引き寄せる" },
+  x_timebomb:  { name: "時限爆弾",       text: "3ターン後8ダメージ! 攻撃を当てるとその人へ移る" },
+  x_taunt:     { name: "挑発",           text: "対象は次のターン 自分しか攻撃できない" },
+  x_wanted:    { name: "指名手配",       text: "対象が受ける攻撃ダメージ+2 (2ターン)" },
+});
+Object.assign(CARD_I18N.en, {
+  x_chaoscry:  { name: "Chaos Cry",      text: "Everyone else discards and redraws 5" },
+  a_boomerang: { name: "Boomerang",      text: "4 dmg, returns to your hand next turn" },
+  a_fang:      { name: "Vampire Fang",   text: "3 dmg + heal that much" },
+  a_volcano:   { name: "Eruption",       text: "Target 3 + Burn (2 turns), other enemies 1" },
+  d_cloak:     { name: "Invisibility Cloak", text: "Negate attack + draw 1" },
+  s_clover:    { name: "Four-Leaf Clover", text: "Ultimate gauge +35 + draw 1" },
+  s_rewind:    { name: "Rewind",         text: "Take the last discarded card into your hand" },
+  s_shopping:  { name: "Shopping Spree", text: "Discard your hand, draw (that many + 1)" },
+  x_banana:    { name: "Banana Peel",    text: "Target can play only 1 card next turn" },
+  x_frog:      { name: "Frog Curse",     text: "Target's attacks deal half dmg (2 turns)" },
+  x_gift:      { name: "Shady Gift",     text: "50%: BOOM 7 dmg / 50%: target +3 HP" },
+  x_magnet:    { name: "Magnet",         text: "Pull 1 card from every enemy's hand" },
+  x_timebomb:  { name: "Time Bomb",      text: "8 dmg in 3 turns! Passes to whoever you hit" },
+  x_taunt:     { name: "Taunt",          text: "Target can only attack you next turn" },
+  x_wanted:    { name: "Wanted",         text: "Target takes +2 attack dmg (2 turns)" },
+});
 
 // 다국어 카드 정의 (lang별 name/text만 변경)
 export function getCardI18n(id, lang = "ko") {
@@ -267,6 +326,8 @@ export function publicCardListByLang(lang = "ko") {
       reactsTo: c.reactsTo || null,
       text: i18n?.text || c.text,
       pierce: !!c.pierce,
+      power: c.effect?.damage ?? c.effect?.heal ?? c.effect?.healTarget ?? null,
+      rare: (c.copies || 1) === 1,
     };
   });
 }

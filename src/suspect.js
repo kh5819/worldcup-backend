@@ -293,6 +293,20 @@ function startTurn(io, room, playerId) {
   }, DRAW_AUTO_TIMEOUT_SEC * 1000);
 }
 
+// 벌칙 카드 공개 (오답·시간 초과): 이번 턴에 뽑은 카드.
+// 더미가 비어 못 뽑았으면 숨은 카드 중 1장 — 없으면 벌칙 없이 무한히 찍을 수 있어 게임이 안 끝남
+function revealPenaltyCard(p) {
+  let idx = p.drawnCardId ? p.hand.findIndex(c => c.id === p.drawnCardId && !c.revealed) : -1;
+  if (idx < 0) {
+    const hidden = p.hand.map((c, i) => (c.revealed ? -1 : i)).filter(i => i >= 0);
+    if (hidden.length) idx = hidden[Math.floor(Math.random() * hidden.length)];
+  }
+  p.drawnCardId = null;
+  if (idx < 0) return null;
+  p.hand[idx].revealed = true;
+  return { idx, card: p.hand[idx] };
+}
+
 // 실제 뽑기 동작 (수동/자동 공용)
 function performDraw(io, room, userId, isAuto) {
   clearDrawTimer(room);
@@ -335,11 +349,7 @@ function startGuessTimer(io, room, userId) {
     const r = scRooms.get(room.id);
     if (!r || r.status !== "playing" || r.currentTurnPlayerId !== userId) return;
     const player = r.players.get(userId);
-    if (player && player.drawnCardId) {
-      const idx = player.hand.findIndex(c => c.id === player.drawnCardId);
-      if (idx >= 0) player.hand[idx].revealed = true;
-      player.drawnCardId = null;
-    }
+    if (player) revealPenaltyCard(player);
     io.to(socketRoomName(r.id)).emit("suspect:turnTimeout", { playerId: userId });
     checkPlayerDead(io, r, userId);
     if (!checkWinCondition(io, r)) advanceTurn(io, r);
@@ -639,13 +649,9 @@ export function registerSuspect(io, supabaseAdmin) {
       } else {
         // 오답 — 방금 뽑은 카드 공개 + 턴 종료
         const me_p = room.players.get(me.id);
-        if (me_p.drawnCardId) {
-          const idx = me_p.hand.findIndex(c => c.id === me_p.drawnCardId);
-          if (idx >= 0) me_p.hand[idx].revealed = true;
-        }
-        const drawnIdx = me_p.hand.findIndex(c => c.id === me_p.drawnCardId);
-        const drawnCard = me_p.hand[drawnIdx];
-        me_p.drawnCardId = null;
+        const pen = revealPenaltyCard(me_p);
+        const drawnIdx = pen ? pen.idx : -1;
+        const drawnCard = pen ? pen.card : null;
         io.to(socketRoomName(room.id)).emit("suspect:guessResult", {
           ok: true,
           fromPlayerId: me.id,
