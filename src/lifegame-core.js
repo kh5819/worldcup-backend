@@ -202,7 +202,7 @@ export function createCore(DATA, opts = {}) {
     return pickWeighted(cands, ev => {
       let w = ev.weight != null ? ev.weight : 1;
       if (ev.routeRequired) w *= 2;
-      if (ev.type === "special") w *= 0.7;
+      if (ev.type === "special") w *= 1.0;      // ✨ 특별한 순간 — 예전 0.7(한 판 평균 1번) → 더 자주
       if (ev.age) w *= 1.6;                 // 나이에 딱 맞는 사건 우대
       if (ev.flagRequired || ev.married === true) w *= 1.8;   // 내 인생 맥락이 있는 사건 우대
       return w;

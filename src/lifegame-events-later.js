@@ -468,4 +468,163 @@ export const EVENTS_LATER = [
       { id: "walk", emoji: "🌳", text: "좋아하던 공원을 천천히 걷는다", grade: "good", effects: { happy: +3, health: +2 }, narratives: ["꼬리를 천천히 흔들며 걸었다. 오늘을 오래 기억할 것이다."] },
     ],
   }),
+  // ----- 특별 사건 추가(2026-10-24) -----
+  E({
+    id: "v2_sp_classmate_ceo", stage: "midlife", age: [38, 55], emoji: "🤝", title: "동창이 회장님",
+    desc: "동창회에서 만난 친구가 지금은 대기업 회장이다. 같이 일하자고 한다.", weight: 0.6, type: "special",
+    choices: [
+      { id: "join", emoji: "🏢", text: "제안을 받는다", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { money: +3000, social: +6, happy: +6 }, grade: "crit", narrative: "임원이 됐다. 연봉 협상 자리에서 친구가 윙크했다." },
+          { chance: 0.5, effects: { money: +500, happy: -5, social: -3 }, grade: "bad", narrative: "낙하산 소리를 들으며 버텼다. 1년 만에 우정도 끝났다." },
+        ] },
+      { id: "decline", emoji: "🙂", text: "친구로 남는다", grade: "good", effects: { social: +4, happy: +3 }, narratives: ["일 얘기 대신 옛날 얘기를 했다. 그날 술이 제일 맛있었다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_land", stage: "midlife", age: [40, 59], emoji: "🏗️", title: "시골 땅 재개발",
+    desc: "잊고 있던 시골 땅에 신도시가 들어선다는 소식이 왔다.", weight: 0.6, type: "special",
+    choices: [
+      { id: "hold", emoji: "⏳", text: "끝까지 버틴다", grade: "mid",
+        outcomes: [
+          { chance: 0.4, effects: { money: +8000, luck: +6, happy: +8 }, grade: "crit", narrative: "보상금이 세 배로 뛰었다. 족보에 남을 결정이었다." },
+          { chance: 0.6, effects: { money: +1500, happy: -3, social: -4 }, grade: "mid", narrative: "사업이 늦어지며 몇 년을 마음고생했다. 이웃과도 틀어졌다." },
+        ] },
+      { id: "sell", emoji: "💰", text: "바로 판다", grade: "good", effects: { money: +2500, happy: +5 }, narratives: ["깔끔하게 정리했다. 부모님 집 대출을 다 갚아 드렸다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_quiz_show", stage: "midlife", age: [35, 59], emoji: "🏆", title: "퀴즈 프로그램 출연",
+    desc: "퀴즈 프로그램 예선을 통과했다. 마지막 문제, 상금이 걸려 있다.", weight: 0.6, type: "special",
+    choices: [
+      { id: "answer", emoji: "💡", text: "확신을 갖고 답한다", grade: "mid",
+        outcomes: [
+          { chance: 0.35, effects: { money: +5000, intel: +6, happy: +10, social: +5 }, grade: "crit", narrative: "정답! 우승 상금 5천만 원. 동네에 현수막이 걸렸다." },
+          { chance: 0.65, effects: { intel: +3, happy: -3, internet: +4 }, grade: "mid", narrative: "한 글자 차이로 틀렸다. 그 문제는 평생 잊지 못한다." },
+        ] },
+      { id: "stop", emoji: "🛑", text: "여기서 멈추고 상금을 챙긴다", grade: "good", effects: { money: +1000, happy: +4 }, narratives: ["1천만 원을 들고 내려왔다. 마지막 문제 답은 알고 있었다. 비밀이다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_senior_model", stage: "senior", age: [60, 79], emoji: "👗", title: "시니어 모델 데뷔",
+    desc: "손주가 몰래 보낸 사진으로 시니어 모델 제안이 왔다.", weight: 0.6, type: "special",
+    choices: [
+      { id: "walk", emoji: "🚶", text: "런웨이에 선다", grade: "mid",
+        outcomes: [
+          { chance: 0.4, effects: { social: +10, internet: +10, happy: +10, money: +500 }, grade: "crit", narrative: "패션위크 런웨이에 섰다. 잡지 표지에 '나이는 숫자'라고 실렸다." },
+          { chance: 0.6, effects: { social: +5, happy: +6, health: +2 }, grade: "good", narrative: "광고 두 편을 찍었다. 경로당에서 사인을 해 줬다." },
+        ] },
+      { id: "no", emoji: "😊", text: "손주에게 고맙다고만 한다", grade: "mid", effects: { happy: +3 }, narratives: ["사진은 액자에 넣었다. 그걸로 충분했다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_silver_youtube", stage: "senior", age: [62, 79], emoji: "📹", title: "손주와 유튜브",
+    desc: "손주가 '할머니·할아버지 요리 채널'을 같이 하자고 조른다.", weight: 0.6, type: "special",
+    choices: [
+      { id: "start", emoji: "🍲", text: "같이 찍는다", grade: "mid",
+        outcomes: [
+          { chance: 0.3, effects: { internet: +15, money: +1000, happy: +10, social: +6 }, grade: "crit", narrative: "구독자 100만! 실버 버튼을 받았다. 레시피 책도 나왔다." },
+          { chance: 0.7, effects: { internet: +5, happy: +7, social: +4 }, grade: "good", narrative: "구독자는 300명. 손주와 매주 만나는 핑계가 생겼다." },
+        ] },
+      { id: "teach", emoji: "📖", text: "카메라 없이 요리만 가르친다", grade: "good", effects: { happy: +5, social: +3 }, narratives: ["손주가 내 김치 맛을 그대로 배웠다. 그게 진짜 유산이다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_memoir", stage: "elder", age: [80, 105], emoji: "📖", title: "자서전 출간 제의",
+    desc: "출판사에서 내 인생 이야기를 책으로 내고 싶다고 연락이 왔다.", weight: 0.6, type: "special",
+    choices: [
+      { id: "write", emoji: "✍️", text: "솔직하게 다 쓴다", grade: "mid",
+        outcomes: [
+          { chance: 0.35, effects: { happy: +10, social: +8, money: +300, intel: +3 }, grade: "crit", narrative: "베스트셀러가 됐다. 북토크에 손주들이 맨 앞줄에 앉았다." },
+          { chance: 0.65, effects: { happy: +7, intel: +3 }, grade: "good", narrative: "가족들만 읽었다. 그래도 모두가 울었다." },
+        ] },
+      { id: "letters", emoji: "💌", text: "책 대신 가족에게 편지를 쓴다", grade: "good", effects: { happy: +6, social: +4 }, narratives: ["한 사람 한 사람에게 편지를 남겼다. 가장 소중한 책이 됐다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_first_love", stage: "elder", age: [80, 105], emoji: "🌸", title: "첫사랑의 편지",
+    desc: "60년 만에 첫사랑에게서 편지가 왔다. '아직 그 노래를 기억하나요?'", weight: 0.6, type: "special",
+    choices: [
+      { id: "meet", emoji: "☕", text: "만나러 간다", grade: "mid",
+        outcomes: [
+          { chance: 0.6, effects: { happy: +12, health: +2 }, grade: "crit", narrative: "둘 다 그 노래를 끝까지 불렀다. 찻잔이 식는 줄도 몰랐다." },
+          { chance: 0.4, effects: { happy: +5, intel: +2 }, grade: "good", narrative: "서로 너무 변해 있었다. 그래도 웃으며 헤어졌다." },
+        ] },
+      { id: "reply", emoji: "✉️", text: "답장만 보낸다", grade: "good", effects: { happy: +7 }, narratives: ["'기억해요.' 그 한 줄을 쓰는 데 한 시간이 걸렸다."] },
+    ],
+  }),
+  // ----- 특별 사건 2차(2026-10-24) -----
+  E({
+    id: "v2_sp_hole_in_one", stage: "midlife", age: [40, 59], emoji: "⛳", title: "홀인원",
+    desc: "거래처 골프 모임. 7번 홀, 공이 그대로 컵으로 굴러간다…!", weight: 0.5, type: "special",
+    choices: [
+      { id: "celebrate", emoji: "🍾", text: "관례대로 크게 한턱낸다", grade: "mid",
+        outcomes: [
+          { chance: 0.6, effects: { social: +10, happy: +8, money: -300, luck: +6 }, grade: "crit", narrative: "홀인원 기념패가 사무실에 걸렸다. 거래처마다 그 이야기를 꺼냈다." },
+          { chance: 0.4, effects: { social: +6, money: -500, happy: +3 }, grade: "good", narrative: "축하 비용이 생각보다 많이 나왔다. 그래도 평생 자랑거리다." },
+        ] },
+      { id: "humble", emoji: "🙂", text: "조용히 기념사진만 찍는다", grade: "good", effects: { luck: +5, happy: +5 }, narratives: ["사진 속 표정이 아이처럼 해맑았다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_ufo", stage: "midlife", age: [35, 59], emoji: "🛸", title: "UFO를 찍었다",
+    desc: "퇴근길 밤하늘에 빛나는 물체가 지그재그로 움직인다. 휴대폰을 들었다.", weight: 0.5, type: "special",
+    choices: [
+      { id: "post", emoji: "📤", text: "인터넷에 올린다", grade: "mid",
+        outcomes: [
+          { chance: 0.3, effects: { internet: +15, social: +6, happy: +8, money: +200 }, grade: "crit", narrative: "해외 뉴스에까지 나왔다. 다큐멘터리 인터뷰를 했다." },
+          { chance: 0.7, effects: { internet: +5, happy: -2 }, grade: "mid", narrative: "'드론이네요' 댓글 300개. 그래도 나는 안다." },
+        ] },
+      { id: "keep", emoji: "🤫", text: "혼자만의 비밀로 한다", grade: "mid", effects: { happy: +4, intel: +2 }, narratives: ["그날 이후 밤하늘을 자주 올려다보게 됐다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_late_college", stage: "senior", age: [60, 79], emoji: "🎓", title: "늦깎이 대학생",
+    desc: "평생 미뤄 둔 대학 공부. 만학도 전형 합격 통지서가 왔다.", weight: 0.5, type: "special",
+    choices: [
+      { id: "enroll", emoji: "📚", text: "입학한다", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { intel: +10, social: +8, happy: +10 }, grade: "crit", narrative: "수석 졸업! 졸업식에서 손주가 꽃다발을 건넸다." },
+          { chance: 0.5, effects: { intel: +6, social: +5, happy: +5, health: -2 }, grade: "good", narrative: "과제는 버거웠지만 스무 살 동기들이 '선배님'이라 불렀다." },
+        ] },
+      { id: "library", emoji: "📖", text: "도서관에서 혼자 공부한다", grade: "good", effects: { intel: +5, happy: +3 }, narratives: ["하루 세 시간, 평생 궁금했던 것들을 읽었다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_singing_contest", stage: "senior", age: [60, 79], emoji: "🎶", title: "전국 노래자랑",
+    desc: "동네에 노래자랑 녹화가 왔다. 예심에 나가 볼까?", weight: 0.5, type: "special",
+    choices: [
+      { id: "sing", emoji: "🎤", text: "한 곡 뽑는다", grade: "mid",
+        outcomes: [
+          { chance: 0.3, effects: { happy: +12, social: +10, internet: +8, money: +100 }, grade: "crit", narrative: "인기상을 탔다. 사회자와 덩실덩실 춤춘 장면이 화제가 됐다." },
+          { chance: 0.5, effects: { happy: +7, social: +5 }, grade: "good", narrative: "'땡'은 받았지만 객석이 제일 크게 웃었다." },
+          { chance: 0.2, effects: { happy: -3, health: -1 }, grade: "mid", narrative: "긴장해서 가사를 잊었다. 그래도 끝까지 웃었다." },
+        ] },
+      { id: "cheer", emoji: "👏", text: "객석에서 응원한다", grade: "good", effects: { happy: +5, social: +3 }, narratives: ["카메라에 박수 치는 모습이 잡혔다. 가족 단톡방이 난리가 났다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_time_capsule", stage: "elder", age: [80, 105], emoji: "⏳", title: "60년 전 타임캡슐",
+    desc: "모교 공사 중에 초등학교 때 묻은 타임캡슐이 나왔다. 내 편지도 있다.", weight: 0.5, type: "special",
+    choices: [
+      { id: "read", emoji: "📜", text: "동창들과 함께 연다", grade: "mid",
+        outcomes: [
+          { chance: 0.6, effects: { happy: +12, social: +8 }, grade: "crit", narrative: "'꿈을 이뤘나요?' 어린 내가 묻고 있었다. 다 같이 울고 웃었다." },
+          { chance: 0.4, effects: { happy: +6, social: +4 }, grade: "good", narrative: "나온 동창은 셋뿐이었다. 그래서 더 소중했다." },
+        ] },
+      { id: "alone", emoji: "🕯️", text: "혼자 조용히 읽는다", grade: "good", effects: { happy: +8, intel: +2 }, narratives: ["삐뚤빼뚤한 글씨를 한참 쓰다듬었다. 그 아이에게 답장을 썼다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_great_grandchild", stage: "elder", age: [80, 105], emoji: "👶", title: "증손주가 태어났다",
+    desc: "증손주가 태어났다는 소식이 왔다. 4대가 한자리에 모인다.", weight: 0.5, type: "special", hasKid: true,
+    choices: [
+      { id: "hold", emoji: "🤱", text: "직접 안아 본다", grade: "mid",
+        outcomes: [
+          { chance: 0.7, effects: { happy: +14, health: +2 }, grade: "crit", narrative: "작은 손가락이 내 손가락을 꽉 쥐었다. 4대 가족사진을 찍었다." },
+          { chance: 0.3, effects: { happy: +8 }, grade: "good", narrative: "팔이 떨려 금방 내려놓았다. 그래도 그 무게를 잊지 못한다." },
+        ] },
+      { id: "name", emoji: "✍️", text: "이름을 지어 준다", grade: "good", effects: { happy: +9, social: +3 }, narratives: ["며칠을 고민해 지은 이름을 가족이 그대로 썼다."] },
+    ],
+  }),
 ];

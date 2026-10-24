@@ -623,6 +623,218 @@ export const EVENTS_YOUNG = [
     ],
   }),
 
+  // ----- 중고등 추가(2026-10-24) -----
+  E({
+    id: "v2_teen_diet", stage: "teen", age: [13, 18], emoji: "🍔", title: "다이어트 선언",
+    desc: "거울을 보다 결심했다. 오늘부터 다이어트다. 그런데 오늘 급식은 돈가스다.",
+    choices: [
+      { id: "skip", emoji: "🥗", text: "급식 반만 먹는다", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { health: +3, happy: +2, power: +2 }, grade: "good", narrative: "한 달 만에 교복 바지가 헐렁해졌다." },
+          { chance: 0.5, effects: { happy: -4, health: -2 }, grade: "bad", narrative: "오후 수업 내내 배에서 소리가 났다. 짝꿍이 빵을 나눠 줬다." },
+        ] },
+      { id: "exercise", emoji: "🏃", text: "먹고 운동장 열 바퀴", grade: "good", effects: { power: +5, health: +4, happy: +1 }, narratives: ["돈가스도 먹고 살도 뺐다. 이게 정답이었다.", "체육 선생님이 육상부에 들어오라고 했다."] },
+      { id: "tomorrow", emoji: "🍖", text: "다이어트는 내일부터", grade: "mid", effects: { happy: +5, health: -1 }, narratives: ["내일도 내일부터였다. 행복은 했다.", "돈가스를 두 장 먹었다. 친구 것까지."] },
+    ],
+  }),
+  E({
+    id: "v2_pc_room", stage: "teen", age: [13, 16], emoji: "🖥️", title: "PC방이냐 학원이냐",
+    desc: "학원 가는 길, 친구들이 PC방에서 랭크 게임 한 판만 하자고 한다.",
+    choices: [
+      { id: "game", emoji: "🎮", text: "딱 한 판만", grade: "mid",
+        outcomes: [
+          { chance: 0.4, effects: { happy: +6, social: +4, internet: +3 }, grade: "good", narrative: "연승을 달려 승급했다. 그날 밤 너는 PC방의 전설이었다." },
+          { chance: 0.6, effects: { happy: -3, intel: -3 }, grade: "bad", narrative: "한 판이 다섯 판이 됐다. 학원에서 엄마에게 전화가 갔다." },
+        ] },
+      { id: "hagwon", emoji: "📚", text: "학원에 간다", grade: "good", effects: { intel: +5, social: -2 }, narratives: ["친구들 단톡방에 승리 인증샷이 올라왔다. 문제집에 집중했다."] },
+      { id: "both", emoji: "⏱️", text: "한 판 하고 뛰어서 학원", grade: "mid", effects: { intel: +2, happy: +3, health: -2 }, narratives: ["5분 지각했다. 숨이 차서 문제가 눈에 안 들어왔다."] },
+    ],
+  }),
+  E({
+    id: "v2_idol_fan", stage: "teen", age: [13, 17], emoji: "💜", title: "최애 콘서트 티켓팅",
+    desc: "오후 8시 정각 티켓 오픈. 손가락이 떨린다.",
+    choices: [
+      { id: "pc_bang", emoji: "💻", text: "PC방 가서 광클", grade: "mid",
+        outcomes: [
+          { chance: 0.35, effects: { happy: +10, social: +3, money: -15 }, grade: "crit", narrative: "성공! 무대 바로 앞 자리였다. 최애와 눈이 마주쳤다(고 믿는다)." },
+          { chance: 0.65, effects: { happy: -5 }, grade: "bad", narrative: "대기 번호 48,213번. 화면만 보다 매진됐다." },
+        ] },
+      { id: "resell", emoji: "💸", text: "암표를 산다", grade: "bad",
+        outcomes: [
+          { chance: 0.5, effects: { happy: +6, money: -40 }, grade: "mid", narrative: "들어가긴 했다. 용돈 반년 치가 사라졌다." },
+          { chance: 0.5, effects: { happy: -8, money: -40 }, grade: "bad", narrative: "가짜 티켓이었다. 입구에서 울었다." },
+        ] },
+      { id: "online", emoji: "📺", text: "온라인 스트리밍으로 본다", grade: "good", effects: { happy: +4, internet: +4, money: -3 }, narratives: ["방구석 1열에서 응원봉을 흔들었다. 채팅창에서 친구도 생겼다."] },
+    ],
+  }),
+  E({
+    id: "v2_mock_exam", stage: "teen", age: [15, 17], emoji: "📊", title: "모의고사 성적표",
+    desc: "모의고사 성적표가 나왔다. 엄마가 보여 달라고 한다.",
+    choices: [
+      { id: "show", emoji: "📄", text: "솔직하게 보여 준다", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { intel: +3, happy: +4, social: +2 }, grade: "good", narrative: "생각보다 잘 나왔다. 저녁 반찬이 고기가 됐다." },
+          { chance: 0.5, effects: { intel: +3, happy: -4 }, grade: "mid", narrative: "엄마가 말없이 학원 전단지를 식탁에 올려놨다." },
+        ] },
+      { id: "hide", emoji: "🙈", text: "가방 깊숙이 숨긴다", grade: "bad",
+        outcomes: [
+          { chance: 0.4, effects: { luck: +3, happy: +2 }, grade: "mid", narrative: "엄마가 잊어버렸다. 운이 좋았다." },
+          { chance: 0.6, effects: { happy: -6, social: -2 }, grade: "bad", narrative: "담임 선생님이 엄마에게 문자를 보냈다. 이중으로 혼났다." },
+        ] },
+      { id: "plan", emoji: "🗓️", text: "오답 노트부터 만든다", grade: "good", effects: { intel: +5, happy: -1 }, narratives: ["틀린 문제를 전부 정리했다. 다음 모의고사에서 3등급이 올랐다."] },
+    ],
+  }),
+  E({
+    id: "v2_uniform", stage: "teen", age: [13, 15], emoji: "👔", title: "교복 줄이기",
+    desc: "반 친구들이 전부 교복을 줄여 입는다. 수선집 앞에서 고민 중이다.",
+    choices: [
+      { id: "slim", emoji: "✂️", text: "최대한 줄인다", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { social: +5, happy: +4, money: -3 }, grade: "good", narrative: "반에서 핏이 제일 좋다는 소리를 들었다." },
+          { chance: 0.5, effects: { happy: -3, social: -2, money: -3 }, grade: "bad", narrative: "선도부에 걸려 벌점을 받았다. 다시 늘리는 비용까지 들었다." },
+        ] },
+      { id: "keep", emoji: "🧥", text: "그냥 큰 걸 입는다", grade: "mid", effects: { intel: +2, money: +2 }, narratives: ["엄마 말대로 3학년 때 딱 맞았다. 엄마가 옳았다."] },
+      { id: "diy", emoji: "🪡", text: "유튜브 보고 직접 줄인다", grade: "good", effects: { intel: +3, power: +1, happy: +2 }, narratives: ["바느질 실력이 늘었다. 친구들이 수선을 맡기기 시작했다."] },
+    ],
+  }),
+  E({
+    id: "v2_secret_dating", stage: "teen", age: [15, 18], emoji: "💑", title: "몰래 연애",
+    desc: "사귄 지 한 달. 부모님한테는 아직 비밀이다. 그런데 엄마가 휴대폰 알림을 봤다.",
+    choices: [
+      { id: "confess", emoji: "🙋", text: "솔직하게 말한다", grade: "good",
+        outcomes: [
+          { chance: 0.6, effects: { social: +4, happy: +4 }, grade: "good", narrative: "엄마가 의외로 웃으며 '데려와 봐'라고 했다." },
+          { chance: 0.4, effects: { happy: -4, intel: +2 }, grade: "mid", narrative: "공부부터 하라는 잔소리가 시작됐다. 통금이 9시로 당겨졌다." },
+        ] },
+      { id: "deny", emoji: "🤥", text: "친구라고 둘러댄다", grade: "bad",
+        outcomes: [
+          { chance: 0.5, effects: { luck: +2, happy: +2 }, grade: "mid", narrative: "엄마가 믿는 척해 줬다. 아마 다 알았을 것이다." },
+          { chance: 0.5, effects: { social: -4, happy: -5 }, grade: "bad", narrative: "그날 저녁 하필 둘이 손잡고 있는 걸 이모가 봤다." },
+        ] },
+      { id: "breakup", emoji: "💔", text: "이참에 헤어진다", grade: "mid", effects: { intel: +3, happy: -5 }, narratives: ["공부에 집중하기로 했다. 플레이리스트가 이별 노래로 바뀌었다."] },
+    ],
+  }),
+  E({
+    id: "v2_class_fight", stage: "teen", age: [13, 16], emoji: "👊", title: "교실에서 싸움이 났다",
+    desc: "쉬는 시간, 반 친구 둘이 멱살을 잡았다. 다들 구경만 한다.",
+    choices: [
+      { id: "stop", emoji: "🛑", text: "사이에 끼어든다", grade: "good",
+        outcomes: [
+          { chance: 0.6, effects: { social: +6, power: +2 }, grade: "good", narrative: "둘을 떼어 놨다. 다음 날 둘 다 고맙다고 했다." },
+          { chance: 0.4, effects: { health: -4, social: +3 }, grade: "mid", narrative: "팔꿈치에 맞아 코피가 났다. 반의 의인으로 소문났다." },
+        ] },
+      { id: "teacher", emoji: "🏃", text: "선생님을 부르러 뛴다", grade: "good", effects: { intel: +3, social: +2 }, narratives: ["가장 현명한 선택이었다. 상담실에서 둘이 화해했다."] },
+      { id: "film", emoji: "📱", text: "휴대폰으로 찍는다", grade: "bad",
+        outcomes: [
+          { chance: 0.5, effects: { internet: +5, social: -5 }, grade: "bad", narrative: "영상이 퍼지면서 일이 커졌다. 너도 불려 갔다." },
+          { chance: 0.5, effects: { internet: +2, happy: -2 }, grade: "mid", narrative: "찍기만 하고 아무 데도 안 올렸다. 괜히 찜찜했다." },
+        ] },
+    ],
+  }),
+  E({
+    id: "v2_school_election", stage: "teen", age: [14, 17], emoji: "🗳️", title: "학생회장 선거",
+    desc: "친구들이 학생회장 선거에 나가 보라고 부추긴다.",
+    choices: [
+      { id: "run", emoji: "📢", text: "공약을 걸고 출마한다", grade: "mid",
+        outcomes: [
+          { chance: 0.45, effects: { social: +8, intel: +3, happy: +5 }, grade: "crit", narrative: "당선! '매점 메뉴 확대' 공약을 진짜로 지켰다." },
+          { chance: 0.55, effects: { social: +3, happy: -3 }, grade: "mid", narrative: "12표 차로 떨어졌다. 그래도 연설은 화제가 됐다." },
+        ] },
+      { id: "meme", emoji: "🤡", text: "웃긴 공약으로 출마한다", grade: "mid",
+        outcomes: [
+          { chance: 0.35, effects: { social: +7, internet: +5, happy: +6 }, grade: "crit", narrative: "'급식에 마라탕' 공약으로 압도적 당선. 교감 선생님이 머리를 감쌌다." },
+          { chance: 0.65, effects: { social: +2, happy: +2 }, grade: "mid", narrative: "다들 웃었지만 표는 안 줬다. 학교 밈만 남았다." },
+        ] },
+      { id: "manager", emoji: "🧠", text: "친구의 선거 참모를 맡는다", grade: "good", effects: { intel: +4, social: +4 }, narratives: ["포스터와 연설문을 만들었다. 친구가 당선됐고, 숨은 실세가 됐다."] },
+    ],
+  }),
+  E({
+    id: "v2_sneakers", stage: "teen", age: [14, 17], emoji: "👟", title: "한정판 운동화 응모",
+    desc: "한정판 운동화 추첨 응모가 열렸다. 당첨되면 되팔아도 두 배다.",
+    choices: [
+      { id: "enter", emoji: "🎟️", text: "응모한다", grade: "mid",
+        outcomes: [
+          { chance: 0.15, effects: { happy: +8, luck: +5, money: +20 }, grade: "crit", narrative: "당첨! 신고 다닐지 팔지 일주일을 고민했다." },
+          { chance: 0.85, effects: { happy: -1 }, grade: "mid", narrative: "'아쉽게도 당첨되지 않았습니다.' 익숙한 문장이다." },
+        ] },
+      { id: "camp", emoji: "⛺", text: "매장 앞에서 밤새 줄 선다", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { happy: +6, power: +2, money: -15 }, grade: "good", narrative: "새벽 6시, 마지막 한 켤레를 손에 넣었다." },
+          { chance: 0.5, effects: { health: -3, happy: -4 }, grade: "bad", narrative: "앞에서 50명이 끊겼다. 감기만 걸렸다." },
+        ] },
+      { id: "pass", emoji: "🙅", text: "관심 없다", grade: "good", effects: { money: +5, intel: +2 }, narratives: ["그 돈으로 운동화 두 켤레를 샀다. 편했다."] },
+    ],
+  }),
+  E({
+    id: "v2_webtoon", stage: "teen", age: [13, 17], emoji: "✍️", title: "웹툰 연재 도전",
+    desc: "공책에 그리던 만화를 웹툰 사이트 도전 코너에 올려 볼까?",
+    choices: [
+      { id: "post", emoji: "📤", text: "매주 연재한다", grade: "mid",
+        outcomes: [
+          { chance: 0.25, effects: { internet: +8, happy: +7, money: +30 }, grade: "crit", narrative: "구독자가 만 명을 넘었다. 플랫폼에서 정식 연재 연락이 왔다." },
+          { chance: 0.45, effects: { internet: +4, happy: +3, intel: +2 }, grade: "good", narrative: "댓글 30개. 그중 하나가 '다음 화 언제요?'였다. 그걸로 충분했다." },
+          { chance: 0.3, effects: { happy: -4, internet: +1 }, grade: "bad", narrative: "악플 하나에 일주일을 앓았다. 연재를 멈췄다." },
+        ] },
+      { id: "notebook", emoji: "📒", text: "공책에만 그린다", grade: "mid", effects: { intel: +3, happy: +3 }, narratives: ["쉬는 시간마다 반 친구들이 공책을 돌려 봤다. 최초의 독자들이다."] },
+      { id: "study", emoji: "📚", text: "공부하라는 말에 접는다", grade: "mid", effects: { intel: +4, happy: -3 }, narratives: ["펜을 내려놨다. 가끔 그 공책을 꺼내 본다."] },
+    ],
+  }),
+  E({
+    id: "v2_ditch_class", stage: "teen", age: [15, 18], emoji: "🚪", title: "야자 땡땡이",
+    desc: "야간 자율학습 시간. 친구가 몰래 나가서 떡볶이 먹자고 한다.",
+    choices: [
+      { id: "go", emoji: "🌶️", text: "몰래 나간다", grade: "mid",
+        outcomes: [
+          { chance: 0.55, effects: { happy: +7, social: +4 }, grade: "good", narrative: "인생 최고의 떡볶이였다. 금지된 맛이었다." },
+          { chance: 0.45, effects: { happy: -4, social: +2 }, grade: "bad", narrative: "교문에서 학생부장 선생님과 마주쳤다. 반성문 세 장." },
+        ] },
+      { id: "stay", emoji: "✏️", text: "남아서 공부한다", grade: "good", effects: { intel: +5 }, narratives: ["조용한 교실에서 문제집 한 권을 끝냈다."] },
+      { id: "delivery", emoji: "🛵", text: "배달시켜서 교실에서 먹는다", grade: "mid", effects: { happy: +4, social: +3, money: -1 }, narratives: ["냄새 때문에 반 전체가 공범이 됐다. 선생님도 한 입 드셨다."] },
+    ],
+  }),
+  E({
+    id: "v2_acne", stage: "teen", age: [13, 16], emoji: "😣", title: "여드름 대폭발",
+    desc: "사진 찍는 날 아침, 이마에 커다란 여드름이 났다.",
+    choices: [
+      { id: "pop", emoji: "👆", text: "짜 버린다", grade: "bad",
+        outcomes: [
+          { chance: 0.4, effects: { happy: +2 }, grade: "mid", narrative: "다행히 깔끔하게 가라앉았다." },
+          { chance: 0.6, effects: { happy: -5, health: -2 }, grade: "bad", narrative: "더 빨개졌다. 졸업 앨범에 그대로 남았다." },
+        ] },
+      { id: "derm", emoji: "🏥", text: "피부과에 간다", grade: "good", effects: { health: +3, happy: +2, money: -5 }, narratives: ["관리 방법을 배웠다. 한 달 뒤 피부가 확 좋아졌다."] },
+      { id: "bangs", emoji: "💇", text: "앞머리로 가린다", grade: "mid", effects: { intel: +2, happy: +1 }, narratives: ["임시방편이었지만 효과는 확실했다."] },
+    ],
+  }),
+  E({
+    id: "v2_volunteer", stage: "teen", age: [14, 18], emoji: "🤲", title: "봉사활동 시간 채우기",
+    desc: "봉사활동 시간이 모자란다. 어디로 갈까?",
+    choices: [
+      { id: "shelter", emoji: "🐶", text: "유기견 보호소", grade: "good",
+        outcomes: [
+          { chance: 0.6, effects: { happy: +6, health: +2, social: +2 }, grade: "good", narrative: "산책 봉사를 하다 강아지들과 정이 들었다. 매달 다니게 됐다." },
+          { chance: 0.4, effects: { happy: +3, health: -1 }, grade: "mid", narrative: "대형견에게 끌려다녔다. 그래도 꼬리 흔드는 모습에 웃었다." },
+        ] },
+      { id: "library", emoji: "📚", text: "도서관 책 정리", grade: "mid", effects: { intel: +4, social: +1 }, narratives: ["책 정리를 하다 인생 책을 한 권 만났다."] },
+      { id: "elderly", emoji: "👵", text: "요양원 말벗", grade: "good",
+        outcomes: [
+          { chance: 0.7, effects: { social: +6, happy: +4 }, grade: "good", narrative: "할머니가 옛날이야기를 해 주셨다. 갈 때마다 사탕을 챙겨 주셨다." },
+          { chance: 0.3, effects: { social: +4, happy: -2, intel: +2 }, grade: "mid", narrative: "다음 달에 갔더니 그 할아버지가 안 계셨다. 처음으로 이별을 생각했다." },
+        ] },
+    ],
+  }),
+  E({
+    id: "v2_math_contest", stage: "teen", age: [13, 16], emoji: "🧮", title: "수학 경시대회",
+    desc: "담임 선생님이 수학 경시대회에 나가 보라고 했다.",
+    choices: [
+      { id: "enter", emoji: "✏️", text: "나간다", grade: "mid",
+        outcomes: [
+          { chance: 0.3, effects: { intel: +8, happy: +6, social: +3 }, grade: "crit", narrative: "장려상을 받았다. 학교 정문에 현수막이 걸렸다." },
+          { chance: 0.7, effects: { intel: +4, happy: -2 }, grade: "mid", narrative: "마지막 문제는 문제 자체를 이해하지 못했다. 세상은 넓었다." },
+        ] },
+      { id: "decline", emoji: "🙅", text: "사양한다", grade: "mid", effects: { happy: +2 }, narratives: ["그 주말에 늦잠을 잤다. 후회는 없었다."] },
+      { id: "team", emoji: "👥", text: "친구와 같이 준비한다", grade: "good", effects: { intel: +4, social: +4 }, narratives: ["둘이서 기출문제를 풀며 밤을 새웠다. 성적보다 친구가 남았다."] },
+    ],
+  }),
   // ===================== 청년 =====================
   E({
     id: "v2_university", stage: "adult", age: [19, 20], emoji: "🎓", title: "대학 원서",
@@ -749,6 +961,421 @@ export const EVENTS_YOUNG = [
           { chance: 0.4, effects: { intel: +3, happy: -4 }, narrative: "수료는 했는데 취업 시장이 얼어붙었다." },
         ] },
       { id: "give_up", emoji: "🛌", text: "잠시 쉬기로 한다", grade: "bad", effects: { happy: +2, social: -4 }, route: "neet", narratives: ["낮과 밤이 바뀌었다."] },
+    ],
+  }),
+  // ----- 청년 추가(2026-10-24) -----
+  E({
+    id: "v2_freshman_ot", stage: "adult", age: [19, 20], emoji: "🎉", title: "새내기 오리엔테이션",
+    desc: "대학 새내기 OT. 장기자랑 시간에 선배들이 1학년을 쳐다본다.", flagRequired: ["college_done"], flagBanned: ["no_college"],
+    choices: [
+      { id: "perform", emoji: "🎤", text: "무대에 나가 노래한다", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { social: +8, happy: +6 }, grade: "crit", narrative: "과 스타가 됐다. 4년 내내 그 노래로 불렸다." },
+          { chance: 0.5, effects: { social: +3, happy: -3 }, grade: "mid", narrative: "음이탈이 났다. 그래도 그 덕에 다들 이름은 외웠다." },
+        ] },
+      { id: "quiet", emoji: "🙂", text: "박수만 열심히 친다", grade: "mid", effects: { intel: +2, social: +1 }, narratives: ["조용히 있다가 옆자리 동기와 친해졌다. 졸업까지 단짝이었다."] },
+      { id: "leave", emoji: "🚶", text: "일찍 빠져나온다", grade: "mid", effects: { happy: +2, social: -3 }, narratives: ["단톡방에서 아싸로 분류됐다. 혼밥이 편했다."] },
+    ],
+  }),
+  E({
+    id: "v2_team_project", stage: "adult", age: [19, 24], emoji: "👥", title: "조별 과제 무임승차",
+    desc: "조별 과제 발표 하루 전. 조원 한 명이 연락이 안 된다.", flagRequired: ["college_done"], flagBanned: ["no_college"],
+    choices: [
+      { id: "do_all", emoji: "💪", text: "내가 다 한다", grade: "mid",
+        outcomes: [
+          { chance: 0.6, effects: { intel: +5, happy: -4, health: -2 }, grade: "good", narrative: "A+를 받았다. 무임승차자도 A+를 받았다." },
+          { chance: 0.4, effects: { intel: +3, health: -5 }, grade: "bad", narrative: "밤을 새우고 발표 중에 졸았다. 교수님이 웃으셨다." },
+        ] },
+      { id: "report", emoji: "📧", text: "교수님께 사실대로 알린다", grade: "mid",
+        outcomes: [
+          { chance: 0.6, effects: { intel: +2, social: +2, happy: +3 }, grade: "good", narrative: "기여도 평가가 반영됐다. 정의는 살아 있었다." },
+          { chance: 0.4, effects: { social: -4 }, grade: "bad", narrative: "그 조원이 단톡방에서 나를 저격했다. 과가 시끄러워졌다." },
+        ] },
+      { id: "call", emoji: "📞", text: "끝까지 전화해서 일을 나눈다", grade: "good", effects: { social: +4, intel: +2 }, narratives: ["열네 번째 전화에 받았다. 사정이 있었다. 결국 같이 끝냈다."] },
+    ],
+  }),
+  E({
+    id: "v2_course_reg", stage: "adult", age: [19, 23], emoji: "⏰", title: "수강신청 광클 전쟁",
+    desc: "오전 10시 수강신청 오픈. 원하는 꿀강은 정원 30명.", flagRequired: ["college_done"], flagBanned: ["no_college"],
+    choices: [
+      { id: "click", emoji: "🖱️", text: "서버 시간 맞춰 광클", grade: "mid",
+        outcomes: [
+          { chance: 0.4, effects: { happy: +6, intel: +2, luck: +2 }, grade: "good", narrative: "성공! 공강 있는 꿈의 시간표가 완성됐다." },
+          { chance: 0.6, effects: { happy: -5 }, grade: "bad", narrative: "새로고침 한 번에 전부 마감. 1교시 9시 수업만 남았다." },
+        ] },
+      { id: "pc_bang", emoji: "💻", text: "학교 앞 PC방으로 간다", grade: "mid", effects: { happy: +3, money: -1 }, narratives: ["빠른 인터넷 덕분에 반은 건졌다. 옆자리도 전부 우리 과였다."] },
+      { id: "beg", emoji: "🙏", text: "교수님께 증원 메일을 보낸다", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { social: +3, intel: +2 }, grade: "good", narrative: "'열정이 보여서'라며 받아 주셨다." },
+          { chance: 0.5, effects: { happy: -2 }, grade: "mid", narrative: "자동 답장만 왔다. '증원 불가'." },
+        ] },
+    ],
+  }),
+  E({
+    id: "v2_campus_club", stage: "adult", age: [19, 22], emoji: "🎪", title: "동아리 가입",
+    desc: "동아리 박람회. 사방에서 전단지가 날아온다.", flagRequired: ["college_done"], flagBanned: ["no_college"],
+    choices: [
+      { id: "band", emoji: "🎸", text: "밴드 동아리", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { social: +6, happy: +6, money: -30 }, grade: "good", narrative: "축제 무대에 섰다. 악기 할부가 남았지만 후회는 없다." },
+          { chance: 0.5, effects: { social: +3, happy: -2, money: -30 }, grade: "mid", narrative: "탬버린 담당이 됐다. 그래도 뒤풀이는 즐거웠다." },
+        ] },
+      { id: "volunteer", emoji: "🤝", text: "봉사 동아리", grade: "good", effects: { social: +5, happy: +3 }, narratives: ["주말마다 연탄을 날랐다. 손은 검어졌지만 마음은 밝아졌다."] },
+      { id: "startup", emoji: "💡", text: "창업 동아리", grade: "mid",
+        outcomes: [
+          { chance: 0.3, effects: { intel: +6, money: +100, social: +3 }, grade: "crit", narrative: "교내 창업 대회 대상! 상금으로 첫 사업자 등록을 했다." },
+          { chance: 0.7, effects: { intel: +4, happy: -1 }, grade: "mid", narrative: "아이디어 회의만 일 년. 그래도 사업계획서 쓰는 법은 배웠다." },
+        ] },
+    ],
+  }),
+  E({
+    id: "v2_driver_license", stage: "adult", age: [19, 26], emoji: "🚗", title: "운전면허 시험",
+    desc: "도로 주행 시험 날. 감독관이 무표정하게 출발하라고 한다.",
+    choices: [
+      { id: "careful", emoji: "🐢", text: "규정대로 천천히", grade: "good",
+        outcomes: [
+          { chance: 0.75, effects: { intel: +3, happy: +5 }, grade: "good", narrative: "한 번에 합격! 첫 드라이브로 부모님을 태웠다." },
+          { chance: 0.25, effects: { happy: -3, money: -10 }, grade: "mid", narrative: "너무 느리다고 감점. 재시험 비용이 들었다." },
+        ] },
+      { id: "confident", emoji: "😎", text: "자신 있게 쭉쭉", grade: "mid",
+        outcomes: [
+          { chance: 0.45, effects: { power: +2, happy: +6 }, grade: "good", narrative: "감독관이 '운전 좀 해 봤네' 하며 웃었다." },
+          { chance: 0.55, effects: { happy: -5, money: -10 }, grade: "bad", narrative: "깜빡이를 안 켜서 바로 실격. 시험이 3분 만에 끝났다." },
+        ] },
+      { id: "skip", emoji: "🚌", text: "면허는 나중에", grade: "mid", effects: { money: +5, health: +1 }, narratives: ["대중교통이 편했다. 친구 차 조수석 전문이 됐다."] },
+    ],
+  }),
+  E({
+    id: "v2_working_holiday", stage: "adult", age: [20, 28], emoji: "✈️", title: "워킹홀리데이",
+    desc: "호주 워킹홀리데이 비자가 나왔다. 1년, 갈까 말까?",
+    choices: [
+      { id: "go", emoji: "🦘", text: "떠난다", grade: "mid",
+        outcomes: [
+          { chance: 0.45, effects: { social: +7, happy: +8, money: +300, intel: +3 }, grade: "crit", narrative: "농장에서 일하며 돈도 모으고 영어도 늘었다. 평생 친구들이 생겼다." },
+          { chance: 0.35, effects: { social: +4, happy: +4, money: -100 }, grade: "good", narrative: "돈은 못 모았지만 사진첩이 두꺼워졌다." },
+          { chance: 0.2, effects: { happy: -6, money: -300 }, grade: "bad", narrative: "일자리를 못 구해 석 달 만에 돌아왔다." },
+        ] },
+      { id: "stay", emoji: "🏠", text: "취업 준비를 한다", grade: "mid", effects: { intel: +3, money: +50 }, narratives: ["그 1년 동안 자격증을 두 개 땄다. 가끔 호주 사진을 검색해 봤다."] },
+    ],
+  }),
+  E({
+    id: "v2_scholarship", stage: "adult", age: [19, 24], emoji: "🎓", title: "장학금 vs 알바",
+    desc: "다음 학기 등록금이 걱정이다. 성적 장학금을 노릴까, 알바를 늘릴까?", flagRequired: ["college_done"], flagBanned: ["no_college"],
+    choices: [
+      { id: "study", emoji: "📖", text: "도서관에 산다", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { intel: +6, money: +200, happy: +3 }, grade: "crit", narrative: "과 수석! 등록금 전액 장학금을 받았다." },
+          { chance: 0.5, effects: { intel: +5, happy: -3 }, grade: "mid", narrative: "0.02점 차이로 놓쳤다. 성적표를 한참 쳐다봤다." },
+        ] },
+      { id: "work", emoji: "☕", text: "알바를 두 개 한다", grade: "good", effects: { money: +150, power: +2, intel: -2, health: -1 }, narratives: ["카페와 편의점을 오갔다. 등록금은 해결했지만 수업 시간에 졸았다."] },
+      { id: "loan", emoji: "🏦", text: "학자금 대출", grade: "mid", effects: { money: +100, happy: -2 }, narratives: ["일단 공부에 집중했다. 갚는 건 미래의 내 몫이다."] },
+    ],
+  }),
+  E({
+    id: "v2_first_car", stage: "adult", age: [24, 33], emoji: "🚙", title: "첫 차 구매",
+    desc: "출퇴근이 힘들다. 차를 사 볼까?",
+    choices: [
+      { id: "new", emoji: "✨", text: "새 차 할부", grade: "mid",
+        outcomes: [
+          { chance: 0.6, effects: { happy: +8, money: -1500 }, grade: "good", narrative: "새 차 냄새가 좋았다. 할부 문자는 덜 좋았다." },
+          { chance: 0.4, effects: { happy: -3, money: -1800 }, grade: "bad", narrative: "출고 일주일 만에 주차장에서 긁혔다." },
+        ] },
+      { id: "used", emoji: "🔧", text: "중고차", grade: "mid",
+        outcomes: [
+          { chance: 0.55, effects: { happy: +5, intel: +2, money: -600 }, grade: "good", narrative: "싸게 잘 샀다. 10년을 탔다." },
+          { chance: 0.45, effects: { happy: -5, money: -900 }, grade: "bad", narrative: "침수차였다. 수리비가 차값을 넘어갔다." },
+        ] },
+      { id: "transit", emoji: "🚇", text: "대중교통 + 자전거", grade: "good", effects: { money: +100, health: +2 }, narratives: ["통장이 지켜졌다. 자전거 출근으로 허벅지가 단단해졌다."] },
+    ],
+  }),
+  E({
+    id: "v2_wedding_guest", stage: "adult", age: [25, 34], emoji: "💐", title: "친구 결혼식 축의금",
+    desc: "애매하게 친한 친구에게 청첩장이 왔다. 축의금은 얼마?",
+    choices: [
+      { id: "five", emoji: "✉️", text: "5만 원 + 참석", grade: "mid", effects: { money: -5, social: +1 }, narratives: ["밥값을 생각하면 애매했다. 그래도 사진에는 잘 나왔다."] },
+      { id: "ten", emoji: "💌", text: "10만 원 + 참석", grade: "good",
+        outcomes: [
+          { chance: 0.7, effects: { money: -10, social: +5, happy: +2 }, grade: "good", narrative: "신랑 신부가 끝까지 고맙다고 했다. 관계가 한 단계 가까워졌다." },
+          { chance: 0.3, effects: { money: -10, social: +4, happy: +5 }, grade: "crit", narrative: "부케를 받았다. 하객석이 술렁였다." },
+        ] },
+      { id: "skip", emoji: "📱", text: "송금만 하고 불참", grade: "bad", effects: { money: -3, social: -4 }, narratives: ["나중에 그 친구 단톡방이 조용해졌다."] },
+    ],
+  }),
+  E({
+    id: "v2_job_interview", stage: "adult", age: [22, 29], emoji: "🤵", title: "압박 면접",
+    desc: "면접관이 팔짱을 끼고 묻는다. '우리 회사가 왜 당신을 뽑아야 하죠?'",
+    choices: [
+      { id: "prepared", emoji: "📋", text: "준비한 답변을 또박또박", grade: "good",
+        outcomes: [
+          { chance: 0.55, effects: { intel: +3, happy: +6, money: +50 }, grade: "good", narrative: "최종 합격 문자가 왔다. 부모님께 제일 먼저 전화했다." },
+          { chance: 0.45, effects: { intel: +2, happy: -4 }, grade: "mid", narrative: "무난했지만 떨어졌다. '탈락'이 아닌 '아쉽게도'라고 써 있었다." },
+        ] },
+      { id: "honest", emoji: "😅", text: "솔직하게 '돈이 필요해서요'", grade: "mid",
+        outcomes: [
+          { chance: 0.35, effects: { social: +4, happy: +6, luck: +3 }, grade: "crit", narrative: "면접관이 크게 웃었다. '솔직해서 좋네요.' 합격했다." },
+          { chance: 0.65, effects: { happy: -5 }, grade: "bad", narrative: "정적이 5초 흘렀다. 결과는 예상대로였다." },
+        ] },
+      { id: "question", emoji: "🙋", text: "질문으로 되묻는다", grade: "good", effects: { intel: +4, social: +3 }, narratives: ["'이 팀이 지금 가장 해결하고 싶은 문제가 뭔가요?' 면접 분위기가 대화로 바뀌었다."] },
+    ],
+  }),
+  E({
+    id: "v2_marathon", stage: "adult", age: [22, 34], emoji: "🏅", title: "첫 마라톤 도전",
+    desc: "회사 동료가 10km 마라톤을 같이 뛰자고 한다.",
+    choices: [
+      { id: "train", emoji: "🏃", text: "한 달 연습하고 나간다", grade: "good",
+        outcomes: [
+          { chance: 0.65, effects: { power: +6, health: +5, happy: +5 }, grade: "good", narrative: "완주! 메달을 책상 위에 걸어 뒀다." },
+          { chance: 0.35, effects: { power: +3, health: -3 }, grade: "mid", narrative: "8km에서 무릎이 아팠다. 걸어서라도 들어왔다." },
+        ] },
+      { id: "cold", emoji: "😤", text: "연습 없이 당일 출전", grade: "mid",
+        outcomes: [
+          { chance: 0.3, effects: { power: +4, happy: +6, luck: +3 }, grade: "good", narrative: "의외로 완주했다. 다음 날 계단을 못 내려갔다." },
+          { chance: 0.7, effects: { health: -4, happy: -3 }, grade: "bad", narrative: "3km에서 구급 부스 신세를 졌다." },
+        ] },
+      { id: "cheer", emoji: "📣", text: "응원만 하러 간다", grade: "mid", effects: { social: +4, happy: +2 }, narratives: ["결승선에서 바나나를 건넸다. 동료가 감동했다."] },
+    ],
+  }),
+  E({
+    id: "v2_cert_exam", stage: "adult", age: [22, 30], emoji: "📜", title: "자격증 시험",
+    desc: "취업에 도움이 된다는 자격증 시험이 한 달 남았다.",
+    choices: [
+      { id: "cram", emoji: "📚", text: "한 달 벼락치기", grade: "mid",
+        outcomes: [
+          { chance: 0.55, effects: { intel: +5, happy: +4, money: +30 }, grade: "good", narrative: "합격! 이력서 한 줄이 늘었다." },
+          { chance: 0.45, effects: { intel: +2, happy: -4, money: -10 }, grade: "bad", narrative: "커트라인에서 2점이 모자랐다. 응시료만 날렸다." },
+        ] },
+      { id: "course", emoji: "🏫", text: "학원에 등록한다", grade: "good", effects: { intel: +6, money: -50 }, narratives: ["강사님의 족보가 그대로 나왔다. 여유 있게 합격했다."] },
+      { id: "skip", emoji: "🛌", text: "다음 회차로 미룬다", grade: "mid", effects: { happy: +3, intel: -1 }, narratives: ["다음 회차도 미뤘다. 자격증은 전설로 남았다."] },
+    ],
+  }),
+  // ----- 특별 사건 추가(2026-10-24) -----
+  E({
+    id: "v2_sp_tv_baby", stage: "infant", age: [1, 4], emoji: "📺", title: "육아 예능 섭외",
+    desc: "방송국 작가에게서 연락이 왔다. 육아 예능에 출연해 달라고 한다.", type: "special",
+    choices: [
+      { id: "yes", emoji: "🎬", text: "출연한다", grade: "mid",
+        outcomes: [
+          { chance: 0.35, effects: { money: +300, internet: +15, social: +8, happy: +6 }, grade: "crit", narrative: "'국민 아기'가 됐다. 내 표정이 전국 이모티콘이 됐다." },
+          { chance: 0.45, effects: { money: +50, internet: +6, happy: +2 }, grade: "good", narrative: "두 달 출연했다. 지금도 가끔 '그 아기 아니야?' 소리를 듣는다." },
+          { chance: 0.2, effects: { happy: -6, internet: +5 }, grade: "bad", narrative: "떼쓰는 장면만 편집돼 나갔다. 댓글창이 무서웠다." },
+        ] },
+      { id: "no", emoji: "🙅", text: "정중히 거절한다", grade: "good", effects: { happy: +4, health: +2 }, narratives: ["카메라 없는 평범한 어린 시절을 보냈다. 그게 제일 좋았다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_grandpa_lotto", stage: "infant", age: [1, 4], emoji: "🎫", title: "할아버지의 복권",
+    desc: "할아버지가 복권 용지를 들고 왔다. '우리 손주가 번호를 골라 보렴.'", type: "special",
+    choices: [
+      { id: "point", emoji: "👉", text: "손가락으로 콕콕 짚는다", grade: "mid",
+        outcomes: [
+          { chance: 0.08, effects: { money: +3000, luck: +15, happy: +10 }, grade: "crit", narrative: "1등 당첨! 할아버지가 내 이름으로 통장을 만들었다. '복덩이'가 별명이 됐다." },
+          { chance: 0.22, effects: { money: +50, luck: +5, happy: +3 }, grade: "good", narrative: "4등 당첨. 할아버지가 아이스크림을 한 박스 사 왔다." },
+          { chance: 0.7, effects: { luck: +2, happy: +1 }, grade: "mid", narrative: "꽝이었다. 할아버지는 '다음 주에 또 하자'고 했다." },
+        ] },
+      { id: "eat", emoji: "😋", text: "용지를 입에 넣는다", grade: "mid", effects: { happy: +3, luck: -1 }, narratives: ["침 범벅이 된 용지는 기계에 안 들어갔다. 할아버지가 크게 웃었다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_gifted", stage: "child", age: [8, 11], emoji: "🧠", title: "영재원 선발 시험",
+    desc: "담임 선생님이 영재원 시험을 추천했다. 경쟁률이 20 대 1이다.", type: "special",
+    choices: [
+      { id: "try", emoji: "✏️", text: "도전한다", grade: "mid",
+        outcomes: [
+          { chance: 0.3, effects: { intel: +12, happy: +6, social: +3 }, grade: "crit", narrative: "합격! 주말마다 대학 실험실에서 수업을 들었다." },
+          { chance: 0.7, effects: { intel: +5, happy: -3 }, grade: "mid", narrative: "떨어졌지만 문제 푸는 재미를 알게 됐다." },
+        ] },
+      { id: "play", emoji: "⚽", text: "그 시간에 논다", grade: "good", effects: { happy: +5, power: +4 }, narratives: ["운동장에서 해가 질 때까지 뛰었다. 어린 시절은 짧다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_child_actor", stage: "child", age: [7, 12], emoji: "🎬", title: "아역 오디션",
+    desc: "드라마 아역 오디션 공고가 떴다. 엄마가 지원서를 내밀었다.", type: "special",
+    choices: [
+      { id: "go", emoji: "🎭", text: "오디션을 본다", grade: "mid",
+        outcomes: [
+          { chance: 0.2, effects: { money: +500, social: +10, internet: +10, happy: +8 }, grade: "crit", narrative: "주인공 아역에 캐스팅! 첫 촬영 날 대본을 끌어안고 잤다." },
+          { chance: 0.4, effects: { money: +50, social: +4, happy: +3 }, grade: "good", narrative: "지나가는 학생 3 역할. 엔딩 크레디트에 이름이 나왔다." },
+          { chance: 0.4, effects: { happy: -4, intel: +1 }, grade: "mid", narrative: "떨어졌다. 대기실에 나랑 똑같이 생긴 애가 열 명 있었다." },
+        ] },
+      { id: "no", emoji: "🙅", text: "싫다고 한다", grade: "mid", effects: { intel: +2, happy: +2 }, narratives: ["엄마는 아쉬워했지만 나는 만화책이 더 좋았다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_rescue", stage: "child", age: [9, 12], emoji: "🚒", title: "물에 빠진 친구",
+    desc: "계곡에서 친구가 미끄러져 물에 빠졌다! 어른들은 멀리 있다.", type: "special",
+    choices: [
+      { id: "rope", emoji: "🪢", text: "나뭇가지를 내밀고 어른을 부른다", grade: "good",
+        outcomes: [
+          { chance: 0.75, effects: { social: +10, intel: +4, happy: +6 }, grade: "crit", narrative: "친구를 끌어냈다. 어린이 의인상을 받고 뉴스에 나왔다." },
+          { chance: 0.25, effects: { social: +6, health: -3 }, grade: "good", narrative: "같이 미끄러졌지만 어른들이 달려와 둘 다 구했다." },
+        ] },
+      { id: "jump", emoji: "🏊", text: "직접 뛰어든다", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { social: +8, power: +5, health: -4 }, grade: "good", narrative: "수영 배운 보람이 있었다. 친구가 평생 은인이라고 부른다." },
+          { chance: 0.5, effects: { health: -10, happy: -4, social: +4 }, grade: "bad", narrative: "물이 생각보다 깊었다. 둘 다 구조됐지만 크게 혼났다." },
+        ] },
+    ],
+  }),
+  E({
+    id: "v2_sp_scout", stage: "teen", age: [14, 17], emoji: "⚽", title: "프로 구단 스카우트",
+    desc: "동네 축구 경기를 지켜보던 사람이 명함을 건넸다. 프로 유스팀 스카우트다.", type: "special",
+    choices: [
+      { id: "join", emoji: "🥅", text: "유스팀에 들어간다", grade: "mid",
+        outcomes: [
+          { chance: 0.25, effects: { power: +12, social: +8, money: +300, happy: +8 }, grade: "crit", narrative: "청소년 대표로 뽑혔다. 유니폼에 국기가 달렸다." },
+          { chance: 0.5, effects: { power: +7, intel: -2, happy: +2 }, grade: "good", narrative: "주전은 못 됐지만 몸과 근성이 남았다." },
+          { chance: 0.25, effects: { health: -8, happy: -6 }, grade: "bad", narrative: "인대 부상으로 1년을 쉬었다. 꿈을 접었다." },
+        ] },
+      { id: "study", emoji: "📚", text: "공부를 택한다", grade: "mid", effects: { intel: +5, happy: -3 }, narratives: ["명함은 책상 서랍에 남았다. 주말 조기축구가 평생 취미가 됐다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_challenge", stage: "teen", age: [13, 17], emoji: "💃", title: "챌린지 영상 대박",
+    desc: "장난으로 올린 댄스 챌린지 영상 조회수가 미친 듯이 오른다.", type: "special",
+    choices: [
+      { id: "ride", emoji: "🌊", text: "후속 영상을 계속 올린다", grade: "mid",
+        outcomes: [
+          { chance: 0.35, effects: { internet: +15, money: +200, social: +6, happy: +6 }, grade: "crit", narrative: "팔로워 50만. 원조 가수가 내 영상을 공유했다." },
+          { chance: 0.45, effects: { internet: +6, happy: +3, intel: -2 }, grade: "good", narrative: "반짝 유명해졌다. 학교에서 사인 요청을 받았다." },
+          { chance: 0.2, effects: { happy: -6, internet: +4, social: -3 }, grade: "bad", narrative: "밈으로 박제됐다. 조롱 댓글이 따라다녔다." },
+        ] },
+      { id: "delete", emoji: "🗑️", text: "부끄러워서 지운다", grade: "mid", effects: { intel: +3, happy: -1 }, narratives: ["지웠지만 누군가 이미 저장해 뒀다. 동창회 때마다 나온다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_pig_dream", stage: "adult", age: [20, 34], emoji: "🐷", title: "돼지꿈",
+    desc: "황금 돼지가 집으로 걸어 들어오는 꿈을 꿨다. 엄청 생생하다.", type: "special",
+    choices: [
+      { id: "lotto", emoji: "🎰", text: "복권을 산다", grade: "mid",
+        outcomes: [
+          { chance: 0.05, effects: { money: +20000, luck: +15, happy: +12 }, grade: "crit", narrative: "1등 당첨!! 손이 떨려서 은행 앞에서 30분을 서 있었다." },
+          { chance: 0.25, effects: { money: +100, luck: +4, happy: +4 }, grade: "good", narrative: "3등 당첨. 꿈은 꽤 정직했다." },
+          { chance: 0.7, effects: { luck: +1, happy: -1 }, grade: "mid", narrative: "꽝. 돼지는 그냥 배가 고팠나 보다." },
+        ] },
+      { id: "tell", emoji: "🗣️", text: "친구한테 꿈 얘기를 한다", grade: "bad", effects: { social: +2, luck: -3 }, narratives: ["꿈을 말하면 복이 날아간다고 했다. 친구가 그 주에 복권에 당첨됐다."] },
+      { id: "sell", emoji: "💸", text: "꿈을 동생에게 판다", grade: "mid", effects: { money: +5, social: +3, happy: +2 }, narratives: ["5만 원에 팔았다. 동생은 그 돈으로 치킨을 시켰다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_busking", stage: "adult", age: [22, 34], emoji: "🎤", title: "버스킹이 방송을 탔다",
+    desc: "주말 버스킹을 하던 날, 방송국 PD가 오디션 프로그램 출연을 제안했다.", type: "special",
+    choices: [
+      { id: "go", emoji: "🌟", text: "출연한다", grade: "mid",
+        outcomes: [
+          { chance: 0.2, effects: { money: +2000, social: +12, internet: +12, happy: +10 }, grade: "crit", narrative: "결승까지 갔다. 음원이 차트에 올랐다." },
+          { chance: 0.5, effects: { social: +5, internet: +6, happy: +4 }, grade: "good", narrative: "3라운드 탈락. 그래도 공연 섭외가 들어오기 시작했다." },
+          { chance: 0.3, effects: { happy: -6, internet: +3 }, grade: "bad", narrative: "악마의 편집을 당했다. 한동안 버스킹을 쉬었다." },
+        ] },
+      { id: "no", emoji: "🎸", text: "길거리에서 계속 노래한다", grade: "good", effects: { happy: +5, social: +2 }, narratives: ["단골 관객이 생겼다. 무대는 작아도 행복했다."] },
+    ],
+  }),
+  // ----- 특별 사건 2차(2026-10-24) -----
+  E({
+    id: "v2_sp_lookalike", stage: "infant", age: [3, 6], emoji: "👯", title: "나랑 똑같은 아이",
+    desc: "놀이공원에서 나랑 똑같이 생긴 아이를 만났다. 옷만 다르다.", weight: 0.7, type: "special",
+    choices: [
+      { id: "swap", emoji: "🔄", text: "옷을 바꿔 입는다", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { happy: +10, social: +6, internet: +4 }, grade: "crit", narrative: "두 가족이 30분 동안 아이를 바꿔 데리고 다녔다. 다들 배꼽을 잡았다." },
+          { chance: 0.5, effects: { happy: -3, social: +4 }, grade: "mid", narrative: "엄마가 바로 알아봤다. '우리 애는 그렇게 안 웃어.'" },
+        ] },
+      { id: "friend", emoji: "🤝", text: "친구가 된다", grade: "good", effects: { social: +6, happy: +5 }, narratives: ["부모님들끼리 연락처를 교환했다. 해마다 같은 날 만나는 사이가 됐다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_meteorite", stage: "child", age: [7, 12], emoji: "☄️", title: "뒷산에서 주운 돌",
+    desc: "뒷산에서 이상하게 무겁고 까만 돌을 주웠다. 자석이 붙는다.", weight: 0.7, type: "special",
+    choices: [
+      { id: "lab", emoji: "🔬", text: "과학관에 감정을 맡긴다", grade: "mid",
+        outcomes: [
+          { chance: 0.25, effects: { money: +2000, intel: +8, internet: +8, happy: +10 }, grade: "crit", narrative: "진짜 운석이었다! 박물관이 사 갔고, 내 이름이 설명판에 적혔다." },
+          { chance: 0.75, effects: { intel: +4, happy: +2 }, grade: "mid", narrative: "그냥 철광석이었다. 대신 연구원 선생님이 광물 도감을 선물해 줬다." },
+        ] },
+      { id: "keep", emoji: "🪨", text: "보물 상자에 넣어 둔다", grade: "mid", effects: { happy: +3, luck: +2 }, narratives: ["평생 책상 위 문진으로 썼다. 진짜였는지는 아무도 모른다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_quiz_kid", stage: "child", age: [9, 12], emoji: "🏅", title: "어린이 퀴즈왕",
+    desc: "어린이 퀴즈 프로그램 학교 대표로 뽑혔다. 녹화 날이다.", weight: 0.7, type: "special",
+    choices: [
+      { id: "buzz", emoji: "🔔", text: "빠르게 버저를 누른다", grade: "mid",
+        outcomes: [
+          { chance: 0.3, effects: { intel: +8, social: +6, happy: +8, money: +100 }, grade: "crit", narrative: "최종 우승! 트로피를 들고 교장실에 갔다." },
+          { chance: 0.45, effects: { intel: +4, happy: +3 }, grade: "good", narrative: "준결승까지 갔다. 마지막 문제를 아직도 기억한다." },
+          { chance: 0.25, effects: { happy: -4, internet: +3 }, grade: "bad", narrative: "너무 빨리 눌러서 문제를 다 듣기도 전에 오답. 짤로 남았다." },
+        ] },
+      { id: "careful", emoji: "🤔", text: "확실할 때만 누른다", grade: "good", effects: { intel: +5, happy: +2 }, narratives: ["정답률 100%로 3위. 선생님이 '가장 침착한 선수'라고 칭찬했다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_whitehat", stage: "teen", age: [14, 18], emoji: "💻", title: "학교 홈페이지의 구멍",
+    desc: "학교 홈페이지에서 성적 페이지가 그냥 열리는 보안 구멍을 발견했다.", weight: 0.7, type: "special",
+    choices: [
+      { id: "report", emoji: "🛡️", text: "선생님께 알린다", grade: "good",
+        outcomes: [
+          { chance: 0.5, effects: { intel: +8, social: +5, happy: +6 }, grade: "crit", narrative: "교육청 표창을 받았다. 보안 회사에서 '졸업하면 연락하라'는 명함이 왔다." },
+          { chance: 0.5, effects: { intel: +4, social: +2 }, grade: "good", narrative: "조용히 고쳐졌다. 정보 선생님이 몰래 엄지를 들어 줬다." },
+        ] },
+      { id: "peek", emoji: "👀", text: "친구들 성적을 몰래 본다", grade: "bad",
+        outcomes: [
+          { chance: 0.4, effects: { intel: +2, happy: +2 }, grade: "mid", narrative: "아무도 몰랐다. 대신 마음이 계속 찜찜했다." },
+          { chance: 0.6, effects: { social: -8, happy: -6 }, grade: "bad", narrative: "접속 기록이 남아 있었다. 징계위원회에 불려 갔다." },
+        ] },
+    ],
+  }),
+  E({
+    id: "v2_sp_exchange", stage: "teen", age: [15, 18], emoji: "🌏", title: "교환학생 장학생",
+    desc: "1년 해외 교환학생 장학생에 뽑혔다. 출국까지 한 달.", weight: 0.7, type: "special",
+    choices: [
+      { id: "go", emoji: "✈️", text: "떠난다", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { intel: +8, social: +8, happy: +8 }, grade: "crit", narrative: "홈스테이 가족이 두 번째 가족이 됐다. 지금도 명절마다 영상통화를 한다." },
+          { chance: 0.5, effects: { intel: +5, happy: -2, social: +3 }, grade: "good", narrative: "처음 석 달은 매일 울었다. 돌아올 땐 공항에서 또 울었다." },
+        ] },
+      { id: "stay", emoji: "🏠", text: "포기하고 남는다", grade: "mid", effects: { intel: +3, social: +2 }, narratives: ["친구들과 졸업을 함께했다. 가끔 '그때 갔더라면' 하고 생각한다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_cafe_heir", stage: "adult", age: [25, 34], emoji: "☕", title: "단골 카페를 물려받다",
+    desc: "10년 단골 카페 사장님이 은퇴하신다며 가게를 맡아 달라고 했다.", weight: 0.7, type: "special",
+    choices: [
+      { id: "take", emoji: "🔑", text: "물려받는다", grade: "mid",
+        outcomes: [
+          { chance: 0.4, effects: { money: +1500, happy: +10, social: +6 }, grade: "crit", narrative: "동네 명소가 됐다. 사장님이 가끔 손님으로 오신다." },
+          { chance: 0.6, effects: { money: -500, happy: +3, health: -3 }, grade: "mid", narrative: "월세 내기 빠듯했다. 그래도 커피 향 속에서 일하는 건 좋았다." },
+        ] },
+      { id: "decline", emoji: "🙏", text: "정중히 사양한다", grade: "good", effects: { social: +4, happy: +2 }, narratives: ["마지막 영업일에 사장님과 둘이서 커피를 마셨다."] },
+    ],
+  }),
+  E({
+    id: "v2_sp_app_hit", stage: "adult", age: [22, 34], emoji: "📱", title: "취미로 만든 앱이 1위",
+    desc: "주말에 심심해서 만든 앱이 앱스토어 1위에 올랐다. 투자 문의가 쏟아진다.", weight: 0.7, type: "special",
+    choices: [
+      { id: "sell", emoji: "🤝", text: "회사에 판다", grade: "mid",
+        outcomes: [
+          { chance: 0.5, effects: { money: +5000, happy: +8, intel: +3 }, grade: "crit", narrative: "인수 계약서에 사인했다. 손이 떨려 이름이 삐뚤어졌다." },
+          { chance: 0.5, effects: { money: +800, happy: +2 }, grade: "good", narrative: "생각보다 적게 받았다. 그래도 첫 차를 현금으로 샀다." },
+        ] },
+      { id: "grow", emoji: "🚀", text: "직접 키운다", grade: "mid",
+        outcomes: [
+          { chance: 0.3, effects: { money: +10000, intel: +6, social: +6, happy: +10 }, grade: "crit", narrative: "회사를 차렸다. 직원 50명의 대표가 됐다." },
+          { chance: 0.7, effects: { money: -800, happy: -5, health: -4 }, grade: "bad", narrative: "서버비에 잠을 못 잤다. 1년 뒤 조용히 서비스를 종료했다." },
+        ] },
+    ],
+  }),
+  E({
+    id: "v2_sp_wrong_transfer", stage: "adult", age: [20, 34], emoji: "💸", title: "모르는 돈 1억이 입금됐다",
+    desc: "아침에 일어나 보니 통장에 모르는 사람이 보낸 1억이 들어와 있다.", weight: 0.7, type: "special",
+    choices: [
+      { id: "report", emoji: "🏦", text: "은행에 착오 송금 신고", grade: "good",
+        outcomes: [
+          { chance: 0.6, effects: { social: +6, happy: +5, money: +100 }, grade: "good", narrative: "돈 주인이 사례금을 보내왔다. 미담 기사가 났다." },
+          { chance: 0.4, effects: { social: +4, luck: +6, money: +500 }, grade: "crit", narrative: "돈 주인이 중소기업 사장님이었다. '이런 사람이 필요하다'며 스카우트 제안을 했다." },
+        ] },
+      { id: "spend", emoji: "🛍️", text: "일단 써 본다", grade: "bad",
+        outcomes: [
+          { chance: 1.0, effects: { money: -500, happy: -8, social: -6 }, grade: "bad", narrative: "전부 돌려줘야 했고, 이자까지 붙었다. 법원 서류가 집으로 왔다." },
+        ] },
     ],
   }),
 ];

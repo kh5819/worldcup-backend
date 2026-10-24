@@ -10199,6 +10199,8 @@ io.on("connection", (socket) => {
           }).catch(() => {});
       }
       room.players.set(me.id, newPlayer);
+      // ✅ 팀전: 끊겼다 돌아온 사람은 원래 팀으로 복귀
+      if (room.teamMode && room.leftTeams?.has(me.id)) { newPlayer.team = room.leftTeams.get(me.id); room.leftTeams.delete(me.id); }
       // ✅ 팀전: 게임 시작 전에만 자동 배정 (진행 중 합류는 팀 없음)
       if (room.teamMode && !room.quiz) _autoAssignTeam(room, me.id);
     }
@@ -11315,6 +11317,10 @@ io.on("connection", (socket) => {
       room.disconnected.delete(me.id);
 
       const wasHost = room.hostUserId === me.id;
+
+      // 팀전: 유예 만료로 빠져도 팀은 기억 → 진행 중 재입장 시 원래 팀으로 복귀 (점수 합산 유지)
+      const _leftTeam = room.players.get(me.id)?.team;
+      if (_leftTeam === "blue" || _leftTeam === "red") (room.leftTeams ||= new Map()).set(me.id, _leftTeam);
 
       room.players.delete(me.id);
       room.committed.delete(me.id);
