@@ -346,6 +346,7 @@ function rankPlayers(room) {
       titles: L?.titles || [],
       analysis: L?.analysis || [],
       analysisKeys: L?.analysisKeys || null,
+      report: L ? core.lifeReport(L) : null,
       life: publicLife(L),
       highlights,
     };

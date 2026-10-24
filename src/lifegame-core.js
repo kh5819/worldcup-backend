@@ -623,12 +623,53 @@ export function createCore(DATA, opts = {}) {
     for (const a of ANALYSIS_LINES) {
       let ok = false; try { ok = a.when(s, r, ctx); } catch (_) {}
       if (ok) { lines.push(fill(p, a.text)); keys.push(a.text); }
-      if (lines.length >= 5) break;
+      if (lines.length >= 7) break;
     }
     if (!lines.length) { lines.push("어느 한 쪽에 치우치지 않은 균형형. 그냥저냥 살아간다."); keys.push("어느 한 쪽에 치우치지 않은 균형형. 그냥저냥 살아간다."); }
     p.analysis = lines;
     p.analysisKeys = keys;      // 번역 키(치환 전 원문)
     return p.ending;
+  }
+
+  // ===== 인생 성적표(결산 화면용 자세한 분석) — 글자 없이 숫자·id만 → 화면에서 번역 =====
+  function eventWeight(h) {
+    let w = 0;
+    for (const [k, v] of Object.entries(h.deltas || {})) {
+      if (typeof v !== "number") continue;
+      if (k === "money") w += Math.sign(v) * Math.min(30, Math.log10(1 + Math.abs(v) / 10) * 10);
+      else w += v;
+    }
+    return w + (h.grade === "crit" ? 8 : h.grade === "bad" ? -8 : 0);
+  }
+  function lifeReport(p) {
+    const H = p.history || [];
+    const grades = { crit: 0, good: 0, mid: 0, bad: 0 }, fates = { good: 0, bad: 0 };
+    const stages = STAGES.map(s => ({ id: s.id, emoji: s.emoji, label: s.label, n: 0, up: 0, down: 0, w: 0 }));
+    let best = null, worst = null, bw = 0, ww = 0, choices = 0;
+    for (const h of H) {
+      if (h.fate) { if (h.grade === "crit") fates.good++; else if (h.grade === "bad") fates.bad++; }
+      else { choices++; grades[grades[h.grade] != null ? h.grade : "mid"]++; }
+      const st = stages.find(s => s.id === (h.stageId || stageOfAge(h.age).id));
+      const w = eventWeight(h);
+      if (st) { st.n++; st.w += w; if (h.grade === "crit" || h.grade === "good") st.up++; else if (h.grade === "bad") st.down++; }
+      const pick = { age: h.age, eventEmoji: h.eventEmoji || "", eventTitle: h.eventTitle || "", choiceText: h.choiceText || "", grade: h.grade, src: h.src || null };
+      if (w > bw) { bw = w; best = pick; }
+      if (w < ww) { ww = w; worst = pick; }
+    }
+    const used = stages.filter(s => s.n);
+    const goldId = used.length > 1 ? [...used].sort((a, b) => b.w - a.w)[0].id : null;
+    const darkS = used.length > 1 ? [...used].sort((a, b) => a.w - b.w)[0] : null;
+    const keys = STAT_DEFS.map(d => d.key).filter(k => k !== "money" && typeof p.stats[k] === "number");
+    const top = keys.length ? [...keys].sort((a, b) => p.stats[b] - p.stats[a])[0] : null;
+    const low = keys.length ? [...keys].sort((a, b) => p.stats[a] - p.stats[b])[0] : null;
+    return {
+      grades, fates, choices,
+      stages: used.map(s => ({ id: s.id, emoji: s.emoji, label: s.label, n: s.n, up: s.up, down: s.down,
+        tag: s.id === goldId ? "gold" : (darkS && s.id === darkS.id && darkS.w < 0 && s.id !== goldId) ? "dark" : null })),
+      best, worst,
+      top: top ? { key: top, v: p.stats[top] } : null,
+      low: low && low !== top ? { key: low, v: p.stats[low] } : null,
+    };
   }
 
   // 순위용 종합 점수(오래·건강하게·잘 산 인생)
@@ -670,7 +711,7 @@ export function createCore(DATA, opts = {}) {
   return {
     STAGES, STAT_DEFS, EVENTS, ENDINGS, ANALYSIS_LINES, MILESTONES,
     createPlayer, beginLife, advanceYear, applyChoice, pickEvent, publicEvent, fill, choicesFor,
-    stageOfAge, deathChance, computeEnding, lifeScore, relationsSummary, HOUSING_LABEL, alivePets, petAge, adoptPet,
+    stageOfAge, deathChance, computeEnding, lifeScore, lifeReport, relationsSummary, HOUSING_LABEL, alivePets, petAge, adoptPet,
     die, eligible,
   };
 }
