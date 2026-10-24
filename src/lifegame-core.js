@@ -406,8 +406,9 @@ export function createCore(DATA, opts = {}) {
     return { id: f.id, emoji: f.emoji, title: f.title || "운명", text, deltas, good: f.good, death: f.death || null };
   }
   function pickFirstEvent(p) {
-    const ev = EVENT_BY_ID.get("infant_first_word");
-    return ev && eligible(p, ev) ? ev : pickEvent(p);
+    // 예전엔 늘 '첫마디' → 매판 똑같은 시작. 이제 1살에 맞는 사건(첫마디·돌잡이·백일 사진·예방주사·기어가기 대회 …) 중 랜덤
+    const pool = EVENTS.filter(ev => ev.stage === "infant" && (ev.id === "infant_first_word" || (ev.age && ev.age[0] <= 1)) && eligible(p, ev));
+    return pool.length ? pool[Math.floor(rng() * pool.length)] : pickEvent(p);
   }
 
   /**
@@ -657,15 +658,18 @@ export function createCore(DATA, opts = {}) {
       if (w < ww) { ww = w; worst = pick; }
     }
     const used = stages.filter(s => s.n);
-    const goldId = used.length > 1 ? [...used].sort((a, b) => b.w - a.w)[0].id : null;
-    const darkS = used.length > 1 ? [...used].sort((a, b) => a.w - b.w)[0] : null;
+    // 딱지는 화면에 보이는 ▲▼ 개수와 맞게: 황금기 = (좋은 일 − 나쁜 일) 최다, 시련기 = 나쁜 일이 좋은 일보다 많은 시기 중 최악
+    const net = s => s.up - s.down;
+    const goldS = used.length > 1 ? [...used].sort((a, b) => net(b) - net(a) || b.w - a.w)[0] : null;
+    const goldId = goldS && net(goldS) > 0 ? goldS.id : null;
+    const darkS = used.length > 1 ? [...used].filter(s => s.down > s.up && s.id !== goldId).sort((a, b) => net(a) - net(b) || a.w - b.w)[0] || null : null;
     const keys = STAT_DEFS.map(d => d.key).filter(k => k !== "money" && typeof p.stats[k] === "number");
     const top = keys.length ? [...keys].sort((a, b) => p.stats[b] - p.stats[a])[0] : null;
     const low = keys.length ? [...keys].sort((a, b) => p.stats[a] - p.stats[b])[0] : null;
     return {
       grades, fates, choices,
       stages: used.map(s => ({ id: s.id, emoji: s.emoji, label: s.label, n: s.n, up: s.up, down: s.down,
-        tag: s.id === goldId ? "gold" : (darkS && s.id === darkS.id && darkS.w < 0 && s.id !== goldId) ? "dark" : null })),
+        tag: s.id === goldId ? "gold" : darkS && s.id === darkS.id ? "dark" : null })),
       best, worst,
       top: top ? { key: top, v: p.stats[top] } : null,
       low: low && low !== top ? { key: low, v: p.stats[low] } : null,
