@@ -356,6 +356,7 @@ function resolveSocial(io, room, timedOut = false) {
 function maybeAdvance(io, room) {
   if (room.status !== "playing" || room.pending.size || room.social || isMinigameActive(room)) return;
   room.deadline = null;
+  if ((room.reveal || []).length) io.to(socketRoomName(room.id)).emit("lifegame:picked", { year: room.year, userId: null, pendingUserIds: [] });   // 모두 끝남 → 대기 목록 먼저 비우고 공개
   for (const r of room.reveal || []) emitOthers(io, room, r.userId, "lifegame:choiceResult", { ...r, reveal: true });
   room.reveal = [];
   later(room, () => afterYear(io, room), RESULT_HOLD_MS);
@@ -377,6 +378,7 @@ function onPlayerDeath(room, deadUid) {
 /** 플레이어끼리 결혼했는데 한쪽 인생에서 이혼이 일어났으면 상대도 이혼 처리(결혼은 둘의 것) */
 function syncPlayerSpouse(room, uid) {
   const L = room.players.get(uid)?.life;
+  if (L?.spouse?.pid && L.alive) { const O = room.players.get(L.spouse.pid); if (O?.life?.alive && O.life.spouse?.pid === uid) for (const n of SYS.shareKids(L, O.life)) pushMp(room, L.spouse.pid, { k: "mp_kid", v: { who: room.players.get(uid).name } }); }
   const se = L?.spouseEnd;
   if (!se || !se.pid || se.synced || se.why !== "divorce") return;
   se.synced = true;
@@ -390,9 +392,16 @@ function consistencySweep(room) {
     if (!L?.alive) continue;
     for (const x of (L.people || []).filter(y => y.pid && y.status !== "dead")) {
       const O = room.players.get(x.pid);
-      if (!O?.life || !O.life.alive) pushMp(room, uid, SYS.playerDied(L, x.pid, O?.name || x.name));
+      if (!O) pushMp(room, uid, SYS.playerLeft(L, x.pid, x.name));            // 방을 나감 — 떠나간 인연(고인 아님)
+      else if (!O.life || !O.life.alive) pushMp(room, uid, SYS.playerDied(L, x.pid, O.name || x.name));
     }
-    if (L.spouse?.pid) { const O = room.players.get(L.spouse.pid); if (O?.life?.alive && O.life.spouse?.pid !== uid) pushMp(room, uid, SYS.playerDivorced(L, L.spouse.pid, O.name)); }
+    if (L.romancePid && !room.players.get(L.romancePid)) pushMp(room, uid, SYS.playerLeft(L, L.romancePid, L.relations.romance || ""));
+    if (L.spouse?.pid) {
+      const O = room.players.get(L.spouse.pid);
+      if (!O) pushMp(room, uid, SYS.playerLeft(L, L.spouse.pid, L.spouse.name));
+      else if (O.life?.alive && O.life.spouse?.pid !== uid) pushMp(room, uid, SYS.playerDivorced(L, L.spouse.pid, O.name));
+      else if (O.life?.alive) for (const n of SYS.shareKids(L, O.life)) pushMp(room, L.spouse.pid, { k: "mp_kid", v: { who: P.name } });   // 부부의 아이는 둘 다의 아이
+    }
     if (L.romancePid) {
       const O = room.players.get(L.romancePid);
       const still = O?.life?.alive && O.life.romancePid === uid && O.life.relations?.romance === P.name && L.relations.romance === O.name;

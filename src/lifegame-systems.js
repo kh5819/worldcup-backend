@@ -112,6 +112,8 @@ export const TX = {
   mp_lost: "🕯️ {who}가 세상을 떠났다. 함께한 시간을 기억한다.",
   mp_divorced: "📄 {who}와 이혼했다. 같은 세상에서 각자의 길로.",
   mp_breakup: "💔 {who}와 헤어졌다.",
+  mp_left: "🚪 {who}가 우리 세상을 떠나 멀리 갔다.",
+  mp_kid: "👶 {who}와의 아이가 태어났다.",
   mp_widow: "🕯️ 배우자 {who}가 먼저 세상을 떠났다.",
 };
 
@@ -689,6 +691,7 @@ export function createSystems(api) {
   }
   const fateOk = (p, f) => {
     if (p.world && WORLD_FATES.has(f.id)) return false;                  // 경기·집값은 모두가 같은 시대를 겪는다
+    if (p.spouse?.pid && f.id === "spouse_sudden") return false;          // 배우자가 다른 플레이어면 그 사람의 생사는 그 사람 인생이 정한다
     return true;
   };
   const fateWeight = (p, f) => (hasTech(p.world, "auto") && (f.id === "car_accident" || f.id === "fatal_accident" || f.id === "fatal_drunk_driver") ? 0.5 : 1);
@@ -707,7 +710,7 @@ export function createSystems(api) {
     if (ev.careerEntry && ev.careerEntry !== "job" && !entryOk(p, ev.careerEntry)) return false;
     // 연인이 다른 플레이어면 결혼·이별은 둘의 동의로만(멀티 제안) — 혼자 결혼하거나 헤어지는 사건 X
     if (p.romancePid && p.relations?.romance && ev.relationRequired?.romance) return false;
-    if (p.spouse?.pid && (ev.choices || []).some(c => [c, ...(c.outcomes || [])].some(o => o.life?.divorce))) return false;
+    if (p.spouse?.pid && (ev.choices || []).some(c => [c, ...(c.outcomes || [])].some(o => o.life?.divorce || o.life?.widow))) return false;
     return true;
   }
   function themeOf(ev) {
@@ -928,6 +931,26 @@ export function createSystems(api) {
     sync(me);
     return line;
   }
+  /** 다른 플레이어가 방을 나감 → 내 인생에선 멀리 떠난 사람(고인 아님) */
+  function playerLeft(me, oid, name) {
+    compat(me);
+    const xs = me.people.filter(x => x.pid === oid && x.status === "active");
+    if (!xs.length && me.spouse?.pid !== oid && me.romancePid !== oid) return null;
+    for (const x of xs) { if (x.rel === "spouse") x.rel = "ex"; else if (x.rel === "lover") x.rel = "exlover"; end(me, x, "left"); x.pid = null; }
+    if (me.spouse?.pid === oid) { me.spouse = null; me.flags.add("divorced"); me.flags.delete("married"); me.spouseEnd = { why: "divorce", age: me.age, name }; }
+    if (me.romancePid === oid) { if (me.relations.romance === name) me.relations.romance = null; me.romancePid = null; }
+    for (const x of me.people.filter(y => y.pid === oid)) x.pid = null;
+    sync(me);
+    return { k: "mp_left", v: { who: name } };
+  }
+  /** 플레이어 부부의 아이는 둘 다의 아이 */
+  function shareKids(me, other) {
+    compat(me); compat(other);
+    const out = [];
+    for (const k of me.kids) if (!other.kids.some(y => y.name === k.name && y.born === k.born)) { other.kids.push({ ...k }); out.push(k.name); }
+    if (out.length) { other.flags.add("has_kid"); sync(other); }
+    return out;
+  }
   /** 다른 플레이어 배우자가 이혼을 겪음 → 나도 이혼(같은 결혼이니까) */
   function playerDivorced(me, oid, name) {
     compat(me);
@@ -995,6 +1018,6 @@ export function createSystems(api) {
   return {
     compat, onBirth, onYear, careerEnded, drainLines, econ, fateOk, fateWeight, mortalityMul, eligible, weight, storyEvent, onPick, onChoice, afterFate, quiet, onDeath,
     whoNow, peopleView, goalView, goalEventFor: (p, events) => goalEvent(p, events.find(e => e.id === "sys_goal_push")), worldView, createWorld, worldTo, entryOk, entryMul, remember, hasMem, memCount, parentAlive,
-    link, marry, playerDied, playerDivorced, playerBrokeUp, linkOf, proposalFor, partnerYear, rivalry, serialize, restore, sync, achvCheck, ageOf,
+    link, marry, playerDied, playerDivorced, playerBrokeUp, playerLeft, shareKids, linkOf, proposalFor, partnerYear, rivalry, serialize, restore, sync, achvCheck, ageOf,
   };
 }
