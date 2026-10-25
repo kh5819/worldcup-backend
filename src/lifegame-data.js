@@ -64,6 +64,14 @@ export const ROUTES = {
   corporate: { label: "대기업",     emoji: "🏢" },
   traveler:  { label: "여행자",     emoji: "🏝️" },
   influencer:{ label: "인플루언서", emoji: "📱" },
+  // ===== 직업 루트(2026-10-26) =====
+  writer:    { label: "작가",       emoji: "✍️" },
+  civil:     { label: "공무원",     emoji: "🗂️" },
+  developer: { label: "개발자",     emoji: "💻" },
+  doctor:    { label: "의사",       emoji: "🩺" },
+  lawyer:    { label: "변호사",     emoji: "⚖️" },
+  teacher:   { label: "교사",       emoji: "🍎" },
+  business:  { label: "사업가",     emoji: "🏪" },
 };
 
 export const EVENTS = [

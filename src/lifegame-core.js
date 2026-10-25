@@ -5,6 +5,8 @@
 // - 돈(money)은 "순자산, 만원 단위". 구 이벤트(v2 아님)의 money 효과는 ×LEGACY_MONEY_MUL 로 환산
 // =========================
 
+import { createSystems, GOAL_BY_ID, TREND_NAME, TX, txFill } from "./lifegame-systems.js";
+
 export const LEGACY_MONEY_MUL = 30;      // 구 이벤트 money +100 → 3,000만원
 export const LEGACY_MONEY_DIV = 150;     // 구 엔딩 조건용: 순자산(만원)/150 → 구 단위
 export const MAX_AGE = 110;
@@ -17,7 +19,7 @@ const PET_LIFE = { dog: [12, 16], cat: [14, 19] };
 const NAMES_F = ["서연", "지우", "하은", "수아", "지민", "예린", "채원", "다은", "유진", "소율", "하린", "나연"];
 
 export function createCore(DATA, opts = {}) {
-  const { STAGES, STAT_DEFS, EVENTS: RAW_EVENTS, ENDINGS, ANALYSIS_LINES, QUIET = [], MILESTONES = {}, DEATH_CAUSES = [], JOBS = [], BIRTH = null, FATES = [] } = DATA;
+  const { STAGES, STAT_DEFS, EVENTS: RAW_EVENTS, ENDINGS, ANALYSIS_LINES, QUIET = [], MILESTONES = {}, DEATH_CAUSES = [], JOBS = [], BIRTH = null, FATES = [], CAREERS = {}, TITLE_CAREER = {} } = DATA;
   const STAT_KEYS = STAT_DEFS.map(s => s.key);
   const rng = opts.rng || Math.random;
 
@@ -37,10 +39,12 @@ export function createCore(DATA, opts = {}) {
     if (o.grade === "crit") v += 10; else if (o.grade === "bad") v -= 10;
     return v;
   };
-  const pickByChance = (outs, p, legacy) => {
+  const pickByChance = (outs, p, legacy, ev) => {
     const tilt = p ? (p.stats.luck - 50) / 70 : 0;          // 운 0 → -0.71, 100 → +0.71
+    // v3: 직업 진입(입학·입단·취업) 결과는 관련 능력치·경력·학력이 성공 확률을 바꾼다
+    const entry = p && ev && ev.careerEntry ? (o => { const k = o.career || (o.life?.job ? careerOfJob(o.life.job.title) : null); return k ? SYS.entryMul(p, k) : 1; }) : null;
     const ws = outs.map(o => {
-      const c = o.chance || 0, v = outcomeValue(o, legacy);
+      const c = (o.chance || 0) * (entry ? entry(o) : 1), v = outcomeValue(o, legacy);
       const sgn = v > 2 ? 1 : v < -2 ? -1 : 0;
       return Math.max(0.0001, c * (1 + tilt * sgn));
     });
@@ -100,6 +104,12 @@ export function createCore(DATA, opts = {}) {
       job: null,                     // {title, salary(만원/년), since}
       housing: "parents",            // parents | rent | jeonse | own
       careerYears: 0,
+      career: null,                  // 직업 루트(CAREERS 키) — 정해지면 그 직업 사건이 이어지고 다른 입사 사건은 안 나온다
+      careerStep: 0,                 // 그 직업의 단계: 0 입문 · 1 성장 · 2 성공/실패 · 3 위기 · 4 새 도전 · 5 정점
+      careerSince: 0,                // 그 직업을 시작한 나이
+      careerHist: [],                // 지난 직업 기록 [{key, step, from, to, state}]
+      careers: {},                   // 직업별 상태 {key: {state: ACTIVE|INACTIVE|COMPLETED, step, years, times}} — 현재 직업 없음 = UNEMPLOYED
+      jobless: null,                 // 직업을 놓은 나이(무직 상태 시작) — 처음 사회에 나오기 전엔 null
       seenEventIds: new Set(),
       seenSpecialIds: new Set(),
       sinceEvent: 9,
@@ -111,12 +121,15 @@ export function createCore(DATA, opts = {}) {
       ending: null,
       titles: [],
       analysis: null,
+      recentEnd: Array.isArray(o.recent) ? o.recent.slice(0, 12).map(String) : [],   // v3: 최근에 본 엔딩(같은 결말만 되풀이되지 않게)
     };
   }
 
   // ===== 본문 치환: {spouse} {kid} {age} {job} {name} — 뒤 조사는 이름 받침에 맞춰 고친다(민준와→민준과) =====
   const JOSA = { "와의": ["과의", "와의"], "과의": ["과의", "와의"], "와": ["과", "와"], "과": ["과", "와"], "이": ["이", "가"], "가": ["이", "가"], "은": ["은", "는"], "는": ["은", "는"], "을": ["을", "를"], "를": ["을", "를"], "이랑": ["이랑", "랑"], "랑": ["이랑", "랑"], "아": ["아", "야"], "야": ["아", "야"] };
   const batchim = w => { const c = (w || "").charCodeAt(w.length - 1) - 0xAC00; return c >= 0 && c < 11172 && c % 28 !== 0; };
+  // '그때 그 선택'의 옛 사건 제목(그 제목 안의 {spouse} 등도 채운다)
+  function memoTitle(p) { p._inMemo = true; try { return fill(p, EVENT_BY_ID.get(p.memoNow.ev)?.title || "그 일"); } finally { p._inMemo = false; } }
   function fill(p, s) {
     if (typeof s !== "string" || s.indexOf("{") < 0) return s;
     const val = {
@@ -126,8 +139,12 @@ export function createCore(DATA, opts = {}) {
       job: p.job?.title || "무직",
       name: p.nickname,
       pet: alivePets(p)[0]?.name || p.pets[p.pets.length - 1]?.name || "반려동물",
+      who: SYS.whoNow(p)?.name || "그 사람",
+      goal: (p.goal && GOAL_BY_ID[p.goal.id]?.name) || "꿈",
+      memo: p.memoNow?.ev && !p._inMemo ? memoTitle(p) : "그 일",
+      trend: (p.world?.trend && TREND_NAME[p.world.trend]) || "유행",
     };
-    return s.replace(/\{(spouse|kid|age|job|name|pet)\}(이랑|와의|과의|와|과|이|가|은|는|을|를|랑|아|야)?(?![가-힣])|\{(spouse|kid|age|job|name|pet)\}/g, (m, k1, j, k2) => {
+    return s.replace(/\{(spouse|kid|age|job|name|pet|who|goal|memo|trend)\}(이랑|와의|과의|와|과|이|가|은|는|을|를|랑|아|야)?(?![가-힣])|\{(spouse|kid|age|job|name|pet|who|goal|memo|trend)\}/g, (m, k1, j, k2) => {
       const k = k1 || k2, w = val[k];
       if (!j) return w + (m.length > k.length + 2 ? m.slice(k.length + 2) : "");
       const pair = JOSA[j];
@@ -156,6 +173,8 @@ export function createCore(DATA, opts = {}) {
       if (last != null && p.age - last < ev.repeat) return false;
     } else if (ev.type === "special" ? p.seenSpecialIds.has(ev.id) : p.seenEventIds.has(ev.id)) return false;
     if (ev.routeRequired && !ev.routeRequired.some(r => p.routes.has(r))) return false;
+    if (ev.followup) return false;                                   // 사슬 사건: 앞 사건이 불러야만 나온다
+    if (!careerOk(p, ev)) return false;
     if (!genderOk(ev.genderRequired, p.gender)) return false;
     if (!flagsOk(ev.flagRequired, p.flags)) return false;
     if (flagsBanned(ev.flagBanned, p.flags)) return false;
@@ -170,8 +189,91 @@ export function createCore(DATA, opts = {}) {
     if (ev.statMin) for (const k of Object.keys(ev.statMin)) if ((p.stats[k] ?? 0) < ev.statMin[k]) return false;
     if (ev.statMax) for (const k of Object.keys(ev.statMax)) if ((p.stats[k] ?? 0) > ev.statMax[k]) return false;
     if (ev.cond && !ev.cond(p)) return false;
+    if (!SYS.eligible(p, ev)) return false;            // v3: 등장 인물·부모 생존·기억·학력·진입 조건
     return true;
   }
+
+  // ===== 직업 루트 =====
+  // 특별한 직업(정치인·작가·스트리머…)은 한 번 들어서면 쭉 그 길 — 다른 '입사/데뷔' 사건이 끼어들지 않는다.
+  // 평범한 직장(worker·corporate)에서는 특별한 길로 갈아탈 수 있다.
+  // 사건 쪽 표시: career(그 직업일 때만) · step[lo,hi](그 직업 단계) · minYears(그 직업 몇 년차부터) · prevCareer(전에 그 일을 했어야)
+  //   careerEntry(입문 사건 — 특별한 직업이 이미 있으면 안 나옴, "job"=일반 입사) · office(회사 생활 — 평범한 직장에 다닐 때만)
+  //   unemployed(무직일 때만) · anyCareer(무슨 일이든 하고 있을 때) · comeback(예전 직업으로 막 돌아왔을 때)
+  // 직업 상태: p.career(지금 하는 일, 없으면 UNEMPLOYED) + p.careers[key].state ACTIVE / INACTIVE(그만둠) / COMPLETED(정점까지 감)
+  const ORDINARY = new Set(["worker", "corporate", "civil"]);
+  const special = p => !!p.career && !ORDINARY.has(p.career);
+  function compat(p) {                                                       // 예전 데이터(직업 필드 없음) 호환
+    if (!p.careerHist) p.careerHist = [];
+    if (!p.careers) p.careers = {};
+    if (p.careerStep == null) p.careerStep = 0;
+    if (p.careerSince == null) p.careerSince = 0;
+    if (p.jobless === undefined) p.jobless = null;
+  }
+  function careerStatus(p) { return p.career ? "ACTIVE" : "UNEMPLOYED"; }
+  function careerOk(p, ev) {
+    compat(p);
+    if (ev.career) {
+      const ks = [].concat(ev.career);
+      if (!ks.includes(p.career)) return false;                              // 지금 하는 일이 아니면 그 직업 사건은 절대 X
+      if (ev.step && (p.careerStep < ev.step[0] || p.careerStep > ev.step[1])) return false;
+      if (ev.minYears && p.age - p.careerSince < ev.minYears) return false;
+    }
+    if (ev.anyCareer && (!p.career || (ev.minYears && p.age - p.careerSince < ev.minYears))) return false;
+    if (ev.unemployed && (p.career || p.jobless == null || p.flags.has("retired") || p.age >= 60)) return false;
+    if (ev.comeback && !(p.career && (p.careers[p.career]?.times || 0) >= 2 && p.age - p.careerSince <= 2)) return false;
+    if (ev.prevCareer && !p.careerHist.some(h => h.key === ev.prevCareer)) return false;
+    if (ev.careerEntry) {
+      if (ev.careerEntry === "job") { if (p.career) return false; }          // 첫 취업·면접 같은 일반 입사 사건
+      else if (p.career === ev.careerEntry || special(p)) return false;      // 이미 그 길이거나, 다른 특별한 직업이 있으면 X
+      if (p.careers[ev.careerEntry]) return false;                           // 해 본 직업의 '입문'은 다시 안 나옴(돌아갈 땐 복귀 사건으로)
+    }
+    if (ev.office && !(p.career && ORDINARY.has(p.career))) return false;    // 회사 생활(승진·회식·희망퇴직…) — 무직·특별한 직업 X
+    return true;
+  }
+  function careerOfJob(title) {
+    if (!title) return null;
+    if (TITLE_CAREER[title]) return TITLE_CAREER[title];
+    for (const [k, c] of Object.entries(CAREERS)) if (c.title === title) return k;
+    return "worker";
+  }
+  const careersOf = ev => [].concat(ev?.career || []);
+  // 그 직업의 예약된 후속 사건을 지운다 — 대기열에 남은 옛 직업 질문이 나오지 않게
+  const purgeChain = (p, key) => { p.longTerm = p.longTerm.filter(lt => !careersOf(EVENT_BY_ID.get(lt.resultEventId)).includes(key)); };
+  // 직업 종료: ① 상태 저장(단계·연차) ② 후속 사건 정리 ③ 기록 보존 ④ 무직으로
+  function endCareer(p, why) {
+    compat(p);
+    if (!p.career) return;
+    const key = p.career, c = p.careers[key] || (p.careers[key] = { times: 1, years: 0 });
+    const state = p.careerStep >= 5 ? "COMPLETED" : "INACTIVE";
+    c.state = state; c.step = p.careerStep; c.years = (c.years || 0) + Math.max(0, p.age - p.careerSince);
+    p.careerHist.push({ key, step: p.careerStep, from: p.careerSince, to: p.age, state, why: why || "quit" });
+    p.flags.add("prev_career_" + key); p.flags.add("career_done_" + key);
+    purgeChain(p, key);
+    SYS.careerEnded(p, key);                                  // v3: 그 직업의 목표·동료도 바로 정리
+    p.career = null; p.careerStep = 0; p.job = null; p.jobless = p.age;
+  }
+  // 직업 시작/전환: 지금 직업이 있으면 먼저 끝내고, 새 직업을 켠다. 예전에 했던 직업이면 그때 단계에서 이어서(본 사건은 다시 안 나옴)
+  function setCareer(p, key, job) {
+    compat(p);
+    const c = CAREERS[key]; if (!c) return;
+    if (p.career && p.career !== key) endCareer(p, "switch");
+    if (p.career !== key) {
+      const prev = p.careers[key];
+      p.careers[key] = { state: "ACTIVE", step: prev ? Math.min(prev.step || 0, 4) : 0, years: prev?.years || 0, times: (prev?.times || 0) + 1 };
+      if (prev) { p.flags.add("career_return_" + key); p.flags.delete("career_done_" + key); }
+      p.career = key; p.careerStep = p.careers[key].step; p.careerSince = p.age; p.jobless = null;
+    }
+    p.flags.add("career_" + key); p.routes.add(c.route || key);
+    if (job) { p.job = { title: job.title, salary: job.salary, since: p.age }; p.careerTitle = job.title; }
+    else if (!p.job || careerOfJob(p.job.title) !== key) { p.job = { title: c.title, salary: c.salary, since: p.age }; p.careerTitle = c.title; }
+  }
+  // 출력 직전 검증: 직업 조건(지금 직업·단계·무직 여부)만 다시 본다. 후속 사건은 연차 조건 무시
+  const checkEvent = (p, ev) => careerOk(p, { ...ev, minYears: 0 }) && !(ev.married === true && !p.spouse) && !(ev.hasKid === true && !p.kids.length) && (!ev.who || SYS.eligible(p, ev)) && (!ev.sysGoal || (p.goal?.id === ev.sysGoal && GOAL_BY_ID[ev.sysGoal]?.career === p.career));
+  function returnCareer(p) {
+    const last = [...(p.careerHist || [])].reverse().find(h => h.key !== p.career && h.state !== "COMPLETED");
+    if (last) setCareer(p, last.key);
+  }
+  const retireAge = p => (p.career && CAREERS[p.career]?.retire) || 60;
 
   // 선택지 단위 조건(기혼만·자녀 있을 때만 보이는 선택지)
   function choiceOk(p, c) {
@@ -186,6 +288,34 @@ export function createCore(DATA, opts = {}) {
   }
   const choicesFor = (p, ev) => { const l = ev.choices.filter(c => choiceOk(p, c)); return l.length ? l : ev.choices; };
 
+  // ===== v3 시스템(기억·관계·목표·시대·업적) =====
+  const SYS = createSystems({ rng, rint, pickOne, pickWeighted, randomName, oppositeGender, addStat: (p, k, v) => addStat(p, k, v), baseMortality, CAREERS, careerOfJob, endCareer: (p, why) => endCareer(p, why), alivePets });
+
+  // 사건 분류(카드 색·아이콘): goal career people love family health money growth special life
+  const RE_LOVE = /연애|고백|소개팅|프러포즈|결혼|썸|데이트|이별|첫사랑|미팅|연인|신혼/;
+  const RE_FAM = /아이|육아|부모|가족|자녀|손주|반려|아기|임신|출산|명절|강아지|고양이|부부/;
+  const RE_HEALTH = /병|건강|검진|수술|다이어트|운동|마라톤|입원|응급|헬스/;
+  function categoryOf(ev) {
+    if (ev._cat) return ev._cat;
+    const t = (ev.title || "") + " " + (ev.desc || "");
+    let c = "life";
+    if (ev.id === "sys_goal_push") c = "goal";
+    else if (ev.type === "special") c = "special";
+    else if (ev.career || ev.careerEntry || ev.office || ev.anyCareer || ev.unemployed || ev.comeback) c = "career";
+    else if (ev.who) c = ev.who.rel?.some(r => r === "lover" || r === "spouse" || r === "exlover") ? "love" : "people";
+    else if (RE_LOVE.test(t) || ev.relationRequired?.romance) c = "love";
+    else if (ev.married === true || ev.hasKid || ev.hasPet || RE_FAM.test(t)) c = "family";
+    else if (RE_HEALTH.test(t)) c = "health";
+    else if ((ev.choices || []).some(ch => [ch, ...(ch.outcomes || [])].some(o => Math.abs(o.effects?.money || 0) >= (isLegacy(ev) ? 40 : 1000)))) c = "money";
+    else if (["infant", "child", "teen"].includes(ev.stage)) c = "growth";
+    try { ev._cat = c; } catch (_) {}
+    return c;
+  }
+  function isMajor(ev) {
+    if (ev.type === "special" || ev.type === "longterm" || ev.followup || ev.id === "sys_goal_push") return true;
+    return (ev.choices || []).some(ch => [ch, ...(ch.outcomes || [])].some(o => o.career || o.life?.marry || o.life?.divorce || o.life?.careerEnd || o.life?.step >= 3 || o.death));
+  }
+
   // ===== 이벤트 추첨 =====
   function pickEvent(p) {
     for (let i = 0; i < p.longTerm.length; i++) {
@@ -193,19 +323,28 @@ export function createCore(DATA, opts = {}) {
       if (lt.fireAtAge <= p.age) {
         const ev = EVENT_BY_ID.get(lt.resultEventId);
         p.longTerm.splice(i, 1);
-        if (ev) return ev;
+        // 후속 사건 — 그새 직업이 바뀌었거나 단계가 안 맞으면 버린다(앞뒤 모순 방지)
+        if (ev && (!ev.career || careerOk(p, { ...ev, minYears: 0 })) && !(ev.married === true && !p.spouse) && !(ev.hasKid === true && !p.kids.length) && (!ev.who || SYS.eligible(p, ev))) return ev;
         i--;
       }
     }
+    const story = SYS.storyEvent(p, EVENT_BY_ID);       // v3: 장기 목표 도전은 무작위 사건보다 먼저
+    if (story) return story;
     const cands = EVENTS.filter(ev => eligible(p, ev));
     if (!cands.length) return null;
+    // 내 직업 이야기 우선: 직업 사건이 있으면 절반 넘게 그쪽에서 (노년엔 조금 덜). 무직이면 무직 사건(구직·자격증·창업·복귀…)이 그 자리
+    const mine = p.career ? cands.filter(ev => ev.career || ev.anyCareer || ev.comeback) : cands.filter(ev => ev.unemployed);
+    if (mine.length && rng() < (p.age >= 60 ? 0.4 : 0.6)) {
+      return pickWeighted(mine, ev => (ev.weight != null ? ev.weight : 1) * (ev.step ? 1.5 : 1) * SYS.weight(p, ev));
+    }
     return pickWeighted(cands, ev => {
       let w = ev.weight != null ? ev.weight : 1;
       if (ev.routeRequired) w *= 2;
       if (ev.type === "special") w *= 1.0;      // ✨ 특별한 순간 — 예전 0.7(한 판 평균 1번) → 더 자주
       if (ev.age) w *= 1.6;                 // 나이에 딱 맞는 사건 우대
       if (ev.flagRequired || ev.married === true) w *= 1.8;   // 내 인생 맥락이 있는 사건 우대
-      return w;
+      if (ev.who || ev.memReq) w *= 1.3;                   // v3: 내 사람·내 기억과 이어지는 사건 우대
+      return w * SYS.weight(p, ev);                        // v3: 비슷한 사건 연달아 X
     });
   }
 
@@ -225,7 +364,7 @@ export function createCore(DATA, opts = {}) {
   function deathChance(p) {
     const h = p.stats.health;
     const mult = Math.max(0.3, Math.min(5, Math.exp((50 - h) / 26)));
-    let c = baseMortality(p.age) * mult;
+    let c = baseMortality(p.age) * mult * SYS.mortalityMul(p);
     if (h <= 8) c += 0.2;                // 위독
     else if (h <= 18) c += 0.04;
     return Math.min(0.95, c);
@@ -243,14 +382,15 @@ export function createCore(DATA, opts = {}) {
   function economy(p) {
     const lines = [];
     let income = 0, cost = 0;
-    const retired = p.age >= 60;
+    const W = SYS.econ(p);                                 // v3: 시대(경기·주식·집값)
+    const retired = p.age >= retireAge(p);
     if (p.job && !retired) {
       p.careerYears++;
-      const g = 1 + 0.015 + Math.max(0, (p.stats.intel + p.stats.social - 100)) / 5000;
+      const g = (1 + 0.015 + Math.max(0, (p.stats.intel + p.stats.social - 100)) / 5000) * W.raise;
       p.job.salary = Math.round(p.job.salary * g);
       income += afterTax(p.job.salary);
     } else if (retired) {
-      if (p.job && !p.flags.has("retired")) { lines.push("정년을 맞았다."); p.flags.add("retired"); p.job = null; }
+      if (p.job && !p.flags.has("retired")) { lines.push("정년을 맞았다."); p.flags.add("retired"); if (p.career) endCareer(p, "retire"); p.job = null; }
       else if (p.job) income += afterTax(p.job.salary);              // 재취업
       if (p.careerYears > 0) income += Math.min(1800, 420 + p.careerYears * 36);    // 국민연금
       else income += 400;                                             // 기초연금
@@ -258,6 +398,7 @@ export function createCore(DATA, opts = {}) {
       income += 1100;                                                 // 직장 없을 때 알바·단기 일
     }
     if (p.spouse && p.spouse.salary && p.age < 62) income += afterTax(p.spouse.salary);
+    if (p.stats.money > 0) income += Math.round(p.stats.money * (p.world ? 0.009 : 0.015));        // 이자(생활비 계산에 포함). v3: 주식·집값 손익은 아래 market
     if (p.age >= 19) {
       const parentsHome = p.housing === "parents" && !p.flags.has("orphaned");
       if (parentsHome && p.age >= 29 && rng() < 0.22) { p.housing = "rent"; lines.push("부모님 집을 나와 독립했다."); }
@@ -266,24 +407,29 @@ export function createCore(DATA, opts = {}) {
       cost += p.housing === "rent" ? 650 : p.housing === "jeonse" ? 280 : p.housing === "own" ? 180 : 0;
       if (p.spouse) cost += 700;
       for (const k of p.kids) { const ka = p.age - k.born; if (ka >= 0 && ka < 25) cost += ka < 7 ? 700 : ka < 19 ? 1100 : 1400; }
-      if (p.age >= 70) cost += 300;                                   // 의료비
+      if (p.age >= 65) cost += Math.round((150 + (p.age - 65) * 25 + Math.max(0, 40 - p.stats.health) * 20) * (W.medMul || 1));   // 의료비(나이·건강, 돌봄 로봇 시대엔 덜)
+      if (retired && p.stats.money > 0) cost += Math.round(p.stats.money * 0.012);  // 노후: 모은 돈 헐어 쓰기(여행·자녀 지원·간병)
     }
-    if (p.stats.money > 0) income += Math.round(p.stats.money * 0.015);        // 이자·투자
-    else if (p.stats.money < 0) cost += Math.round(-p.stats.money * 0.04);     // 빚 이자
-    const net = Math.round(income - cost);
+    if (p.stats.money < 0) cost += Math.round(-p.stats.money * 0.04);     // 빚 이자
+    const market = p.age >= 20 ? (W.market || 0) : 0;
+    const net = Math.round(income - cost + market);
     p.stats.money = Math.round(p.stats.money + net);
     p.lastNet = net;
-    return { income: Math.round(income), cost: Math.round(cost), net, lines };
+    return { income: Math.round(income), cost: Math.round(cost), net, market, lines };
   }
 
   // 직업 자동 배정(이벤트로 안 정해졌을 때)
   function autoJob(p) {
     if (p.job || p.age < 26 || p.age >= 58) return;
+    if (p.career) { setCareer(p, p.career); return; }          // 직업은 있는데 일자리가 비면 그 직업으로 채움
     if (p.routes.has("neet") || p.flags.has("jobless")) return;
+    if (p.jobless != null && p.age - p.jobless < 4) return;    // 그만둔 뒤엔 바로 취업시키지 않음 — 무직 사건으로 고르게
     const tier = p.stats.intel + p.stats.social * .6 + p.stats.luck * .3;
-    const pool = JOBS.filter(j => tier >= j.min).sort((a, b) => b.min - a.min);
+    const jobOk = j => j.title === "개발자" ? SYS.entryOk(p, "developer") : j.title === "대기업 사원" ? SYS.entryOk(p, "corporate") : /^전문직/.test(j.title) ? ["college", "grad", "law"].includes(p.edu) : true;   // v3: 학력
+    const pool = JOBS.filter(j => tier >= j.min && jobOk(j)).sort((a, b) => b.min - a.min);
     const j = pool.length ? pickWeighted(pool.slice(0, 3)) : { title: "아르바이트", salary: 1900 };
     p.job = { title: j.title, salary: j.salary, since: p.age }; p.careerTitle = j.title;
+    setCareer(p, careerOfJob(j.title), j);
     p.history.push({ age: p.age, eventTitle: "취업", eventEmoji: "💼", choiceText: j.title, narrative: `${j.title}(연봉 ${j.salary.toLocaleString("ko-KR")}만원)으로 일을 시작했다.`, deltas: {}, grade: "mid", auto: true, src: { job: j.title } });
   }
 
@@ -352,11 +498,14 @@ export function createCore(DATA, opts = {}) {
   }
 
   /** 첫해(1살) 시작 */
-  function beginLife(p) {
+  function beginLife(p, world) {
     p.age = 1;
     p.sinceEvent = 9;
     const birth = rollBirth(p);
-    return { age: 1, lines: [], milestone: MILESTONES[1] || null, birth, event: pickFirstEvent(p), death: null, economy: null };
+    SYS.onBirth(p, world);                                 // v3: 가족(부모·형제)·세상(출생 연도)
+    if (birth) birth.year = p.birthYear;
+    const ev = SYS.onPick(p, pickFirstEvent(p));
+    return { age: 1, lines: [], milestone: MILESTONES[1] || null, birth, event: ev, death: null, economy: null, world: SYS.worldView(p.world) };
   }
 
   // ===== 출생 운: 집안·체질·재능 (태어나는 건 고를 수 없다) =====
@@ -380,10 +529,10 @@ export function createCore(DATA, opts = {}) {
     const base = 0.16;
     if (rng() > base) return null;
     p.fateLast = p.fateLast || {};
-    const pool = FATES.filter(f => !(p.fateLast[f.id] && p.age - p.fateLast[f.id] < 10) && (!f.age || (p.age >= f.age[0] && p.age <= f.age[1])) && (!f.flag || p.flags.has(f.flag)) && (!f.noFlag || !p.flags.has(f.noFlag)) && (!f.cond || f.cond(p)) && !(f.once && p.flags.has("fate_" + f.id)));
+    const pool = FATES.filter(f => SYS.fateOk(p, f) && !(p.fateLast[f.id] && p.age - p.fateLast[f.id] < 10) && (!f.age || (p.age >= f.age[0] && p.age <= f.age[1])) && (!f.flag || p.flags.has(f.flag)) && (!f.noFlag || !p.flags.has(f.noFlag)) && (!f.cond || f.cond(p)) && !(f.once && p.flags.has("fate_" + f.id)));
     if (!pool.length) return null;
     const lk = (p.stats.luck - 50) / 50;                      // -1 ~ +1
-    const f = pickWeighted(pool, x => (x.weight || 1) * (x.good ? 1 + lk * 0.8 : x.good === false ? 1 - lk * 0.8 : 1));
+    const f = pickWeighted(pool, x => (x.weight || 1) * (x.good ? 1 + lk * 0.8 : x.good === false ? 1 - lk * 0.8 : 1) * SYS.fateWeight(p, x));
     if (!f) return null;
     if (f.once) p.flags.add("fate_" + f.id);
     p.fateLast[f.id] = p.age;
@@ -396,14 +545,15 @@ export function createCore(DATA, opts = {}) {
     if (f.life) {
       const L = typeof f.life === "function" ? f.life(p) : f.life;
       if (L.raise && p.job) p.job.salary = Math.round(p.job.salary * L.raise);
-      if (L.quit) p.job = null;
-      if (L.widow && p.spouse) { p.flags.add("widowed"); p.flags.delete("married"); p.spouse = null; }
+      if (L.quit) endCareer(p, "fired");
+      if (L.widow && p.spouse && !p.spouse.pid) { p.flags.add("widowed"); p.flags.delete("married"); p.spouse = null; p.spouseEnd = { why: "widow", age: p.age }; }
       if (L.child) { const g = rng() < .5 ? "M" : "F"; p.kids.push({ name: randomName(g), born: p.age, gender: g }); p.flags.add("has_kid"); }
       if (L.romance && !p.spouse && !p.relations.romance) p.relations.romance = randomName(oppositeGender(p.gender));
     }
     const text = fill(p, typeof f.text === "function" ? f.text(p) : f.text);
-    p.history.push({ age: p.age, eventTitle: f.title || "운명", eventEmoji: f.emoji, choiceText: "", narrative: text, deltas, grade: f.good ? "crit" : f.good === false ? "bad" : "mid", fate: true, src: { fate: f.id } });
-    return { id: f.id, emoji: f.emoji, title: f.title || "운명", text, deltas, good: f.good, death: f.death || null };
+    p.history.push({ age: p.age, eventTitle: f.title || "운명", eventEmoji: f.emoji, choiceText: "", narrative: text, deltas, grade: f.good ? "crit" : f.good === false ? "bad" : "mid", fate: true, cat: "fate", src: { fate: f.id } });
+    const achv = SYS.afterFate(p, f);
+    return { id: f.id, emoji: f.emoji, title: f.title || "운명", text, deltas, good: f.good, death: f.death || null, achv };
   }
   function pickFirstEvent(p) {
     // 예전엔 늘 '첫마디' → 매판 똑같은 시작. 이제 1살에 맞는 사건(첫마디·돌잡이·백일 사진·예방주사·기어가기 대회 …) 중 랜덤
@@ -421,12 +571,18 @@ export function createCore(DATA, opts = {}) {
     const rec = { age: p.age, lines: [], milestone: MILESTONES[p.age] || null, quiet: null, event: null, death: null, economy: null };
     aging(p);
     autoJob(p);
+    const sy = SYS.onYear(p);                              // v3: 사람(나이·이별·사망)·학력·승진·시대·목표
     rec.economy = economy(p);
     rec.lines.push(...rec.economy.lines);
     rec.lineKeys = rec.economy.lines.map(t => ({ k: t }));       // 번역 키 = 한국어 원문(고정 문장)
+    for (const l of sy.lines) { rec.lines.push(txFill(TX[l.k] || "", l.v || {})); rec.lineKeys.push({ k: "sys", key: l.k, v: l.v || {} }); }
+    rec.news = sy.news;                                    // 시대 소식(같은 방은 모두 같은 소식)
+    rec.world = SYS.worldView(p.world);
+    rec.achv = sy.achv; rec.notices = sy.notices; rec.goalNew = sy.goalNew; rec.goalDone = sy.goalDone;
     if (p._driftLine) { rec.lines.push(p._driftLine.text); rec.lineKeys.push({ k: "drift", name: p._driftLine.name }); p._driftLine = null; }
     if (p._petLines) { for (const pl of p._petLines) { rec.lines.push(pl.text); rec.lineKeys.push({ k: pl.k, name: pl.name, n: pl.n }); } rec.petGone = p._petLines.map(x => x.name); p._petLines = null; }
     rec.fate = rollFate(p);
+    { const late = { lines: [] }; SYS.drainLines(p, late); for (const l of late.lines) { rec.lines.push(txFill(TX[l.k] || "", l.v || {})); rec.lineKeys.push({ k: "sys", key: l.k, v: l.v || {} }); } }   // 정년·해고로 직업이 끝난 해의 목표 중단 줄
     if (rec.fate?.death) { rec.death = die(p, rec.fate.death); return rec; }
 
     // 사망 판정
@@ -444,10 +600,13 @@ export function createCore(DATA, opts = {}) {
     else if (p.sinceEvent >= (stg.maxGap || 4)) want = true;
     else if (p.sinceEvent >= 2 || rng() < 0.4) want = rng() < (stg.eventRate != null ? stg.eventRate : 0.6);
     if (want) {
-      const ev = pickEvent(p);
-      if (ev) { rec.event = ev; p.sinceEvent = 0; p.lastEventAge = p.age; }
+      // 화면에 내보내기 직전 한 번 더 검증 — 지금 직업과 안 맞는 사건(대기열에 남은 옛 직업 질문 등)은 버리고 다시 뽑는다
+      let ev = pickEvent(p);
+      for (let t = 0; ev && !checkEvent(p, ev) && t < 4; t++) ev = pickEvent(p);
+      if (ev && !checkEvent(p, ev)) ev = null;
+      if (ev) { rec.event = SYS.onPick(p, ev); p.sinceEvent = 0; p.lastEventAge = p.age; }
     }
-    if (!rec.event) rec.quiet = quietLine(p, rec);
+    if (!rec.event) rec.quiet = SYS.quiet(p) || quietLine(p, rec);
     p.yearLog.push({ age: p.age, text: rec.quiet?.text || rec.event?.title });
     if (p.yearLog.length > 12) p.yearLog.shift();
     return rec;
@@ -458,7 +617,7 @@ export function createCore(DATA, opts = {}) {
     const choice = choicesFor(p, event).find(c => c.id === choiceId);
     if (!choice) return null;
     let outcome = null, baseEffects = choice.effects || {}, narrative = "";
-    if (choice.outcomes && choice.outcomes.length) outcome = pickByChance(choice.outcomes, p, isLegacy(event));
+    if (choice.outcomes && choice.outcomes.length) outcome = pickByChance(choice.outcomes, p, isLegacy(event), event);
 
     if (choice.statRequired) {
       let met = true;
@@ -521,22 +680,46 @@ export function createCore(DATA, opts = {}) {
         p.spouse = { name: nm, bond: L.bond || 70, since: p.age, salary: sp < 0.35 ? 0 : sp < 0.75 ? rint(2600, 4200) : rint(4200, 7000) };
         p.relations.romance = null; p.flags.add("married"); p.flags.delete("dating");
       }
-      if (L.divorce && p.spouse) { p.flags.add("divorced"); p.flags.delete("married"); p.spouse = null; }
-      if (L.widow && p.spouse) { p.flags.add("widowed"); p.flags.delete("married"); p.spouse = null; }
+      if (L.divorce && p.spouse) { p.flags.add("divorced"); p.flags.delete("married"); p.spouseEnd = { why: "divorce", age: p.age, pid: p.spouse.pid || null, name: p.spouse.name }; p.spouse = null; }
+      if (L.widow && p.spouse && !p.spouse.pid) { p.flags.add("widowed"); p.flags.delete("married"); p.spouse = null; p.spouseEnd = { why: "widow", age: p.age }; }
       if (L.bond && p.spouse && !L.marry) p.spouse.bond = Math.max(0, Math.min(100, p.spouse.bond + L.bond));
       if (L.child) {
         const n = typeof L.child === "number" ? L.child : 1;
         for (let i = 0; i < n; i++) { const g = rng() < .5 ? "M" : "F"; p.kids.push({ name: randomName(g), born: p.age, gender: g }); }
         p.flags.add("has_kid");
       }
+      if (L.quit || L.careerEnd) endCareer(p, L.careerEnd ? "end" : "quit");   // 퇴사·해고·은퇴 → 그 직업 이야기 끝, 무직으로
       if (L.job) { p.job = { title: L.job.title, salary: L.job.salary, since: p.age }; p.careerTitle = L.job.title; }
       if (L.raise && p.job) p.job.salary = Math.round(p.job.salary * L.raise);
-      if (L.quit) { p.job = null; }
+      if (!switching && L.step != null && p.career) p.careerStep = L.step;     // 직업을 바꾸는 선택이면 단계는 새 직업에(아래에서)
+      if (!switching && L.stepUp && p.career) p.careerStep = Math.min(5, p.careerStep + L.stepUp);
       if (L.housing) p.housing = L.housing;
       if (L.pet) adoptPet(p, L.pet);
       if (L.petFarewell) { const old = alivePets(p).sort((a, b) => petAge(p, b) - petAge(p, a))[0]; if (old) { old.alive = false; old.diedAt = p.age; p.flags.add("pet_farewell"); } }
     };
+    const switching = !!(choice.career || outcome?.career || choice.careerReturn || outcome?.careerReturn);
     applyLife(choice.life); applyLife(outcome?.life);
+
+    // 직업 루트 — 바뀌는 건 세 경우뿐: ① 직업 사건/입문 사건이 career로 직접 정함 ② 직업이 없거나 평범한 직장일 때 고른 길(route)
+    //   ③ 이벤트가 정한 일자리(life.job)의 직업. 특별한 직업이 있는데 상관없는 일반 사건이 직업을 바꾸지는 않는다(맥락 없는 전환 금지)
+    const L2 = { ...(choice.life || {}), ...(outcome?.life || {}) };
+    const direct = outcome?.career || choice.career;
+    const viaRoute = [outcome?.route, choice.route].map(r => r && (CAREERS[r] ? r : Object.keys(CAREERS).find(k => CAREERS[k].route === r || (CAREERS[k].alias || []).includes(r)))).find(Boolean);
+    const allowed = event.career || event.careerEntry || !special(p);
+    if (choice.careerReturn || outcome?.careerReturn) returnCareer(p);
+    else if (direct && !L2.careerEnd) setCareer(p, direct, L2.job);
+    else if (allowed && viaRoute && p.age >= 18 && !L2.careerEnd && SYS.entryOk(p, viaRoute)) setCareer(p, viaRoute, L2.job);   // v3: 의사·변호사 같은 길은 학력·자격이 있어야
+    else if (L2.job && allowed) { const k = careerOfJob(L2.job.title); if (k !== p.career) setCareer(p, k, L2.job); }
+    if (switching && p.career) {
+      if (L2.step != null) p.careerStep = L2.step;
+      if (L2.stepUp) p.careerStep = Math.min(5, p.careerStep + L2.stepUp);
+    }
+    if (p.career && p.careers[p.career]) p.careers[p.career].step = p.careerStep;
+    // 사슬: next 로 후속 사건 예약(after 년 뒤, 기본 1~2년)
+    for (const nx of [choice.next, outcome?.next].filter(Boolean)) {
+      const n = typeof nx === "string" ? { id: nx } : nx;
+      if (EVENT_BY_ID.has(n.id)) p.longTerm.push({ resultEventId: n.id, fireAtAge: p.age + (n.after ?? (1 + Math.floor(rng() * 2))), source: event.id });
+    }
 
     // 구 이벤트 다리 놓기: married 플래그만 붙는 프러포즈 → 배우자 생성(거절로 연인이 사라졌으면 플래그 취소), parent → 첫 아이
     if (p.flags.has("married") && !p.spouse) {
@@ -555,6 +738,8 @@ export function createCore(DATA, opts = {}) {
 
     // 번역용 출처: 어느 사건·선택지·결과(o)·서술(n)에서 나온 문장인지 (ja/en 화면이 같은 문장을 찾는다)
     const src = { ev: event.id, c: choice.id, o: outcome ? choice.outcomes.indexOf(outcome) : -1, n: -1, fail: !!narrative };
+    const who0 = event.who ? SYS.whoNow(p) : null;                 // v3: 번역 화면이 그때의 등장 인물·목표로 다시 채우게
+    if (who0 || event.sysGoal || (event.memoFrom && p.memoNow)) src.v = { who: who0?.name, goal: event.sysGoal || undefined, memo: (event.memoFrom && p.memoNow?.ev) || undefined };
     if (!narrative || src.fail) {
       let body;
       if (outcome?.narrative) body = outcome.narrative;
@@ -572,10 +757,11 @@ export function createCore(DATA, opts = {}) {
       else if (pos > 30) grade = "crit"; else if (neg < -20) grade = "bad"; else if (pos > 0) grade = "good";
     }
 
+    const careerBefore = p._lastCareer ?? null;
     p.history.push({
       age: p.age, stageId: stageOfAge(p.age).id, stageEmoji: stageOfAge(p.age).emoji,
       eventEmoji: event.emoji, eventTitle: fill(p, event.title), eventType: event.type || "normal",
-      choiceText: fill(p, choice.text), deltas, narrative, grade, src,
+      choiceText: fill(p, choice.text), deltas, narrative, grade, src, cat: categoryOf(event), career: p.career || null,
     });
     if (event.type === "special") p.seenSpecialIds.add(event.id); else p.seenEventIds.add(event.id);
     (p.seenAt ||= {})[event.id] = p.age;
@@ -585,7 +771,12 @@ export function createCore(DATA, opts = {}) {
     const dd = outcome?.death || choice.death;
     if (dd) death = die(p, typeof dd === "string" ? dd : null, narrative);
 
-    return { choiceId: choice.id, choiceText: fill(p, choice.text), choiceEmoji: choice.emoji, deltas, narrative, grade, outcome, death, src };
+    // v3: 관계 변화·목표·기억·업적 (사망했어도 기록은 남긴다)
+    const sys = SYS.onChoice(p, event, choice, outcome, { grade, title: fill(p, event.title), choice: fill(p, choice.text) });
+    if (sys.notices.some(n => n.k === "career" || n.k === "career_end")) p.history[p.history.length - 1].careerChange = { from: careerBefore, to: p.career || null };
+    p.whoNow = null; p.memoNow = null;
+    const sysOut = { achv: sys.achv, notices: sys.notices, goalDone: sys.goalDone || null, lines: sys.lines.map(l => ({ k: l.k, v: l.v || {}, text: txFill(TX[l.k] || "", l.v || {}) })) };
+    return { choiceId: choice.id, choiceText: fill(p, choice.text), choiceEmoji: choice.emoji, deltas, narrative, grade, outcome, death, src, sys: sysOut };
   }
 
   // ===== 사망·결말 =====
@@ -593,6 +784,7 @@ export function createCore(DATA, opts = {}) {
     p.alive = false; p.finished = true; p.deathAge = p.age;
     const c = pickCause(p, forcedCause);
     p.cause = { id: c.id, label: c.label, emoji: c.emoji, line: c.line ? fill(p, c.line) : null };
+    p.finalAchv = SYS.onDeath(p);
     computeEnding(p);
     return { age: p.age, cause: p.cause, ending: p.ending };
   }
@@ -608,7 +800,10 @@ export function createCore(DATA, opts = {}) {
       flags: { has: k => p.flags.has(k) }, relations: p.relations, history: p.history,
       spouse: p.spouse, kids: p.kids, job: p.job, housing: p.housing, careerYears: p.careerYears,
       rawMoney: p.stats.money, health: p.stats.health, careerTitle: p.careerTitle || "", birth: p.birth || null,
+      career: p.career, careerStep: p.careerStep || 0, careerHist: p.careerHist || [], careerYearsNow: p.career ? (p.deathAge ?? p.age) - (p.careerSince || 0) : 0,
       kidsCount: p.kids.length, petsTotal: p.pets.length, petsAlive: alivePets(p).length, married: !!p.spouse, marriedYears: p.spouse ? p.age - p.spouse.since : 0,
+      crises: p.world?.crises || 0, people: p.people || [], memories: p.memories || [], goalsDone: p.goalsDone || [], goalHist: p.goalHist || [], achv: p.achv || [], edu: p.edu || "none",
+      mem: k => (p.memories || []).some(m => m.k === k), memN: k => (p.memories || []).filter(m => m.k === k).length,
     };
   }
   function computeEnding(p) {
@@ -617,6 +812,11 @@ export function createCore(DATA, opts = {}) {
     const fallback = ENDINGS[ENDINGS.length - 1];
     const prio = e => e.prio != null ? e.prio : e.rarity === "hidden" ? 5 : e.rarity === "rare" ? 4 : 2;
     hits.sort((x, y) => prio(y) - prio(x));          // 안정 정렬: 같은 우선순위면 목록 순서
+    // v3: 최근에 본 엔딩이면 거의 같은 무게(0.6 이내)의 다른 결말을 대표로 — 같은 엔딩만 되풀이되지 않게
+    if (hits.length > 1 && p.recentEnd?.includes(hits[0].id)) {
+      const alt = hits.find(e => e !== fallback && !p.recentEnd.includes(e.id) && prio(e) >= prio(hits[0]) - 0.6);
+      if (alt) { hits.splice(hits.indexOf(alt), 1); hits.unshift(alt); }
+    }
     p.ending = hits[0] || fallback;
     // 칭호: 대표 결말 외에 함께 맞은 결말(최대 3개) — 같은 인생의 다른 얼굴
     p.titles = hits.filter(e => e !== p.ending && e !== fallback && !e.noTitle).slice(0, 3).map(e => ({ id: e.id, title: e.title, emoji: e.emoji, rarity: e.rarity }));
@@ -686,8 +886,11 @@ export function createCore(DATA, opts = {}) {
 
   function publicEvent(p, ev) {
     if (!ev) return null;
+    const who = ev.who ? SYS.whoNow(p) : null;
     return {
-      id: ev.id, stage: ev.stage, type: ev.type || "normal", emoji: ev.emoji,
+      id: ev.id, stage: ev.stage, type: ev.type || "normal", emoji: ev.emoji, cat: categoryOf(ev), major: isMajor(ev),
+      who: who ? { name: who.name, rel: who.rel, pid: who.pid || null } : null, goal: ev.sysGoal || null,
+      v: { who: who?.name, goal: ev.sysGoal || undefined, memo: (ev.memoFrom && p.memoNow?.ev) || undefined },
       title: fill(p, ev.title), desc: fill(p, ev.desc),
       choices: choicesFor(p, ev).map(c => ({
         id: c.id, emoji: c.emoji, text: fill(p, c.text), sub: c.sub ? fill(p, c.sub) : null,
@@ -715,8 +918,10 @@ export function createCore(DATA, opts = {}) {
   return {
     STAGES, STAT_DEFS, EVENTS, ENDINGS, ANALYSIS_LINES, MILESTONES,
     createPlayer, beginLife, advanceYear, applyChoice, pickEvent, publicEvent, fill, choicesFor,
-    stageOfAge, deathChance, computeEnding, lifeScore, lifeReport, relationsSummary, HOUSING_LABEL, alivePets, petAge, adoptPet,
-    die, eligible,
+    careerStatus, checkEvent, stageOfAge, deathChance, computeEnding, lifeScore, lifeReport, relationsSummary, HOUSING_LABEL, alivePets, petAge, adoptPet,
+    die, eligible, categoryOf, isMajor, SYS,
+    peopleView: p => SYS.peopleView(p), goalView: p => SYS.goalView(p), worldView: w => SYS.worldView(w), createWorld: by => SYS.createWorld(by), worldTo: (w, a) => SYS.worldTo(w, a),
+    serialize: p => SYS.serialize(p), restore: o => SYS.restore(o), compat: p => SYS.compat(p),
   };
 }
 

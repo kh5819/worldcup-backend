@@ -6,7 +6,13 @@ import { EVENTS_YOUNG } from "./lifegame-events-young.js";
 import { EVENTS_FAMILY } from "./lifegame-events-family.js";
 import { EVENTS_LATER } from "./lifegame-events-later.js";
 import { EVENTS_PETS } from "./lifegame-events-pets.js";
+import { EVENTS_CAREERS, CAREERS, TITLE_CAREER, ENDINGS_CAREERS } from "./lifegame-events-careers.js";
 import { ENDINGS_V2, ANALYSIS_V2 } from "./lifegame-endings-v2.js";
+import { EVENTS_V3, ENDINGS_V3, ANALYSIS_V3 } from "./lifegame-events-v3.js";
+import { SYS_TITLES } from "./lifegame-systems.js";
+
+// v3: 부모님이 살아 계실 때만(사람 목록이 없는 예전 데이터는 orphaned 플래그로)
+const parentLives = p => p.people ? p.people.some(x => (x.rel === "father" || x.rel === "mother") && x.status === "active") : !p.flags.has("orphaned");
 
 export const STAGES_V2 = [
   { id: "infant",  label: "유아기",   emoji: "👶", ageStart: 1,  ageEnd: 6,   eventRate: 0.62, maxGap: 3 },
@@ -68,6 +74,7 @@ export const DEATH_CAUSES = [
   { id: "overwork", label: "과로로", emoji: "🌙", age: [25, 55], weight: 1.4, cond: p => p.stats.health < 45, line: "마지막 야근이었다. 아무도 그가 그렇게 지쳤는지 몰랐다." },
   { id: "natural", label: "노환으로", emoji: "🕊️", age: [75, 110], weight: 6, line: "가족이 둘러앉은 가운데 평화롭게 잠들었다." },
   { id: "infant_ill", label: "어린 나이에 병으로", emoji: "🕯️", age: [1, 19], weight: 2, line: "너무 이른 이별이었다." },
+  { id: "crime", label: "불의의 사건으로", emoji: "🕯️", age: [18, 80], weight: 0, cond: () => false, line: "너무 갑작스러운 이별이었다." },   // 운명 사건으로만
   { id: "adventure", label: "무모한 도전 중 사고로", emoji: "🧗", age: [14, 60], weight: 0.4, cond: p => p.stats.power > 70, line: "마지막까지 하고 싶은 걸 하다 떠났다." },
 ];
 
@@ -195,12 +202,12 @@ export const FATES = [
   F({ id: "lotto_small", age: [20, 90], good: true, emoji: "🎟️", title: "로또 3등", text: "로또 3등에 당첨됐다! 150만 원. 그날 치킨은 두 마리였다.", effects: { money: +150, happy: +5, luck: +3 } }),
   F({ id: "lotto_big", age: [20, 90], good: true, weight: 0.025, once: true, emoji: "🎰", title: "로또 1등!!!", text: "로또 1등에 당첨됐다. 세금 떼고 18억. 손이 떨려 은행 창구에서 서류를 세 번 다시 썼다.", effects: { money: +180000, happy: +20, luck: +10 } }),
   F({ id: "rich_house_help", age: [27, 40], good: true, flag: "rich_family", once: true, emoji: "🏠", title: "부모님 찬스", text: "부모님이 집 사는 데 3억을 보태 주셨다. 출발선이 달랐다.", effects: { money: +30000, happy: +6 } }),
-  F({ id: "poor_parent_support", age: [30, 55], flag: "poor_family", emoji: "👪", title: "부모님 생활비", text: "부모님 생활비를 매달 보내 드린다. 내 노후는 그 다음이다.", effects: { money: -2400, happy: -2 } }),
+  F({ id: "poor_parent_support", age: [30, 55], flag: "poor_family", cond: p => parentLives(p), emoji: "👪", title: "부모님 생활비", text: "부모님 생활비를 매달 보내 드린다. 내 노후는 그 다음이다.", effects: { money: -2400, happy: -2 } }),
   F({ id: "recession", age: [22, 59], good: false, emoji: "📉", title: "경기 불황", text: "경제 위기가 터졌다. 회사가 연봉을 동결했고 주식이 반토막 났다.", effects: { money: p => -Math.max(0, p.stats.money) * 0.2, happy: -5 }, life: { raise: 0.92 } }),
   F({ id: "boom", age: [22, 70], good: true, emoji: "🚀", title: "호황", text: "경기가 좋아졌다. 성과급이 터지고 갖고 있던 주식이 올랐다.", effects: { money: p => Math.max(500, p.stats.money * 0.15), happy: +4 }, life: { raise: 1.06 } }),
   F({ id: "jeonse_fraud", age: [23, 45], good: false, once: true, cond: p => p.housing === "jeonse" || p.housing === "rent", emoji: "🚨", title: "전세 사기", text: "집주인이 잠적했다. 보증금이 사라졌다. 뉴스 속 이야기가 내 이야기가 됐다.", effects: { money: -8000, happy: -12, health: -4 } }),
-  F({ id: "layoff_sudden", age: [30, 58], good: false, cond: p => !!p.job, emoji: "📭", title: "갑작스러운 해고", text: "회사가 문을 닫았다. 어제까지 내 자리였던 책상이 비었다.", effects: { happy: -8, money: -500 }, life: { quit: true } }),
-  F({ id: "headhunted", age: [28, 55], good: true, cond: p => !!p.job, emoji: "📞", title: "스카우트 제의", text: "경쟁사에서 스카우트 제의가 왔다. 연봉 30% 인상!", effects: { happy: +6 }, life: { raise: 1.3 } }),
+  F({ id: "layoff_sudden", age: [30, 58], good: false, cond: p => !!p.job && ["worker", "corporate"].includes(p.career), emoji: "📭", title: "갑작스러운 해고", text: "회사가 문을 닫았다. 어제까지 내 자리였던 책상이 비었다.", effects: { happy: -8, money: -500 }, life: { quit: true } }),
+  F({ id: "headhunted", age: [28, 55], good: true, cond: p => !!p.job && ["worker", "corporate", "developer"].includes(p.career), emoji: "📞", title: "스카우트 제의", text: "경쟁사에서 스카우트 제의가 왔다. 연봉 30% 인상!", effects: { happy: +6 }, life: { raise: 1.3 } }),
   F({ id: "car_accident", age: [18, 80], good: false, emoji: "🚗", title: "교통사고", text: "신호 위반 차량에 받혔다. 몇 달 동안 재활했다.", effects: { health: -14, money: -500, happy: -5 } }),
   F({ id: "fatal_accident", age: [18, 85], good: false, weight: 0.05, emoji: "🚑", title: "사고", text: "평범한 하루였다. 그날 오후, 돌아오지 못했다.", effects: {}, death: "accident" }),
   F({ id: "meet_by_chance", age: [22, 45], good: true, cond: p => !p.spouse && !p.relations.romance && !p.flags.has("no_marriage"), emoji: "🌧️", title: "우연한 만남", text: "비 오는 날 우산을 같이 쓴 사람과 연락을 주고받게 됐다.", effects: { happy: +6 }, life: { romance: true } }),
@@ -227,6 +234,20 @@ export const FATES = [
   F({ id: "lonely_winter", age: [70, 105], good: false, cond: p => !p.spouse && p.kids.length === 0, emoji: "❄️", title: "외로운 겨울", text: "아무도 찾아오지 않는 겨울. 텔레비전 소리만 집을 채웠다.", effects: { happy: -6, health: -3 } }),
   F({ id: "old_friend_call", age: [60, 100], good: true, emoji: "☎️", title: "반가운 전화", text: "50년 전 친구에게서 전화가 왔다. 목소리는 그대로였다.", effects: { happy: +6, social: +3 } }),
   F({ id: "elder_cold", age: [75, 110], good: false, emoji: "🤧", title: "독한 감기", text: "환절기 감기가 한 달을 갔다. 기력이 많이 떨어졌다.", effects: { health: -8 } }),
+  // 돈 손해·갑작스러운 불행 (2026-10-26 — 너무 돈이 잘 불어서 / 갑작스러운 죽음도)
+  F({ id: "voice_phishing", age: [35, 88], good: false, emoji: "☎️", title: "보이스피싱", text: "'검찰청입니다'라는 전화에 속아 통장 돈을 '안전 계좌'로 옮겼다. 전화가 끊기고 나서야 알았다.", effects: { money: p => -Math.min(20000, Math.max(300, p.stats.money * 0.12)), happy: -8 } }),
+  F({ id: "invest_scam", age: [28, 75], good: false, weight: 0.6, cond: p => p.stats.money > 3000, emoji: "🕳️", title: "투자 사기", text: "'원금 보장, 월 10%'. 지인이 소개한 투자처가 하루아침에 사라졌다.", effects: { money: p => -Math.max(0, p.stats.money) * 0.3, happy: -8, social: -3 } }),
+  F({ id: "crypto_crash", age: [22, 60], good: false, weight: 0.6, cond: p => p.stats.money > 1000, emoji: "🪙", title: "코인 폭락", text: "자고 일어나니 들고 있던 코인이 상장폐지됐다. 차트가 절벽이었다.", effects: { money: p => -Math.max(0, p.stats.money) * 0.2, happy: -6 } }),
+  F({ id: "big_surgery", age: [40, 90], good: false, emoji: "🏥", title: "큰 수술", text: "건강검진에서 혹이 발견됐다. 수술은 잘 끝났지만 병원비가 만만치 않았다.", effects: { health: -8, money: -2500, happy: -4 } }),
+  F({ id: "guarantor", age: [30, 65], good: false, once: true, emoji: "✍️", title: "빚보증", text: "친척 부탁으로 서 준 보증이 터졌다. 갚을 사람은 나뿐이었다.", effects: { money: -6000, happy: -10, social: -2 } }),
+  F({ id: "parent_care", age: [40, 65], good: false, once: true, cond: p => !p.flags.has("orphaned") && parentLives(p), emoji: "🧓", title: "부모님 간병", text: "부모님이 쓰러지셨다. 요양병원비와 간병비가 매달 빠져나갔다.", effects: { money: -3000, happy: -6, health: -3 } }),
+  F({ id: "lawsuit", age: [28, 75], good: false, weight: 0.6, emoji: "⚖️", title: "소송", text: "억울한 일로 소송에 휘말렸다. 이기긴 했지만 변호사비가 남았다.", effects: { money: -1500, happy: -6, health: -2 } }),
+  F({ id: "kid_bailout", age: [55, 85], good: false, cond: p => p.kids.length > 0 && p.age - p.kids[0].born >= 25, emoji: "👨‍👦", title: "자식 사업 자금", text: "{kid}의 사업이 어려워졌다. 노후 자금을 털어 막아 줬다.", effects: { money: p => -Math.max(3000, p.stats.money * 0.2), happy: -4 } }),
+  F({ id: "rare_disease", age: [20, 80], good: false, weight: 0.5, emoji: "🧬", title: "갑작스러운 병", text: "멀쩡하던 몸에 이름도 어려운 병이 찾아왔다. 긴 치료가 시작됐다.", effects: { health: -20, money: -2000, happy: -8 } }),
+  F({ id: "fatal_drunk_driver", age: [10, 85], good: false, weight: 0.03, emoji: "🚑", title: "음주운전 차량", text: "횡단보도를 건너던 중, 음주운전 차량이 덮쳤다. 그날 집에 돌아가지 못했다.", effects: {}, death: "accident" }),
+  F({ id: "fatal_cancer", age: [30, 85], good: false, weight: 0.04, emoji: "🏥", title: "말기 판정", text: "괜찮겠지 하고 넘긴 통증이었다. 진단은 이미 말기였고, 그해를 넘기지 못했다.", effects: {}, death: "disease" }),
+  F({ id: "fatal_heart", age: [35, 85], good: false, weight: 0.03, emoji: "💔", title: "출근길에 쓰러지다", text: "출근길 지하철에서 가슴을 움켜쥐고 쓰러졌다. 다시 눈을 뜨지 못했다.", effects: {}, death: "sudden" }),
+  F({ id: "fatal_crime", age: [18, 80], good: false, weight: 0.006, emoji: "🕯️", title: "불의의 사건", text: "늦은 밤 귀갓길, 낯선 사람의 범죄에 휘말렸다. 돌아오지 못했다.", effects: {}, death: "crime" }),
 ];
 
 export function buildLife(LEG) {
@@ -247,11 +268,38 @@ export function buildLife(LEG) {
     seenIds.add(x.id);
     return x;
   });
-  const EVENTS = [...legacy, ...EVENTS_YOUNG, ...EVENTS_FAMILY, ...EVENTS_LATER, ...EVENTS_PETS];
+  // 직업 루트 표시(2026-10-26): 일반 사건 중 '입사·데뷔' 성격은 careerEntry, 회사 생활 전제는 office —
+  //   정치인·작가처럼 특별한 직업이 있으면 '대기업 입사?' 같은 질문이 끼어들지 않고, 무직이면 회사 생활 사건이 안 나온다
+  const CAREER_TAGS = {
+    adult_first_job: { careerEntry: "job" }, v2_first_job: { careerEntry: "job" }, v2_jobless_25: { careerEntry: "job" },
+    v2_job_interview: { careerEntry: "job" }, v2_cert_exam: { careerEntry: "job" }, adult_grad_school: { careerEntry: "job" },
+    v2_working_holiday: { careerEntry: "job" },
+    adult_political: { careerEntry: "politics" }, adult_chzzk_offer: { careerEntry: "streamer" }, adult_viral_post: { careerEntry: "streamer" },
+    midlife_career_pivot: { careerEntry: "streamer" }, adult_startup_offer: { careerEntry: "business" }, adult_ai_business: { careerEntry: "business" },
+    v2_sp_app_hit: { careerEntry: "business" },
+    adult_dinner_party: { office: true }, adult_burnout: { office: true }, v2_burnout: { office: true }, v2_job_change: { office: true },
+    v2_promotion: { office: true }, v2_layoff: { office: true }, adult_remote_work: { office: true }, adult_meme_viral: { office: true },
+    midlife_hiking: { office: true }, v2_marathon: { office: true }, v2_invest_20s: { office: true }, v2_checkup_young: { office: true },
+    v2_retire_plan: { cond: p => !p.career },               // '은퇴 후 첫 아침'은 정말 일을 놓았을 때만
+    // 군대는 한 번만, 20대 초중반에 — 30대 정치인·변호사가 갑자기 입대하던 문제
+    adult_military: { age: [20, 28], cond: p => !p.seenEventIds.has("v2_military") },
+    v2_military: { cond: p => !p.seenEventIds.has("adult_military") },
+    // v3: 부모님이 나오는 사건은 그분이 살아 계실 때만 — 돌아가신 부모님이 다시 등장하는 모순 방지
+    midlife_parents: { parentAlive: true }, adult_marriage: { parentAlive: true }, v2_jobless_25: { parentAlive: true },
+    v2_parent_ill: { parentAlive: "father" }, v2_parent_death: { parentAlive: "mother", killWho: "mother" }, v2_university: { parentAlive: "mother" },
+  };
+  const CHOICE_TAGS = { "adult_first_job.samsung": { career: "corporate" } };   // 옛 데이터의 '대기업' 선택지는 직장인이 아니라 대기업 루트
+  const tag = e => {
+    const t = CAREER_TAGS[e.id];
+    let x = t ? { ...e, ...t, cond: t.cond && e.cond ? (p => t.cond(p) && e.cond(p)) : (t.cond || e.cond) } : e;
+    if (x.choices?.some(c => CHOICE_TAGS[x.id + "." + c.id])) x = { ...x, choices: x.choices.map(c => CHOICE_TAGS[x.id + "." + c.id] ? { ...c, ...CHOICE_TAGS[x.id + "." + c.id] } : c) };
+    return x;
+  };
+  const EVENTS = [...legacy, ...EVENTS_YOUNG, ...EVENTS_FAMILY, ...EVENTS_LATER, ...EVENTS_PETS].map(tag).concat(EVENTS_CAREERS, EVENTS_V3);
   // 엔딩은 위에서부터 첫 매칭 → 인생 전체를 규정하는 v2 엔딩(요절·백세 등)이 맨 앞, 가족·직업 엔딩은 well_balanced 앞
   const wb = LEG.ENDINGS.findIndex(e => e.id === "well_balanced");
   const cut = wb >= 0 ? wb : LEG.ENDINGS.length - 1;
-  const ENDINGS = [...ENDINGS_V2.first, ...LEG.ENDINGS.slice(0, cut), ...ENDINGS_V2.mid, ...LEG.ENDINGS.slice(cut)];
-  const ANALYSIS_LINES = [...ANALYSIS_V2, ...LEG.ANALYSIS_LINES];
-  return { STAGES: STAGES_V2, STAT_DEFS: stats, EVENTS, ENDINGS, ANALYSIS_LINES, QUIET, MILESTONES, DEATH_CAUSES, JOBS, MINI_AGES, BIRTH, FATES };
+  const ENDINGS = [...ENDINGS_CAREERS, ...ENDINGS_V3, ...ENDINGS_V2.first, ...LEG.ENDINGS.slice(0, cut), ...ENDINGS_V2.mid, ...LEG.ENDINGS.slice(cut)];
+  const ANALYSIS_LINES = [...ANALYSIS_V3, ...ANALYSIS_V2, ...LEG.ANALYSIS_LINES];
+  return { STAGES: STAGES_V2, STAT_DEFS: stats, EVENTS, ENDINGS, ANALYSIS_LINES, QUIET, MILESTONES, DEATH_CAUSES, JOBS, MINI_AGES, BIRTH, FATES, CAREERS, TITLE_CAREER: { ...TITLE_CAREER, ...SYS_TITLES } };
 }

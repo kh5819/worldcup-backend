@@ -27,7 +27,10 @@ const FILES = [
   ["lifegame-events-family.js", "lifegame-events-family.js"],
   ["lifegame-events-later.js", "lifegame-events-later.js"],
   ["lifegame-events-pets.js", "lifegame-events-pets.js"],
+  ["lifegame-events-careers.js", "lifegame-events-careers.js"],
   ["lifegame-endings-v2.js", "lifegame-endings-v2.js"],
+  ["lifegame-systems.js", "lifegame-systems.js"],       // v3: 기억·관계·목표·시대·업적
+  ["lifegame-events-v3.js", "lifegame-events-v3.js"],
 ];
 
 function copyOnce() {
