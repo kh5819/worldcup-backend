@@ -466,7 +466,7 @@ export function createCore(DATA, opts = {}) {
       if (!met) {
         narrative = "조건이 부족해 일이 꼬였다. ";
         baseEffects = { ...baseEffects };
-        for (const k of Object.keys(baseEffects)) baseEffects[k] = k === "money" ? Math.round(baseEffects[k] * 0.5) : Math.round(baseEffects[k] * 0.5);
+        for (const k of Object.keys(baseEffects)) baseEffects[k] = k === "money" ? (baseEffects[k] > 0 ? 0 : baseEffects[k]) : Math.round(baseEffects[k] * 0.5);      // 일이 꼬였으면 돈 이득은 없고 손해는 그대로
         baseEffects.happy = (baseEffects.happy || 0) - 3;
       }
     }

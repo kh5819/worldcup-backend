@@ -476,7 +476,7 @@ export const EVENTS_LATER = [
       { id: "join", emoji: "🏢", text: "제안을 받는다", grade: "mid",
         outcomes: [
           { chance: 0.5, effects: { money: +3000, social: +6, happy: +6 }, grade: "crit", narrative: "임원이 됐다. 연봉 협상 자리에서 친구가 윙크했다." },
-          { chance: 0.5, effects: { money: +500, happy: -5, social: -3 }, grade: "bad", narrative: "낙하산 소리를 들으며 버텼다. 1년 만에 우정도 끝났다." },
+          { chance: 0.5, effects: { money: -500, happy: -5, social: -3 }, grade: "bad", narrative: "낙하산 소리를 들으며 버티다 1년 만에 그만뒀다. 전 직장으로도 못 돌아가고 우정도 끝났다." },
         ] },
       { id: "decline", emoji: "🙂", text: "친구로 남는다", grade: "good", effects: { social: +4, happy: +3 }, narratives: ["일 얘기 대신 옛날 얘기를 했다. 그날 술이 제일 맛있었다."] },
     ],
@@ -487,10 +487,15 @@ export const EVENTS_LATER = [
     choices: [
       { id: "hold", emoji: "⏳", text: "끝까지 버틴다", grade: "mid",
         outcomes: [
-          { chance: 0.4, effects: { money: +8000, luck: +6, happy: +8 }, grade: "crit", narrative: "보상금이 세 배로 뛰었다. 족보에 남을 결정이었다." },
-          { chance: 0.6, effects: { money: +1500, happy: -3, social: -4 }, grade: "mid", narrative: "사업이 늦어지며 몇 년을 마음고생했다. 이웃과도 틀어졌다." },
+          { chance: 0.35, effects: { money: +8000, luck: +6, happy: +8 }, grade: "crit", narrative: "보상금이 세 배로 뛰었다. 족보에 남을 결정이었다." },
+          { chance: 0.45, effects: { money: +500, happy: -3, social: -4 }, grade: "mid", narrative: "사업이 늦어지며 몇 년을 마음고생했다. 보상금은 생각보다 적었고 이웃과도 틀어졌다." },
+          { chance: 0.2, effects: { money: -1000, happy: -8, social: -3 }, grade: "bad", narrative: "신도시 계획이 통째로 무산됐다. 그사이 낸 세금과 소송비만 1천만 원이 남았다." },
         ] },
-      { id: "sell", emoji: "💰", text: "바로 판다", grade: "good", effects: { money: +2500, happy: +5 }, narratives: ["깔끔하게 정리했다. 부모님 집 대출을 다 갚아 드렸다."] },
+      { id: "sell", emoji: "💰", text: "바로 판다", grade: "good",
+        outcomes: [
+          { chance: 0.7, effects: { money: +2500, happy: +5 }, grade: "good", narrative: "깔끔하게 정리했다. 부모님 집 대출을 다 갚아 드렸다." },
+          { chance: 0.3, effects: { money: -800, happy: -8, social: -2 }, grade: "bad", narrative: "급하게 판다는 걸 노린 기획부동산에 걸렸다. 계약금과 수수료만 날렸다." },
+        ] },
     ],
   }),
   E({
@@ -500,7 +505,7 @@ export const EVENTS_LATER = [
       { id: "answer", emoji: "💡", text: "확신을 갖고 답한다", grade: "mid",
         outcomes: [
           { chance: 0.35, effects: { money: +5000, intel: +6, happy: +10, social: +5 }, grade: "crit", narrative: "정답! 우승 상금 5천만 원. 동네에 현수막이 걸렸다." },
-          { chance: 0.65, effects: { intel: +3, happy: -3, internet: +4 }, grade: "mid", narrative: "한 글자 차이로 틀렸다. 그 문제는 평생 잊지 못한다." },
+          { chance: 0.65, effects: { intel: +3, happy: -3, internet: +4, money: -50 }, grade: "bad", narrative: "한 글자 차이로 틀렸다. 준비하느라 쓴 책값·교통비·연차만 남았다. 그 문제는 평생 잊지 못한다." },
         ] },
       { id: "stop", emoji: "🛑", text: "여기서 멈추고 상금을 챙긴다", grade: "good", effects: { money: +1000, happy: +4 }, narratives: ["1천만 원을 들고 내려왔다. 마지막 문제 답은 알고 있었다. 비밀이다."] },
     ],
@@ -524,7 +529,7 @@ export const EVENTS_LATER = [
       { id: "start", emoji: "🍲", text: "같이 찍는다", grade: "mid",
         outcomes: [
           { chance: 0.3, effects: { internet: +15, money: +1000, happy: +10, social: +6 }, grade: "crit", narrative: "구독자 100만! 실버 버튼을 받았다. 레시피 책도 나왔다." },
-          { chance: 0.7, effects: { internet: +5, happy: +7, social: +4 }, grade: "good", narrative: "구독자는 300명. 손주와 매주 만나는 핑계가 생겼다." },
+          { chance: 0.7, effects: { internet: +5, happy: +7, social: +4, money: -100 }, grade: "good", narrative: "조명·카메라 장비값만 100만 원. 구독자는 300명이지만 손주와 매주 만나는 핑계가 생겼다." },
         ] },
       { id: "teach", emoji: "📖", text: "카메라 없이 요리만 가르친다", grade: "good", effects: { happy: +5, social: +3 }, narratives: ["손주가 내 김치 맛을 그대로 배웠다. 그게 진짜 유산이다."] },
     ],

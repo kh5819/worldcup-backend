@@ -1452,16 +1452,20 @@ export const EVENTS = [
     weight: 1.0,
     choices: [
       { id: "sign", emoji: "💸", text: "계약 — 풀타임 스트리머", grade: "crit",
-        effects: { money: +80, internet: +15, happy: +5 },
+        effects: { internet: +15, happy: +5 },
+        outcomes: [
+          { chance: 0.6, effects: { money: +110 }, narrative: "구독자가 쭉쭉 늘었다. 계약금 이상을 벌었다." },
+          { chance: 0.4, effects: { money: -60, happy: -6 }, narrative: "계약서 구석의 위약 조항… 방송 장비·편집자 비용까지 첫해는 적자였다." },
+        ],
         flag: { add: ["chzzk_contract"] },
         route: "streamer",
         longTerm: { resultEventId: "lt_stream_result", after: 3 },
         narratives: ["엄마한테 말 못한 채 사인했다."] },
       { id: "negotiate", emoji: "🤝", text: "조건 협상", grade: "good",
-        effects: { money: +40, internet: +8 },
+        effects: { internet: +8 },
         outcomes: [
-          { chance: 0.5, effects: { money: +50, social: +5 }, narrative: "조건 더 받았다. 협상의 신.", flag: { add: ["chzzk_contract"] }, route: "streamer" },
-          { chance: 0.5, effects: { money: -10, social: -3 }, narrative: "테이블에서 거절당했다." },
+          { chance: 0.5, effects: { money: +90, social: +5 }, narrative: "조건 더 받았다. 협상의 신.", flag: { add: ["chzzk_contract"] }, route: "streamer" },
+          { chance: 0.5, effects: { money: -10, social: -3 }, narrative: "테이블에서 거절당했다. 준비하며 쓴 변호사 상담비만 나갔다." },
         ] },
       { id: "decline_offer", emoji: "🚪", text: "거절 — 자유롭게 살래", grade: "good",
         effects: { happy: +8, intel: +3 },
@@ -1510,7 +1514,7 @@ export const EVENTS = [
         route: "influencer",
         outcomes: [
           { chance: 0.4, effects: { money: +120, internet: +10 }, narrative: "브랜드 협찬 줄섰다." },
-          { chance: 0.6, effects: { money: +20, happy: -5 }, narrative: "흐름이 빨리 식었다. 그래도 한 줌 남았다." },
+          { chance: 0.6, effects: { money: -30, happy: -5 }, narrative: "회사까지 그만뒀는데 흐름이 빨리 식었다. 모아 둔 돈을 까먹었다." },
         ] },
       { id: "delete", emoji: "🗑️", text: "관심 부담 — 삭제", grade: "good",
         effects: { intel: +5, happy: +3 } },

@@ -1157,7 +1157,7 @@ export const EVENTS_YOUNG = [
         outcomes: [
           { chance: 0.35, effects: { money: +300, internet: +15, social: +8, happy: +6 }, grade: "crit", narrative: "'국민 아기'가 됐다. 내 표정이 전국 이모티콘이 됐다." },
           { chance: 0.45, effects: { money: +50, internet: +6, happy: +2 }, grade: "good", narrative: "두 달 출연했다. 지금도 가끔 '그 아기 아니야?' 소리를 듣는다." },
-          { chance: 0.2, effects: { happy: -6, internet: +5 }, grade: "bad", narrative: "떼쓰는 장면만 편집돼 나갔다. 댓글창이 무서웠다." },
+          { chance: 0.2, effects: { happy: -6, internet: +5, money: -50 }, grade: "bad", narrative: "떼쓰는 장면만 편집돼 나갔다. 잡혀 있던 아기 모델 광고도 취소돼 위약금까지 물었다." },
         ] },
       { id: "no", emoji: "🙅", text: "정중히 거절한다", grade: "good", effects: { happy: +4, health: +2 }, narratives: ["카메라 없는 평범한 어린 시절을 보냈다. 그게 제일 좋았다."] },
     ],
@@ -1195,7 +1195,7 @@ export const EVENTS_YOUNG = [
         outcomes: [
           { chance: 0.2, effects: { money: +500, social: +10, internet: +10, happy: +8 }, grade: "crit", narrative: "주인공 아역에 캐스팅! 첫 촬영 날 대본을 끌어안고 잤다." },
           { chance: 0.4, effects: { money: +50, social: +4, happy: +3 }, grade: "good", narrative: "지나가는 학생 3 역할. 엔딩 크레디트에 이름이 나왔다." },
-          { chance: 0.4, effects: { happy: -4, intel: +1 }, grade: "mid", narrative: "떨어졌다. 대기실에 나랑 똑같이 생긴 애가 열 명 있었다." },
+          { chance: 0.4, effects: { happy: -4, intel: +1, money: -100 }, grade: "bad", narrative: "떨어졌다. 석 달 다닌 연기 학원비만 날렸다. 대기실에 나랑 똑같이 생긴 애가 열 명 있었다." },
         ] },
       { id: "no", emoji: "🙅", text: "싫다고 한다", grade: "mid", effects: { intel: +2, happy: +2 }, narratives: ["엄마는 아쉬워했지만 나는 만화책이 더 좋았다."] },
     ],
@@ -1224,7 +1224,7 @@ export const EVENTS_YOUNG = [
         outcomes: [
           { chance: 0.25, effects: { power: +12, social: +8, money: +300, happy: +8 }, grade: "crit", narrative: "청소년 대표로 뽑혔다. 유니폼에 국기가 달렸다." },
           { chance: 0.5, effects: { power: +7, intel: -2, happy: +2 }, grade: "good", narrative: "주전은 못 됐지만 몸과 근성이 남았다." },
-          { chance: 0.25, effects: { health: -8, happy: -6 }, grade: "bad", narrative: "인대 부상으로 1년을 쉬었다. 꿈을 접었다." },
+          { chance: 0.25, effects: { health: -8, happy: -6, money: -300 }, grade: "bad", narrative: "인대 부상으로 1년을 쉬었다. 재활 치료비가 300만 원 들었고, 꿈을 접었다." },
         ] },
       { id: "study", emoji: "📚", text: "공부를 택한다", grade: "mid", effects: { intel: +5, happy: -3 }, narratives: ["명함은 책상 서랍에 남았다. 주말 조기축구가 평생 취미가 됐다."] },
     ],
@@ -1250,7 +1250,7 @@ export const EVENTS_YOUNG = [
         outcomes: [
           { chance: 0.05, effects: { money: +20000, luck: +15, happy: +12 }, grade: "crit", narrative: "1등 당첨!! 손이 떨려서 은행 앞에서 30분을 서 있었다." },
           { chance: 0.25, effects: { money: +100, luck: +4, happy: +4 }, grade: "good", narrative: "3등 당첨. 꿈은 꽤 정직했다." },
-          { chance: 0.7, effects: { luck: +1, happy: -1 }, grade: "mid", narrative: "꽝. 돼지는 그냥 배가 고팠나 보다." },
+          { chance: 0.7, effects: { luck: +1, happy: -1, money: -10 }, grade: "mid", narrative: "10만 원어치 샀는데 전부 꽝. 돼지는 그냥 배가 고팠나 보다." },
         ] },
       { id: "tell", emoji: "🗣️", text: "친구한테 꿈 얘기를 한다", grade: "bad", effects: { social: +2, luck: -3 }, narratives: ["꿈을 말하면 복이 날아간다고 했다. 친구가 그 주에 복권에 당첨됐다."] },
       { id: "sell", emoji: "💸", text: "꿈을 동생에게 판다", grade: "mid", effects: { money: +5, social: +3, happy: +2 }, narratives: ["5만 원에 팔았다. 동생은 그 돈으로 치킨을 시켰다."] },
@@ -1264,7 +1264,7 @@ export const EVENTS_YOUNG = [
         outcomes: [
           { chance: 0.2, effects: { money: +2000, social: +12, internet: +12, happy: +10 }, grade: "crit", narrative: "결승까지 갔다. 음원이 차트에 올랐다." },
           { chance: 0.5, effects: { social: +5, internet: +6, happy: +4 }, grade: "good", narrative: "3라운드 탈락. 그래도 공연 섭외가 들어오기 시작했다." },
-          { chance: 0.3, effects: { happy: -6, internet: +3 }, grade: "bad", narrative: "악마의 편집을 당했다. 한동안 버스킹을 쉬었다." },
+          { chance: 0.3, effects: { happy: -6, internet: +3, money: -200 }, grade: "bad", narrative: "악마의 편집을 당했다. 의상·편곡비로 모아 둔 200만 원도 다 썼다. 한동안 버스킹을 쉬었다." },
         ] },
       { id: "no", emoji: "🎸", text: "길거리에서 계속 노래한다", grade: "good", effects: { happy: +5, social: +2 }, narratives: ["단골 관객이 생겼다. 무대는 작아도 행복했다."] },
     ],
@@ -1289,7 +1289,7 @@ export const EVENTS_YOUNG = [
       { id: "lab", emoji: "🔬", text: "과학관에 감정을 맡긴다", grade: "mid",
         outcomes: [
           { chance: 0.25, effects: { money: +2000, intel: +8, internet: +8, happy: +10 }, grade: "crit", narrative: "진짜 운석이었다! 박물관이 사 갔고, 내 이름이 설명판에 적혔다." },
-          { chance: 0.75, effects: { intel: +4, happy: +2 }, grade: "mid", narrative: "그냥 철광석이었다. 대신 연구원 선생님이 광물 도감을 선물해 줬다." },
+          { chance: 0.75, effects: { intel: +4, happy: +1, money: -20 }, grade: "mid", narrative: "그냥 철광석이었다. 감정비 20만 원이 들었지만, 연구원 선생님이 광물 도감을 선물해 줬다." },
         ] },
       { id: "keep", emoji: "🪨", text: "보물 상자에 넣어 둔다", grade: "mid", effects: { happy: +3, luck: +2 }, narratives: ["평생 책상 위 문진으로 썼다. 진짜였는지는 아무도 모른다."] },
     ],
@@ -1330,7 +1330,7 @@ export const EVENTS_YOUNG = [
       { id: "go", emoji: "✈️", text: "떠난다", grade: "mid",
         outcomes: [
           { chance: 0.5, effects: { intel: +8, social: +8, happy: +8 }, grade: "crit", narrative: "홈스테이 가족이 두 번째 가족이 됐다. 지금도 명절마다 영상통화를 한다." },
-          { chance: 0.5, effects: { intel: +5, happy: -2, social: +3 }, grade: "good", narrative: "처음 석 달은 매일 울었다. 돌아올 땐 공항에서 또 울었다." },
+          { chance: 0.5, effects: { intel: +5, happy: -2, social: +3, money: -300 }, grade: "good", narrative: "장학금으로는 모자라 생활비가 300만 원 더 들었다. 처음 석 달은 매일 울었다. 돌아올 땐 공항에서 또 울었다." },
         ] },
       { id: "stay", emoji: "🏠", text: "포기하고 남는다", grade: "mid", effects: { intel: +3, social: +2 }, narratives: ["친구들과 졸업을 함께했다. 가끔 '그때 갔더라면' 하고 생각한다."] },
     ],
