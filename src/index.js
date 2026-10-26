@@ -6958,7 +6958,7 @@ const _partialIpHit = new Map();  // ip|contentId → ts (연타·조작 방지)
 const PARTIAL_IP_COOLDOWN_MS = 30_000;
 const PARTIAL_SEEN_TTL_MS = 6 * 3600_000;
 
-app.post("/plays/partial", express.text({ type: "text/plain", limit: "2kb" }), async (req, res) => {
+app.post("/plays/partial", express.text({ type: "text/plain", limit: "16kb" }), async (req, res) => {
   try {
     let b = req.body;
     if (typeof b === "string") { try { b = JSON.parse(b); } catch { b = null; } }
@@ -6989,6 +6989,18 @@ app.post("/plays/partial", express.text({ type: "text/plain", limit: "2kb" }), a
     _partialSeen.set(sid, now);
     _partialIpHit.set(ipKey, now);
     await incrementPlayCount(contentId);
+
+    // 랭킹 포인트도 완주와 똑같이 지급 (로그인=플레이어+제작자, 게스트=제작자만).
+    // 하루 1회 중복·자기 콘텐츠·일일 상한은 DB 함수(record_ranking_points)가 처리 → 중도 이탈 후 완주해도 이중 지급 없음.
+    let playerId = null;
+    if (typeof b?.token === "string" && b.token.length > 20 && b.token.length < 4000) {
+      try { playerId = (await verifyJWT(b.token))?.id || null; } catch { playerId = null; }
+    }
+    const rankSid = String(b?.rankSid || sid).slice(0, 64);
+    const { error: rpErr } = await supabaseAdmin.rpc("record_ranking_points", {
+      p_player_id: playerId, p_content_id: contentId, p_content_type: type, p_session_id: rankSid,
+    });
+    if (rpErr) console.error("[plays/partial] ranking points error:", rpErr.message);
     return res.json({ ok: true, counted: true });
   } catch (err) {
     console.error("[POST /plays/partial] error:", err);
