@@ -136,6 +136,77 @@ const supabaseAdmin = createClient(
 );
 
 // =========================
+// IP 차단 (2026-10-26) — 차단된 회원의 IP 는 API·소켓 전부 거부
+// =========================
+// 요청의 후보 IP 목록. cf-connecting-ip(Cloudflare가 덮어씀) + X-Forwarded-For 전체.
+// XFF 앞쪽은 위조 가능하지만 "목록 중 하나라도 차단 IP면 거부"라서 위조로 차단을 피할 수는 없음.
+function requestIps(headers, fallback) {
+  const out = [];
+  const cf = String(headers?.["cf-connecting-ip"] || "").trim();
+  if (cf) out.push(cf);
+  for (const p of String(headers?.["x-forwarded-for"] || "").split(",")) {
+    const v = p.trim();
+    if (v && !out.includes(v)) out.push(v);
+  }
+  const fb = String(fallback || "").replace(/^::ffff:/, "").trim();
+  if (fb && !out.includes(fb)) out.push(fb);
+  return out;
+}
+// 기록용 대표 IP: cf-connecting-ip 우선, 없으면 XFF 첫 값(Render 기준 실제 접속자)
+function primaryIp(headers, fallback) {
+  const cf = String(headers?.["cf-connecting-ip"] || "").trim();
+  if (cf) return cf;
+  const xff = String(headers?.["x-forwarded-for"] || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (xff.length) return xff[0];
+  return String(fallback || "").replace(/^::ffff:/, "").trim();
+}
+// 내부망/프록시 IP 는 기록·차단 대상에서 제외 (잘못 막으면 전원 차단됨)
+function isPrivateIp(ip) {
+  return !ip || /^(10\.|127\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|::1$|f[cd]|fe80)/i.test(ip);
+}
+
+let bannedIps = new Set();
+async function refreshBannedIps() {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("ip_bans")
+      .select("ip")
+      .or("expires_at.is.null,expires_at.gt." + new Date().toISOString())
+      .limit(5000);
+    if (!error) bannedIps = new Set((data || []).map(r => r.ip));
+  } catch (e) {
+    console.error("[IPBAN] refresh error:", e?.message || e);
+  }
+}
+refreshBannedIps();
+setInterval(refreshBannedIps, 60_000).unref?.();
+
+function isIpBanned(headers, fallback) {
+  if (bannedIps.size === 0) return false;
+  return requestIps(headers, fallback).some(ip => bannedIps.has(ip));
+}
+
+app.use((req, res, next) => {
+  if (isIpBanned(req.headers, req.socket?.remoteAddress)) {
+    return res.status(403).json({ ok: false, error: "IP_BANNED" });
+  }
+  next();
+});
+
+// 회원 IP 기록 — 같은 회원·IP 는 6시간에 1번만 DB 기록. 차단 회원이면 DB가 그 IP를 자동 차단.
+const _ipTouched = new Map();
+function touchUserIp(userId, ip) {
+  if (!userId || isPrivateIp(ip) || String(userId).startsWith("guest_")) return;
+  const key = userId + "|" + ip;
+  const now = Date.now();
+  if (now - (_ipTouched.get(key) || 0) < 6 * 3600_000) return;
+  _ipTouched.set(key, now);
+  if (_ipTouched.size > 50_000) _ipTouched.clear();
+  supabaseAdmin.rpc("touch_user_ip", { p_user: userId, p_ip: ip })
+    .then(({ data }) => { if (data === true) refreshBannedIps(); }, () => {});
+}
+
+// =========================
 // JWKS 기반 JWT 검증 (Supabase access_token)
 // =========================
 
@@ -3042,6 +3113,7 @@ async function requireAuth(req, res, next) {
   }
 
   req.user = user;
+  touchUserIp(user.id, primaryIp(req.headers, req.socket?.remoteAddress));
   next();
 }
 
@@ -3053,7 +3125,10 @@ async function optionalAuth(req, res, next) {
     if (authHeader.startsWith("Bearer ")) token = authHeader.slice(7).trim();
     if (token && token !== "null" && token !== "undefined") {
       const user = await verifyJWT(token);
-      if (user) req.user = user;
+      if (user) {
+        req.user = user;
+        touchUserIp(user.id, primaryIp(req.headers, req.socket?.remoteAddress));
+      }
     }
   } catch (_) { /* 토큰 검증 실패해도 비로그인으로 통과 */ }
   next();
@@ -3080,6 +3155,7 @@ async function requireAdmin(req, res, next) {
   }
 
   req.user = user;
+  touchUserIp(user.id, primaryIp(req.headers, req.socket?.remoteAddress));
   next();
 }
 
@@ -3982,6 +4058,18 @@ app.get("/admin/reports", requireAdmin, async (req, res) => {
 });
 
 // 관리자 본인 확인 API
+// IP 차단 점검용: 서버가 보는 내 IP 헤더
+app.get("/admin/my-ip", requireAdmin, (req, res) => {
+  res.json({
+    ok: true,
+    primary: primaryIp(req.headers, req.socket?.remoteAddress),
+    candidates: requestIps(req.headers, req.socket?.remoteAddress),
+    cf: req.headers["cf-connecting-ip"] || null,
+    xff: req.headers["x-forwarded-for"] || null,
+    banned_ip_count: bannedIps.size,
+  });
+});
+
 app.get("/admin/me", requireAdmin, async (req, res) => {
   return res.json({ ok: true, isAdmin: true, email: req.user.email, userId: req.user.id });
 });
@@ -4538,7 +4626,24 @@ app.post("/admin/users/:userId/ban", requireAdmin, async (req, res) => {
       detail: reason || null,
     });
 
-    return res.json({ ok: true });
+    // 차단 회원의 기록된 IP 도 차단 (관리자가 쓴 IP 는 DB 함수가 제외)
+    let ipCount = 0;
+    try {
+      const { data } = await supabaseAdmin.rpc("admin_ip_ban_user", { p_user: req.params.userId });
+      ipCount = Number(data) || 0;
+      await refreshBannedIps();
+    } catch (e) {
+      console.error("[IPBAN] ban ip error:", e?.message || e);
+    }
+
+    // 이미 연결된 소켓(멀티·채팅)도 끊기
+    try {
+      for (const sock of io.sockets.sockets.values()) {
+        if (sock.user?.id === req.params.userId || isIpBanned(sock.handshake.headers, sock.handshake.address)) sock.disconnect(true);
+      }
+    } catch (_) {}
+
+    return res.json({ ok: true, ip_count: ipCount });
   } catch (err) {
     console.error("POST /admin/users/:userId/ban:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
@@ -4559,6 +4664,13 @@ app.delete("/admin/users/:userId/ban", requireAdmin, async (req, res) => {
       target_type: "user",
       target_id: req.params.userId,
     });
+
+    try {
+      await supabaseAdmin.rpc("admin_ip_unban_user", { p_user: req.params.userId });
+      await refreshBannedIps();
+    } catch (e) {
+      console.error("[IPBAN] unban ip error:", e?.message || e);
+    }
 
     return res.json({ ok: true });
   } catch (err) {
@@ -4618,12 +4730,24 @@ app.get("/admin/users", requireAdmin, async (req, res) => {
         for (const b of bans) bansMap[b.user_id] = b;
       }
     }
+    // IP 차단 개수
+    const ipBanCount = {};
+    const bannedIds = userIds.filter(id => bansMap[id]);
+    if (bannedIds.length > 0) {
+      const { data: ipRows } = await supabaseAdmin
+        .from("ip_bans")
+        .select("user_id")
+        .in("user_id", bannedIds)
+        .or("expires_at.is.null,expires_at.gt." + new Date().toISOString());
+      for (const r of ipRows || []) ipBanCount[r.user_id] = (ipBanCount[r.user_id] || 0) + 1;
+    }
 
     let items = (data || []).map(u => ({
       ...u,
       is_banned: !!bansMap[u.id],
       ban_reason: bansMap[u.id]?.reason || null,
       ban_expires_at: bansMap[u.id]?.expires_at || null,
+      ip_ban_count: ipBanCount[u.id] || 0,
     }));
 
     // 밴 필터
@@ -9357,11 +9481,14 @@ function doQuizReveal(room) {
 
 io.use(async (socket, next) => {
   try {
+    const hs = socket.handshake;
+    if (isIpBanned(hs.headers, hs.address)) return next(new Error("IP_BANNED"));
     const token = socket.handshake.auth?.accessToken;
     if (token) {
       const user = await verify(token);
       if (!user) return next(new Error("UNAUTHORIZED"));
       socket.user = user;
+      touchUserIp(user.id, primaryIp(hs.headers, hs.address));
     } else {
       // 게스트 모드: 토큰 없으면 guestId 기반으로 연결 허용
       const guestId = socket.handshake.auth?.guestId;
