@@ -24,7 +24,7 @@ export const PHYS = Object.freeze({
   turnRate: 16,                       // rad/s (바라보는 방향 회전)
   stamina: { max: 100, drain: 38, regen: 20, regenDelay: 0.6, exhaustResume: 25, tackleCost: 22 },
   ball: { drag: 0.75, roll: 40, max: 1100, wallE: 0.78, postE: 0.85, spinDecay: 1.4, magnus: 0.5, playerE: 0.55, playerMass: 3, mass: 1 },
-  kick: { perfect: { from: 0.82, to: 0.96, boost: 1.18 }, combo: { window: 4, per: 0.04, max: 3 }, save: { window: 2.0, superSpeed: 850 }, reach: 12, frontDot: -0.25, minPower: 360, maxPower: 1050, chargeTime: 0.85, inherit: 0.35, cooldown: 0.28, minCharge: 0.12 },
+  kick: { perfect: { from: 0.82, to: 0.96, boost: 1.18 }, combo: { window: 4, per: 0.04, max: 3 }, save: { window: 2.0, superSpeed: 850 }, reach: 40, frontDot: -0.25, minPower: 360, maxPower: 1050, chargeTime: 0.85, inherit: 0.35, cooldown: 0.28, minCharge: 0.12 },
   pass: { throughHold: 0.28, leadTime: 0.55, minSpeed: 380, maxSpeed: 780, coneDeg: 38, wideConeDeg: 70 },
   tackle: { speed: 560, duration: 0.22, recover: 0.35, cooldown: 1.0, stun: 0.55, ballKnock: 430, hitReach: 4, recoverHit: 0.2 },
 });
