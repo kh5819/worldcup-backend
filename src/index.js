@@ -6948,6 +6948,55 @@ app.post("/plays/complete", requireAuth, async (req, res) => {
 });
 
 // =========================
+// 중도 이탈 플레이 집계 — 퀴즈 3문제 / 월드컵 5경기 이상 하고 나가면 play_count +1
+// (완주하면 기존 경로가 +1 하므로 클라이언트는 완주 땐 보내지 않음.
+//  페이지를 닫는 순간 sendBeacon(text/plain)으로 오기 때문에 로그인 토큰 없이 받음)
+// =========================
+const PARTIAL_MIN = { quiz: 3, worldcup: 5 };
+const _partialSeen = new Map();   // sessionId → ts (같은 플레이 중복 방지)
+const _partialIpHit = new Map();  // ip|contentId → ts (연타·조작 방지)
+const PARTIAL_IP_COOLDOWN_MS = 30_000;
+const PARTIAL_SEEN_TTL_MS = 6 * 3600_000;
+
+app.post("/plays/partial", express.text({ type: "text/plain", limit: "2kb" }), async (req, res) => {
+  try {
+    let b = req.body;
+    if (typeof b === "string") { try { b = JSON.parse(b); } catch { b = null; } }
+    const contentId = String(b?.contentId || "");
+    const sid = String(b?.sessionId || "").slice(0, 64);
+    const progress = Number(b?.progress) || 0;
+    const type = b?.gameType === "worldcup" ? "worldcup" : "quiz";
+
+    if (!/^[0-9a-f-]{36}$/i.test(contentId) || !sid) return res.status(400).json({ ok: false });
+    if (progress < PARTIAL_MIN[type]) return res.json({ ok: true, counted: false });
+
+    const now = Date.now();
+    if (_partialSeen.size > 20_000) {
+      for (const [k, t] of _partialSeen) if (now - t > PARTIAL_SEEN_TTL_MS) _partialSeen.delete(k);
+      if (_partialSeen.size > 20_000) _partialSeen.clear();
+    }
+    if (_partialSeen.has(sid)) return res.json({ ok: true, counted: false });
+
+    const ip = primaryIp(req.headers, req.socket?.remoteAddress);
+    const ipKey = ip + "|" + contentId;
+    if (now - (_partialIpHit.get(ipKey) || 0) < PARTIAL_IP_COOLDOWN_MS) return res.json({ ok: true, counted: false });
+    if (_partialIpHit.size > 20_000) _partialIpHit.clear();
+
+    // 콘텐츠 종류가 맞는지 확인 (월드컵 요청으로 퀴즈 카운트 올리는 것 방지)
+    const { data: row } = await supabaseAdmin.from("contents").select("id, mode").eq("id", contentId).maybeSingle();
+    if (!row || row.mode !== type) return res.json({ ok: true, counted: false });
+
+    _partialSeen.set(sid, now);
+    _partialIpHit.set(ipKey, now);
+    await incrementPlayCount(contentId);
+    return res.json({ ok: true, counted: true });
+  } catch (err) {
+    console.error("[POST /plays/partial] error:", err);
+    return res.status(500).json({ ok: false });
+  }
+});
+
+// =========================
 // 퀴즈 통계 (Quiz Stats)
 // =========================
 
