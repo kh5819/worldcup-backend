@@ -35,7 +35,6 @@ import { registerMemoryMulti } from "./memory-multi.js";
 import { registerBlockBlastMulti } from "./blockblast-multi.js";
 import { registerYachtMulti } from "./yacht-multi.js";
 import { registerRaisingPvp } from "./raising-pvp.js";
-import { registerChago, registerChagoRoutes } from "./chago.js";
 
 // ── 전역 크래시 가드 ──
 // 처리 안 된 예외/Promise 거부가 서버 프로세스 전체를 죽이는 것 방지.
@@ -10175,9 +10174,6 @@ registerBlockBlastMulti(io, supabaseAdmin);
 registerYachtMulti(io, supabaseAdmin);
 // 플듀 키우기 친구 대전(1대1) — rpvp:* 이벤트, 서버는 시계·지시 중계만
 registerRaisingPvp(io, supabaseAdmin);
-// 차고차고(축구) — chago:* 이벤트, 서버가 물리·판정 전부 계산
-registerChago(io, supabaseAdmin);
-registerChagoRoutes(app, { requireAuth, requireAdmin, io });   // /chago/leaderboard · /chago/me · /admin/chago/*
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {
