@@ -6673,6 +6673,110 @@ async function recordPlayOnce({ contentId, userId, mode, gameType }) {
 }
 
 // =========================
+// 솔로 월드컵 중도 이탈 경기 기록 — 나가도 지금까지 한 경기가 승률(worldcup_matches)에 반영됨
+// 클라가 offset과 함께 새 경기만 보내고, 서버는 이미 받은 개수(have) 이후 것만 넣어 재전송에도 중복이 안 생김.
+// 완주하면 finish가 같은 runId의 임시(partial) 행을 지우고 전체 경기를 다시 넣는다(이어하기 이중 집계 방지).
+// =========================
+const _wcRunDone = new Map();      // runId → ts (완주한 런은 늦게 도착한 비콘 무시)
+const _wcPartialIp = new Map();    // ip → { t, n } (10분 창 안에서 경기 수 제한)
+const WC_PARTIAL_WINDOW_MS = 10 * 60_000;
+const WC_PARTIAL_IP_MAX = 4000;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function _wcMarkRunDone(runId) {
+  if (!runId) return;
+  const now = Date.now();
+  if (_wcRunDone.size > 20_000) {
+    for (const [k, t] of _wcRunDone) if (now - t > 6 * 3600_000) _wcRunDone.delete(k);
+    if (_wcRunDone.size > 20_000) _wcRunDone.clear();
+  }
+  _wcRunDone.set(String(runId).slice(0, 64), now);
+}
+async function _wcDropPartialMatches(contentId, runId) {
+  if (!runId) return;
+  try {
+    const run = String(runId).slice(0, 64);
+    _wcMarkRunDone(run);
+    // 임시 행은 session_id = 런 id 로 저장돼 있다(idx_wc_matches_session 사용)
+    await supabaseAdmin.from("worldcup_matches").delete()
+      .eq("session_id", run).eq("content_id", contentId)
+      .contains("meta", { partial: true, run });
+  } catch (err) {
+    console.warn("[wc partial drop] error:", err?.message || err);
+  }
+}
+
+app.post("/worldcup/partial-matches", express.text({ type: "text/plain", limit: "128kb" }), async (req, res) => {
+  try {
+    let b = req.body;
+    if (typeof b === "string") { try { b = JSON.parse(b); } catch { b = null; } }
+    const contentId = String(b?.contentId || "");
+    const sid = String(b?.sessionId || "").slice(0, 64);
+    const runId = String(b?.runId || "").slice(0, 64);
+    const offset = Math.max(0, parseInt(b?.offset, 10) || 0);
+    const matches = Array.isArray(b?.matches) ? b.matches.slice(0, 150) : [];
+    if (!UUID_RE.test(contentId) || !sid || !runId) return res.status(400).json({ ok: false });
+    if (!matches.length || _wcRunDone.has(runId)) return res.json({ ok: true, inserted: 0 });
+
+    const now = Date.now();
+    const ip = primaryIp(req.headers, req.socket?.remoteAddress);
+    if (_wcPartialIp.size > 20_000) _wcPartialIp.clear();
+    let hit = _wcPartialIp.get(ip);
+    if (!hit || now - hit.t > WC_PARTIAL_WINDOW_MS) hit = { t: now, n: 0 };
+    if (hit.n + matches.length > WC_PARTIAL_IP_MAX) return res.json({ ok: true, inserted: 0, limited: true });
+    hit.n += matches.length;
+    _wcPartialIp.set(ip, hit);
+
+    const { data: row } = await supabaseAdmin.from("contents").select("id, mode").eq("id", contentId).maybeSingle();
+    if (!row || row.mode !== "worldcup") return res.json({ ok: true, inserted: 0 });
+
+    // 이 콘텐츠의 후보 id만 허용
+    const wanted = new Set();
+    for (const m of matches) for (const k of ["candidate_a_id", "candidate_b_id", "winner_candidate_id", "loser_candidate_id"]) {
+      if (typeof m?.[k] === "string" && UUID_RE.test(m[k])) wanted.add(m[k]);
+    }
+    if (!wanted.size) return res.json({ ok: true, inserted: 0 });
+    const { data: cands } = await supabaseAdmin.from("worldcup_candidates").select("id").eq("content_id", contentId).in("id", [...wanted]);
+    const okIds = new Set((cands || []).map((c) => c.id));
+
+    const { count: have } = await supabaseAdmin.from("worldcup_matches").select("id", { count: "exact", head: true })
+      .eq("session_id", runId).eq("content_id", contentId).contains("meta", { partial: true, run: runId });
+
+    let playerId = null;
+    if (typeof b?.token === "string" && b.token.length > 20 && b.token.length < 4000) {
+      try { playerId = (await verifyJWT(b.token))?.id || null; } catch { playerId = null; }
+    }
+    const idOrNull = (v) => (typeof v === "string" && okIds.has(v) ? v : null);
+    const rows = [];
+    matches.forEach((m, i) => {
+      if (offset + i < (have || 0)) return;
+      const a = idOrNull(m?.candidate_a_id), bb = idOrNull(m?.candidate_b_id), w = idOrNull(m?.winner_candidate_id);
+      if (!a || !bb || !w) return;
+      rows.push({
+        content_id: contentId,
+        room_id: null,
+        match_round: typeof m.match_round === "string" ? m.match_round.slice(0, 40) : null,
+        candidate_a_id: a,
+        candidate_b_id: bb,
+        winner_candidate_id: w,
+        loser_candidate_id: idOrNull(m?.loser_candidate_id),
+        is_tie: !!m.is_tie,
+        session_id: runId,
+        is_logged_in: !!playerId,
+        meta: { partial: true, run: runId },
+      });
+    });
+    if (!rows.length) return res.json({ ok: true, inserted: 0 });
+    const { error } = await supabaseAdmin.from("worldcup_matches").insert(rows);
+    if (error) { console.warn("[POST /worldcup/partial-matches] insert error:", error.message); return res.status(500).json({ ok: false }); }
+    return res.json({ ok: true, inserted: rows.length });
+  } catch (err) {
+    console.error("[POST /worldcup/partial-matches] error:", err);
+    return res.status(500).json({ ok: false });
+  }
+});
+
+// =========================
 // 솔로 월드컵 결과 기록 API (로그인 유저)
 // =========================
 app.post("/worldcup/finish", requireAuth, async (req, res) => {
@@ -6684,6 +6788,7 @@ app.post("/worldcup/finish", requireAuth, async (req, res) => {
       championCandidateId, champion_candidate_id,
       matches,
       sessionId,
+      runId,
     } = req.body;
 
     const cId = contentId || content_id;
@@ -6710,7 +6815,8 @@ app.post("/worldcup/finish", requireAuth, async (req, res) => {
       return res.status(500).json({ ok: false, error: "RUN_INSERT_FAILED" });
     }
 
-    // 2) worldcup_matches bulk insert
+    // 2) worldcup_matches bulk insert (중도 이탈 때 임시로 쌓인 같은 런의 경기는 먼저 지우고 전체를 다시 넣는다)
+    await _wcDropPartialMatches(cId, runId);
     if (Array.isArray(matches) && matches.length > 0) {
       const rows = matches.map((m) => ({
         content_id: cId,
@@ -6754,6 +6860,7 @@ app.post("/worldcup/finish-anon", async (req, res) => {
       championCandidateId, champion_candidate_id,
       matches,
       sessionId,
+      runId,
     } = req.body;
 
     const cId = contentId || content_id;
@@ -6790,7 +6897,8 @@ app.post("/worldcup/finish-anon", async (req, res) => {
       return res.status(500).json({ ok: false, error: "RUN_INSERT_FAILED" });
     }
 
-    // 2) worldcup_matches bulk insert
+    // 2) worldcup_matches bulk insert (중도 이탈 임시 경기는 먼저 지우고 전체를 다시 넣는다)
+    await _wcDropPartialMatches(cId, runId);
     if (Array.isArray(matches) && matches.length > 0) {
       const rows = matches.map((m) => ({
         content_id: cId,
