@@ -220,12 +220,18 @@ ANS.S1 = { digits: [5, 3, 8, 1] };
 function play(ending) {
   const s = createSession(C, 0);
   const log = [];
+  const objSeen = new Set();
   const ev = startEvents(C, s);
   ok(ev.some((e) => e.type === "dialogue"), "인트로 대사 없음");
   const step = (action, label) => {
     const r = act(C, s, action, 1000);
     if (!r.ok) { fails++; console.error(`  ✗ [${label}] ${JSON.stringify(action)} → ${r.error} (장면 ${s.scene})`); }
     log.push(r);
+    // 안내: 지금 할 일이 가리키는 조사 지점은 실제로 보여야 하고, 이동 버튼은 실제로 열려 있어야 한다
+    const sn = snapshot(C, s, 1000), o = sn.objective;
+    if (o?.hotspot) ok(sn.scene.hotspots.some((h) => h.id === o.hotspot), `안내가 안 보이는 지점을 가리킴: ${o.hotspot} (장면 ${s.scene}, "${o.text}")`);
+    if (o?.exit) ok(sn.scene.exits.some((e) => e.to === o.exit), `안내가 닫힌 출구를 가리킴: ${o.exit}`);
+    if (o) objSeen.add(o.text);
     return r;
   };
   const go = (to) => step({ type: "move", to }, `이동 ${to}`);
@@ -368,7 +374,10 @@ function play(ending) {
   const answers = ending === "true" ? TRUE
     : ending === "normal" ? { ...TRUE, motive: { option: "masterpiece", evidence: "E13" } }
       : { ...TRUE, culprit: { option: "mayor", evidence: "E06" } };
+  ok(snapshot(C, s, 1000).objective?.hotspot === "ug_final", "마지막 안내는 최종 추리");
+  ok(objSeen.size >= 30, `안내가 단계마다 바뀜 (${objSeen.size}개)`);
   const fin = step({ type: "final", answers }, "최종 추리");
+  ok(snapshot(C, s, 1000).objective === null, "엔딩 뒤에는 안내 없음");
   const e = fin.events.find((x) => x.type === "ending");
   ok(e?.ending === ending, `엔딩 ${ending} 기대, 실제 ${e?.ending}`);
   ok(ending === "bad" ? !e?.reveal : e?.reveal?.t === "골동품상 루시앙", "범인 공개는 진/보통 엔딩에만");

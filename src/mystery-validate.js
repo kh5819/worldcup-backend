@@ -97,6 +97,12 @@ export function validateCase(c) {
   }
   for (const q of P.openQuestions || []) { used.push([q.until, "presentation.openQuestions"]); if (q.from) used.push([q.from, "presentation.openQuestions"]); }
   for (const x of P.chapters || []) if (!x.end) used.push([x.until, "presentation.chapters"]);
+  for (const o of P.objectives || []) {
+    if (!o.until.startsWith("__")) used.push([o.until, "presentation.objectives"]);
+    if (o.from) used.push([o.from, "presentation.objectives"]);
+    if (o.scene && !has(c.scenes, o.scene)) err(`presentation.objectives: 없는 장소 ${o.scene}`);
+    if (o.hotspot && !(c.scenes[o.scene]?.hotspots || []).some((h) => h.id === o.hotspot)) err(`presentation.objectives: ${o.scene} 에 조사 지점 ${o.hotspot} 없음`);
+  }
   for (const s of P.suspects || []) {
     if (!has(c.characters, s.id)) err(`presentation.suspects: 없는 인물 ${s.id}`);
     for (const col of ["motive", "alibi", "note", "verdict"]) for (const r of s[col] || []) for (const f of r[0]) used.push([f, `presentation.suspects.${s.id}.${col}`]);

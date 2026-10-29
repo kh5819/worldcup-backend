@@ -165,6 +165,7 @@ function snapshotInner(c, st, now) {
     hypotheses: hypothesesView(c, st),
     notebook: notebookView(c, st),
     artFlags: (c.presentation?.artFlags || []).filter((f) => st.flags.has(f)),
+    objective: objectiveView(c, st),
     // 카드가 모두 모였지만 아직 연결하지 않은 추리 수 (정답 조합은 알려 주지 않는다)
     deductionReady: c.deductions.filter((d) => !st.deductions.includes(d.id) && d.cards.every((x) => st.evidence.includes(x))).length,
     relations: (c.relations || []).filter((r) => allFlags(st, r.when)).map(({ a, b, kind, label }) => ({ a, b, kind, label })),
@@ -172,6 +173,25 @@ function snapshotInner(c, st, now) {
     ending: st.ending,
     result: st.ending ? buildResult(c, st, now) : null,
   };
+}
+
+// ---------- 지금 할 일 (presentation.objectives) ----------
+// 첫 미완료 목표 + 지금 장소에서 그 장소로 가는 첫 이동 버튼(열린 출구만 따라 BFS)
+function objectiveView(c, st) {
+  if (st.ending) return null;
+  const o = (c.presentation?.objectives || []).find((x) => (!x.from || st.flags.has(x.from)) && !st.flags.has(x.until));
+  if (!o) return null;
+  let exit = null;
+  if (o.scene && o.scene !== st.scene && c.scenes[o.scene]) {
+    const prev = new Map([[st.scene, null]]);
+    const q = [st.scene];
+    while (q.length && !prev.has(o.scene)) {
+      const cur = q.shift();
+      for (const e of c.scenes[cur]?.exits || []) if (!prev.has(e.to) && allFlags(st, e.requires)) { prev.set(e.to, cur); q.push(e.to); }
+    }
+    if (prev.has(o.scene)) { let n = o.scene; while (prev.get(n) !== st.scene) n = prev.get(n); exit = n; }
+  }
+  return { text: o.text, hotspot: o.scene === st.scene || !o.scene ? o.hotspot || null : null, exit, board: !!o.board };
 }
 
 // ---------- 수첩 (사건 데이터의 presentation 을 진행도만큼 계산) ----------
