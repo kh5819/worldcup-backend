@@ -26,6 +26,8 @@ import { registerCardGame } from "./cardgame.js";
 import { registerMerge } from "./merge.js";
 import { registerDraw } from "./draw.js";
 import { registerSuspect } from "./suspect.js";
+import { registerMystery } from "./mystery.js";
+import { registerMysteryMulti } from "./mystery-multi.js";
 import { registerDodge } from "./dodge.js";
 import { registerGachatd } from "./gachatd.js";
 import { registerGolf } from "./golf.js";
@@ -10282,6 +10284,9 @@ registerBlockBlastMulti(io, supabaseAdmin);
 registerYachtMulti(io, supabaseAdmin);
 // 플듀 키우기 친구 대전(1대1) — rpvp:* 이벤트, 서버는 시계·지시 중계만
 registerRaisingPvp(io, supabaseAdmin);
+// 플듀 미스터리 — mys:* 이벤트, 사건 진행·정답 판정 전부 서버
+registerMystery(io, supabaseAdmin);
+registerMysteryMulti(io, supabaseAdmin);
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {
