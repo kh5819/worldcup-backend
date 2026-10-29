@@ -233,18 +233,29 @@ function interState(st, iid) {
   st.inter = st.inter || {};
   return st.inter[iid] || (st.inter[iid] = { revealed: null, pressed: [], broken: [], mistakes: 0, lockedAt: null });
 }
-function interView(c, st, iid) {
+// 대답 거부: 기회를 다 쓰면 새 증거를 찾거나 잠시(INTER_LOCK_MS) 기다리면 풀린다.
+// (새 증거만으로 풀리게 하면, 남은 증거가 전부 이 심문 뒤에 있을 때 영영 막힌다)
+const INTER_LOCK_MS = 30_000;
+function interLockLeft(I, S, st, now) {
+  if (S.mistakes < I.maxMistakes) return 0;
+  const left = S.lockedAt === st.evidence.length ? INTER_LOCK_MS - (now - (S.lockedTs || 0)) : 0;
+  if (left > 0) return left;
+  S.mistakes = 0; S.lockedAt = null; S.lockedTs = null; // 풀리면 기회를 다시 채운다
+  return 0;
+}
+function interView(c, st, iid, now = Date.now()) {
   const I = c.interrogations[iid];
   const S = interState(st, iid);
   if (!S.revealed) S.revealed = I.statements.filter((x) => !I.statements.some((y) => (y.press?.reveal || []).includes(x.id) || (y.contradiction?.reveal || []).includes(x.id))).map((x) => x.id);
-  const locked = S.mistakes >= I.maxMistakes && S.lockedAt === st.evidence.length;
+  const lockLeft = interLockLeft(I, S, st, now);
+  const locked = lockLeft > 0;
   return {
     id: iid, character: I.character, title: I.title,
     statements: I.statements.filter((x) => S.revealed.includes(x.id)).map((x) => ({
       id: x.id, text: x.text, pressed: S.pressed.includes(x.id), broken: S.broken.includes(x.id), canPress: !!x.press,
       suspicious: hasRole("psychologist") && !!x.contradiction && !S.broken.includes(x.id),
     })),
-    mistakes: S.mistakes, maxMistakes: I.maxMistakes, locked, done: st.flags.has(I.done),
+    mistakes: S.mistakes, maxMistakes: I.maxMistakes, locked, lockSec: Math.ceil(lockLeft / 1000), done: st.flags.has(I.done),
   };
 }
 function interReachable(c, st, iid) {
@@ -261,7 +272,7 @@ function interrogationAction(c, st, a, events, now) {
   if (!I) return { ok: false, error: "NO_INTERROGATION" };
   if (!interReachable(c, st, iid)) return { ok: false, error: "LOCKED" };
   const S = interState(st, iid);
-  const view = () => interView(c, st, iid);
+  const view = () => interView(c, st, iid, now);
   view();
   if (a.type === "interrogate") { events.push({ type: "interrogation", view: view(), intro: I.intro }); return { ok: true }; }
   const stmt = I.statements.find((x) => x.id === a.statement && S.revealed.includes(x.id));
@@ -278,8 +289,10 @@ function interrogationAction(c, st, a, events, now) {
     return { ok: true };
   }
   // present: 증거로 반박
-  if (S.mistakes >= I.maxMistakes && S.lockedAt === st.evidence.length) {
+  const left = interLockLeft(I, S, st, now);
+  if (left > 0) {
     events.push({ type: "dialogue", lines: [[I.character, "angry", "더는 대답하지 않겠소. 확실한 걸 찾아오시오."]] });
+    events.push({ type: "inter_wrong", msg: `${Math.ceil(left / 1000)}초 뒤에 다시 물어볼 수 있다. 그동안 수첩의 증거를 다시 읽어 보자.` });
     events.push({ type: "interrogation_update", view: view() });
     return { ok: true, correct: false, locked: true };
   }
@@ -303,8 +316,9 @@ function interrogationAction(c, st, a, events, now) {
   events.push({ type: "inter_wrong", msg: con ? "증언의 약점은 맞다. 하지만 그 증거로는 반박이 안 된다." : "이 증언 자체에는 모순이 없어 보인다." });
   events.push({ type: "dialogue", lines: [R[S.mistakes % R.length]] });
   if (S.mistakes >= I.maxMistakes) {
-    S.lockedAt = st.evidence.length;
+    S.lockedAt = st.evidence.length; S.lockedTs = now;
     events.push({ type: "dialogue", lines: [[I.character, "angry", "그만하시오. 더 할 말 없소."]] });
+    events.push({ type: "inter_wrong", msg: `잠시 대답을 거부한다. ${INTER_LOCK_MS / 1000}초 뒤에 다시 물어보거나, 새 증거를 찾아오자.` });
   }
   events.push({ type: "interrogation_update", view: view() });
   return { ok: true, correct: false };

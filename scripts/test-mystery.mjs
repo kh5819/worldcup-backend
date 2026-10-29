@@ -450,5 +450,24 @@ section("최종 도움 (진행 불능 방지)");
   ok(!act(C, s, { type: "assist", puzzle: "H3" }).ok, "숨겨진 퍼즐은 도움 불가");
 }
 
+section("심문 대답 거부 — 영영 막히지 않기");
+{
+  // 실제 사례: 베로니카 오답 5번, 남은 증거가 전부 이 심문 뒤 → 새 증거를 구할 수 없음
+  const s = createSession(C, 0); s.scene = "inn";
+  for (const f of ["twist1", "got_E12", "got_E21"]) s.flags.add(f);
+  s.evidence.push("E12", "E21", "E01");
+  act(C, s, { type: "interrogate", id: "veronica" }, 1000);
+  for (let i = 0; i < 4; i++) act(C, s, { type: "present", id: "veronica", statement: "v1", evidence: "E01" }, 2000 + i);
+  const r1 = act(C, s, { type: "present", id: "veronica", statement: "v1", evidence: "E21" }, 5000);
+  ok(r1.locked && !s.flags.has("veronica_confessed"), "기회를 다 쓰면 바로는 대답 거부");
+  ok(r1.events.some((e) => e.type === "inter_wrong" && /초 뒤/.test(e.msg)), "거부할 때 몇 초 뒤 풀리는지 알려 줌");
+  const r2 = act(C, s, { type: "present", id: "veronica", statement: "v1", evidence: "E21" }, 5000 + 31000);
+  ok(r2.correct && s.flags.has("veronica_confessed"), "새 증거가 없어도 30초 뒤엔 다시 반박 가능");
+  // 예전 저장 형식(거부 시각 없음)도 바로 풀린다
+  const o = createSession(C, 0); o.scene = "inn"; for (const f of ["twist1", "got_E12", "got_E21"]) o.flags.add(f); o.evidence.push("E12", "E21");
+  o.inter = { veronica: { revealed: ["v1", "v2"], pressed: ["v1", "v2"], broken: [], mistakes: 5, lockedAt: 2 } };
+  ok(act(C, o, { type: "present", id: "veronica", statement: "v1", evidence: "E21" }, 99999).correct, "예전 저장(거부 시각 없음)도 풀림");
+}
+
 console.log(fails ? `\n✗ 실패 ${fails}건` : "\n✓ 전부 통과");
 process.exit(fails ? 1 : 0);
