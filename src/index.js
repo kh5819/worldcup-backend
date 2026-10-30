@@ -9337,6 +9337,21 @@ function getClassificationScore(question, userAnswer) {
   return { score: Math.round((correct / total) * 100) / 100, correctCount: correct, totalItems: total };
 }
 
+// 조회수 대결 문제를 50% 확률로 좌우 뒤집은 복사본 (원본 객체는 그대로)
+function swapViewsBattleSides(q) {
+  const vb = q?.type === "mcq" ? q.mediaDisplayOption?.views_battle : null;
+  if (!vb || !Array.isArray(vb.items) || vb.items.length !== 2 || !Array.isArray(q.choices) || q.choices.length !== 2) return q;
+  if (Math.random() < 0.5) return q;
+  const a = Number(Array.isArray(q.answer) ? q.answer[0] : q.answer);
+  if (a !== 0 && a !== 1) return q;
+  return {
+    ...q,
+    choices: [q.choices[1], q.choices[0]],
+    answer: [String(1 - a)],
+    mediaDisplayOption: { ...q.mediaDisplayOption, views_battle: { ...vb, items: [vb.items[1], vb.items[0]] } },
+  };
+}
+
 // 클라이언트 전송용 문제 (정답 제외)
 function safeQuestion(q, index, total) {
   const payload = {
@@ -11096,6 +11111,8 @@ io.on("connection", (socket) => {
         quizQs = quizQs.slice(0, room.questionCount);
       }
       console.log(`[quiz:start] quiz shuffled order: [${quizQs.slice(0, 5).map(q => q.id?.slice(0, 6)).join(",")}${quizQs.length > 5 ? ",…" : ""}]`);
+      // 🔥 조회수 대결: 판마다 왼쪽/오른쪽을 무작위로 (정답 위치 외우기 방지 — 짝·문제별 정답률은 그대로)
+      quizQs = quizQs.map(swapViewsBattleSides);
       initQuizState(room, quizQs);
 
       console.log(`퀴즈 시작: 방=${room.id}, 문제=${quizQs.length}개`);
