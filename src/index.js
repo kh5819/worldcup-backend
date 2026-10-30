@@ -9340,7 +9340,7 @@ function getClassificationScore(question, userAnswer) {
 // 조회수 대결 문제를 50% 확률로 좌우 뒤집은 복사본 (원본 객체는 그대로)
 function swapViewsBattleSides(q) {
   const vb = q?.type === "mcq" ? q.mediaDisplayOption?.views_battle : null;
-  if (!vb || !Array.isArray(vb.items) || vb.items.length !== 2 || !Array.isArray(q.choices) || q.choices.length !== 2) return q;
+  if (!vb || vb.shuffle === false || !Array.isArray(vb.items) || vb.items.length !== 2 || !Array.isArray(q.choices) || q.choices.length !== 2) return q;
   if (Math.random() < 0.5) return q;
   const a = Number(Array.isArray(q.answer) ? q.answer[0] : q.answer);
   if (a !== 0 && a !== 1) return q;
