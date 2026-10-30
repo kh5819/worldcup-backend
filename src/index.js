@@ -2392,6 +2392,77 @@ app.get("/api/youtube-playlist", requireAuth, async (req, res) => {
 });
 
 // =============================================
+// POST /api/youtube-videos — 영상 ID 목록 → 제목·조회수 (퀴즈 "조회수 대결" 제작용)
+// body: { ids: ["11자리ID", ...] } 최대 1000개. videos.list 50개당 1유닛.
+// 비공개/삭제 영상은 응답에서 빠짐 → missing 으로 돌려줌.
+// =============================================
+// 한 사람이 하루 무료 할당량(재생목록 추가와 공유)을 다 쓰지 못하게: 10분에 20번
+const _ytVideosHits = new Map();
+app.post("/api/youtube-videos", requireAuth, async (req, res) => {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return res.status(503).json({ ok: false, error: "YOUTUBE_API_KEY_NOT_SET" });
+
+  const now = Date.now();
+  const hits = (_ytVideosHits.get(req.user.id) || []).filter((t) => now - t < 10 * 60 * 1000);
+  if (hits.length >= 20) return res.status(429).json({ ok: false, error: "RATE_LIMITED" });
+  hits.push(now);
+  _ytVideosHits.set(req.user.id, hits);
+  if (_ytVideosHits.size > 5000) { for (const [k, v] of _ytVideosHits) if (!v.length || now - v[v.length - 1] > 10 * 60 * 1000) _ytVideosHits.delete(k); }
+
+  // IP 밴은 전역 미들웨어가 이미 403. 여기선 계정 차단(bans)도 막음.
+  try {
+    const { data: banRows } = await supabaseAdmin
+      .from("bans")
+      .select("id")
+      .eq("user_id", req.user.id)
+      .or("expires_at.is.null,expires_at.gt." + new Date().toISOString())
+      .limit(1);
+    if (banRows && banRows.length > 0) return res.status(403).json({ ok: false, error: "USER_BANNED" });
+  } catch (e) {
+    console.error("[youtube-videos] ban check error:", e.message);
+  }
+
+  const raw = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  const ids = [...new Set(raw.map((s) => String(s || "").trim()).filter((s) => /^[A-Za-z0-9_-]{11}$/.test(s)))];
+  if (ids.length === 0) return res.status(400).json({ ok: false, error: "NO_IDS" });
+  if (ids.length > 1000) return res.status(400).json({ ok: false, error: "TOO_MANY_IDS" });
+
+  try {
+    const found = new Map();
+    for (let i = 0; i < ids.length; i += 50) {
+      const u = new URL("https://www.googleapis.com/youtube/v3/videos");
+      u.searchParams.set("part", "snippet,statistics");
+      u.searchParams.set("id", ids.slice(i, i + 50).join(","));
+      u.searchParams.set("maxResults", "50");
+      u.searchParams.set("key", apiKey);
+      const r = await fetch(u, { signal: AbortSignal.timeout(10000) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const reason = j?.error?.errors?.[0]?.reason || j?.error?.message || "YT_API_ERROR";
+        return res.status(502).json({ ok: false, error: reason });
+      }
+      for (const it of (j.items || [])) {
+        const vc = it?.statistics?.viewCount;
+        found.set(it.id, {
+          id: it.id,
+          // 이모지 반쪽 방지: 코드포인트 단위로 자르기 (playlist와 동일)
+          title: [...(it?.snippet?.title || "")].slice(0, 80).join(""),
+          channel: [...(it?.snippet?.channelTitle || "")].slice(0, 40).join(""),
+          // 조회수 비공개 영상은 null
+          views: vc != null ? Number(vc) : null,
+        });
+      }
+    }
+    const items = ids.filter((id) => found.has(id)).map((id) => found.get(id));
+    const missing = ids.filter((id) => !found.has(id));
+    return res.json({ ok: true, count: items.length, items, missing, fetched_at: new Date().toISOString() });
+  } catch (err) {
+    console.error("[youtube-videos] error:", err.message);
+    return res.status(502).json({ ok: false, error: "FETCH_FAILED" });
+  }
+});
+
+// =============================================
 // POST /api/proxy-image — 외부 이미지 URL → Supabase Storage 복사 저장
 // 핫링크 차단(namu.wiki 등) 방지: 서버에서 fetch → Storage upload → publicUrl 반환
 // =============================================
@@ -9310,6 +9381,14 @@ function safeQuestion(q, index, total) {
       payload.media_display_option = q.mediaDisplayOption || {};
     }
   }
+  // 🔥 조회수 대결: 보기 썸네일용 영상 ID·제목만 (조회수=정답 힌트라 빼고 보냄 → 공개는 quiz:reveal 의 viewsBattle)
+  const _vb = q.type === "mcq" ? q.mediaDisplayOption?.views_battle : null;
+  if (_vb && Array.isArray(_vb.items)) {
+    payload.media_display_option = {
+      ...(payload.media_display_option || {}),
+      views_battle: { asof: _vb.asof || null, items: _vb.items.map((it) => ({ id: it?.id || "", title: it?.title || "" })) },
+    };
+  }
   return payload;
 }
 
@@ -9639,6 +9718,8 @@ function doQuizReveal(room) {
     // 분류퀴즈 전용: choices + categories
     classifyChoices: question.type === "classification" ? question.choices : undefined,
     classifyCategories: question.type === "classification" ? question.answer : undefined,
+    // 🔥 조회수 대결: 조회수는 정답 공개 때만 보냄 (문제 낼 땐 영상 ID·제목만)
+    viewsBattle: (question.type === "mcq" && question.mediaDisplayOption?.views_battle) || undefined,
   };
 
   q.lastReveal = revealPayload;

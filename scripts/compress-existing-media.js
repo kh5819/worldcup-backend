@@ -162,6 +162,8 @@ async function compressUrl(url) {
   const img = sharp(buf);
   const meta = await img.metadata();
   if (meta.format === "gif") { stats.skippedGif++; return null; } // 애니메이션 보존
+  // 움직이는 WebP/APNG도 보존 — sharp는 기본으로 첫 장면만 읽어서 멈춘 사진이 된다 (2026-10-29 사고)
+  if ((meta.pages || 1) > 1) { stats.skippedGif++; return null; }
 
   let hasAlpha = false;
   if (meta.hasAlpha) {
