@@ -9440,7 +9440,10 @@ function safeQuestion(q, index, total) {
   if (_vb && Array.isArray(_vb.items)) {
     payload.media_display_option = {
       ...(payload.media_display_option || {}),
-      views_battle: { asof: _vb.asof || null, items: _vb.items.map((it) => ({ id: it?.id || "", title: it?.title || "" })) },
+      views_battle: {
+        asof: _vb.asof || null, manual: !!_vb.manual, unit: _vb.unit || "",
+        items: _vb.items.map((it) => ({ id: it?.id || "", title: it?.title || "", media_url: it?.media_url || undefined, media_type: it?.media_type || undefined })),
+      },
     };
   }
   return payload;
