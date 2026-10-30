@@ -8040,6 +8040,45 @@ app.get("/explore/rising", async (req, res) => {
 });
 
 // GET /explore/featured — 추천 콘텐츠 (운영자 선정)
+// =============================================
+// GET /explore/views-battle — 🔥 조회수 대결 퀴즈 모음 (탐색 > 발견)
+// 문제의 절반 이상이 조회수 대결(mcq + media_display_option.views_battle)인 공개 퀴즈, 플레이 많은 순.
+// 문제 표를 훑어야 해서 10분 캐시.
+// =============================================
+let _vbExploreCache = { at: 0, counts: null };
+app.get("/explore/views-battle", async (req, res) => {
+  try {
+    const limit = Math.min(20, Math.max(1, parseInt(req.query.limit) || 12));
+    if (!_vbExploreCache.counts || Date.now() - _vbExploreCache.at > 10 * 60 * 1000) {
+      const rows = await _fetchAllRows("quiz_questions", (q) =>
+        q.not("media_display_option->views_battle", "is", null), "content_id");
+      const counts = {};
+      for (const r of (rows || [])) counts[r.content_id] = (counts[r.content_id] || 0) + 1;
+      _vbExploreCache = { at: Date.now(), counts };
+    }
+    const ids = Object.keys(_vbExploreCache.counts);
+    if (ids.length === 0) return res.json({ ok: true, items: [] });
+    const { data, error } = await supabaseAdmin
+      .from("public_contents_list")
+      .select("id, type, title, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, creator_name, play_count, complete_count, like_count, item_count, created_at")
+      .in("id", ids.slice(0, 300))
+      .eq("type", "quiz")
+      .order("play_count", { ascending: false })
+      .limit(100);
+    if (error) {
+      console.error("[GET /explore/views-battle] db error:", error.message);
+      return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    }
+    const items = (data || [])
+      .filter((c) => (_vbExploreCache.counts[c.id] || 0) * 2 >= (c.item_count || 0))
+      .slice(0, limit);
+    return res.json({ ok: true, items });
+  } catch (err) {
+    console.error("[GET /explore/views-battle] error:", err.message);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
 app.get("/explore/featured", async (req, res) => {
   try {
     const limitRaw = parseInt(req.query.limit) || 10;
