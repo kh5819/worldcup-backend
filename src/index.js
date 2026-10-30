@@ -8050,8 +8050,9 @@ app.get("/explore/views-battle", async (req, res) => {
   try {
     const limit = Math.min(20, Math.max(1, parseInt(req.query.limit) || 12));
     if (!_vbExploreCache.counts || Date.now() - _vbExploreCache.at > 10 * 60 * 1000) {
+      // 직접 입력(가격·인구 등 숫자 비교)은 "조회수" 대결이 아니므로 제외 — 유튜브 조회수 문제만 셈
       const rows = await _fetchAllRows("quiz_questions", (q) =>
-        q.not("media_display_option->views_battle", "is", null), "content_id");
+        q.not("media_display_option->views_battle", "is", null).is("media_display_option->views_battle->>manual", null), "content_id");
       const counts = {};
       for (const r of (rows || [])) counts[r.content_id] = (counts[r.content_id] || 0) + 1;
       _vbExploreCache = { at: Date.now(), counts };
