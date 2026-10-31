@@ -733,10 +733,9 @@ export function totalScore(scores) {
 // 오락용 추정치 — 실제 연령대 기준 데이터 없음
 // 2026-11-01 조정: 실제 기록 557건 기준으로 너무 후했음(PC 평균 실제보다 2~5살 젊게, 회춘 29%) → PC 평균 +3살·회춘 10%
 // 휴대폰은 터치 조작이라 점수가 평균 4~5점 낮게 나와서, 나이 계산할 때만 +5점 보정 (점수·순위는 그대로)
-export function physicalAge(total, device) {   // 11-01: +3살 (80점까지 +3, 그 위로 줄어 100점은 그대로 15세)
+export function physicalAge(total, device) {   // 11-01 v2: 실제 기록 분포(최고 87점·중간 69점·하위 5% 50점 안팎)에 맞춰 15~79세를 넓게 씀
   const t = device === "mobile" ? Math.min(100, total + 5) : total;
-  const add = t <= 80 ? 3 : (3 * (100 - t)) / 20;
-  return Math.round(add + curve(t, [[0, 76], [20, 62], [35, 52], [45, 44], [55, 37], [62, 32], [68, 28], [74, 25], [80, 22], [86, 19], [92, 17], [100, 15]]));
+  return Math.round(curve(t, [[0, 79], [20, 70], [30, 64], [40, 57], [45, 53], [50, 48], [55, 43], [60, 38], [65, 34], [69, 31], [74, 27], [78, 24], [82, 21], [86, 18], [89, 16], [92, 15], [100, 15]]));
 }
 export function verdictOf(diff) {
   if (diff <= -8) return { key: "young", name: "회춘 판정", color: "#2fae58", stamp: "회춘" };
