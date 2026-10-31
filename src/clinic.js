@@ -5,6 +5,7 @@
 // DB: clinic_results / clinic_best (sql/clinic_tables.sql, RLS 켬·정책 0 = 서버 전용)
 // =========================
 import * as C from "./clinic-core.js";
+import { bcOnBegin, bcOnFinish } from "./clinic-broadcast.js";
 
 const SESS = new Map();          // sid → session
 const SESS_TTL = 60 * 60 * 1000;
@@ -36,6 +37,7 @@ export function logSpan(tid, spec, log) {
       case "fly": return Math.floor((log.p || []).length / 3) * spec.tick;
       case "memory": return (log.r || []).reduce((s, r) => s + (Number(r?.ms) || 0), 0);
       case "smash": return (log.s || []).reduce((s, v) => s + (Number(v) > 0 ? Number(v) : 0), 0);
+      case "vision": return mx((log.a || []).map((e) => e?.[2]));
       case "reaction": return 0;
     }
   } catch {}
@@ -171,7 +173,7 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
     });
 
     // 검사 세션 시작 — mode: full | quick | practice(test 하나)
-    on("clinic:begin", (p, reply) => {
+    on("clinic:begin", async (p, reply) => {
       let tests;
       if (p.mode === "practice") {
         if (!C.TESTS[p.test]) return reply({ ok: false, error: "BAD_TEST" });
@@ -180,8 +182,11 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
       else return reply({ ok: false, error: "BAD_MODE" });
       const mine = [...SESS.entries()].filter(([, s]) => s.key === key).sort((a, b) => a[1].createdAt - b[1].createdAt);
       while (mine.length >= MAX_SESS_PER_USER) SESS.delete(mine.shift()[0]);
+      // 방송 진단소 참여(?bc=)면 열려 있는지·모드가 맞는지 서버가 확인
+      let bcId = null;
+      if (p.bc && p.mode !== "practice") { const g = await bcOnBegin(p.bc, p.mode); if (!g.ok) return reply({ ok: false, error: g.error }); bcId = g.bc; }
       const id = sid();
-      const s = { key, mode: p.mode, device: device(p.device), createdAt: Date.now(), plan: tests.map((t) => ({ id: t, seed: newSeed() })), started: {}, results: {}, finished: false };
+      const s = { key, mode: p.mode, device: device(p.device), createdAt: Date.now(), plan: tests.map((t) => ({ id: t, seed: newSeed() })), started: {}, results: {}, finished: false, bcId };
       SESS.set(id, s);
       reply({ ok: true, sid: id, plan: s.plan, device: s.device, coreVersion: C.CORE_VERSION });
     });
@@ -250,6 +255,9 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
       };
       const saved = await saveResult(supabaseAdmin, row);
       s.finished = { id: saved, result: publicRow(row, { owner: true }), prev: prev ? { total: prev.total, phys: prev.phys, at: prev.created_at } : null };
+      if (s.bcId && (saved || !supabaseAdmin)) {   // 방송 집계: 서버가 채점·저장한 결과로만
+        try { s.finished.bc = { id: s.bcId, ...(await bcOnFinish(s.bcId, { key, me, row, sessStarted: s.createdAt, showName: p.bcShowName !== false })) }; } catch (e) { console.error("[bc] finish", e); }
+      }
       reply({ ok: true, ...s.finished });
     });
 

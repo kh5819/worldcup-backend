@@ -200,7 +200,7 @@ const prof = (nick, g = "f", age = 30) => ({ nick, gender: g, age, avatar: { ski
 {
   const q = await conn("guest_quickonly1"), hid = await conn("guest_hiddenone1");
   const fq = await fullRun(q, prof("빠른이", "f", 28), {}, { rt: 190 });
-  const ff = await fullRun(q, prof("빠른이", "f", 28), {}, { rt: 190, mode: "full" });
+  const ff = await fullRun(await conn("guest_quickonly1"), prof("빠른이", "f", 28), {}, { rt: 190, mode: "full" });   // 같은 사람, 새 연결 (한 연결 10초 40회 제한 피함)
   const fh = await fullRun(hid, prof("숨김이", "m", 28), {}, { rt: 185, isPublic: false, mode: "full" });
   await sleep(100);
   const fb = await get(`/clinic/ranking?board=total&device=pc&period=week&mode=quick`);   // 30초 캐시 피하려고 다른 조건

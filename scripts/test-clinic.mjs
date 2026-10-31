@@ -196,7 +196,7 @@ const emit = (s, ev, p) => new Promise((res) => s.emit(ev, p, res));
   // 재대결
   ok((await emit(P[0], "clm:rematch", { mode: "full" })).ok, "재대결 실패");
   await sleep(50);
-  ok(last[0].phase === "lobby" && last[0].tests.length === 12, "재대결 후 대기실/정밀검사 아님");
+  ok(last[0].phase === "lobby" && last[0].tests.length === C.MODES.full.tests.length, "재대결 후 대기실/정밀검사 아님");
   // 방장 나가면 넘어감
   await emit(P[0], "clm:leave", {});
   await sleep(50);
@@ -204,6 +204,38 @@ const emit = (s, ev, p) => new Promise((res) => s.emit(ev, p, res));
   P.forEach((s) => s.close());
 }
 
+// ---------- 새 검사: 주변 시야 ----------
+{
+  const V = C.genSpec("vision", 4242);
+  ok(V.T.length === 14 && V.T.every((t) => t.c >= 0 && t.c <= 1 && t.p >= 0 && t.p <= 7), "시야 문제 생성 이상");
+  const perfect = V.T.map((t, i) => [t.c, t.p, 3000 * (i + 1), 900]);
+  const vp = C.scoreTest("vision", V, { a: perfect });
+  ok(vp.score >= 95 && vp.m.thr <= 50 && vp.m.ok === 14, "시야 다 맞혔는데 점수 낮음: " + JSON.stringify(vp));
+  const rep = C.visionReplay(V, perfect);
+  ok(rep.ds[0] === V.start && rep.ds[1] === Math.round(V.start * 0.72) && rep.ds.every((d) => d >= V.min), "시야 계단(짧아짐) 이상");
+  const wrong = V.T.map((t, i) => [1 - t.c, t.p, 3000 * (i + 1), 900]);
+  const vw = C.scoreTest("vision", V, { a: wrong });
+  ok(vw.score === 0 && C.visionReplay(V, wrong).ds.at(-1) === V.max, "시야 다 틀렸는데 점수 있음/시간 안 늘어남: " + vw.score);
+  const half = V.T.map((t, i) => [t.c, i % 2 ? (t.p + 1) % 8 : t.p, 3000 * (i + 1), 900]);
+  const vh = C.scoreTest("vision", V, { a: half });
+  ok(vh.score > vw.score && vh.score < vp.score, "시야 절반 정답 점수 순서 이상");
+  ok(C.scoreTest("vision", V, { a: V.T.map((t, i) => [t.c, t.p, 3000 * (i + 1), 120]) }).flags.includes("BOT_VISION"), "사람이 못 하는 속도인데 의심 표시 없음");
+  ok(C.scoreTest("vision", V, { a: [[0, 0, 100, 900], [0, 0, 50, 900]] }).m.of === 1, "시야 시각 뒤죽박죽 기록 처리 이상");
+  ok(judgeSubmit("vision", 4242, { a: perfect }, "pc", 10000).flags.includes("TIME"), "시야 시간 조작 못 잡음");
+  // 진단: 새 검사가 최고/최저일 때 세 언어 모두 문구가 나옴
+  for (const t of ["vision"]) {
+    const res = {}; for (const id of C.MODES.full.tests) res[id] = { score: 55, m: {}, flags: [] };
+    res[t] = { score: 97, m: { thr: 40, ok: 13, of: 14, acc: 93 }, flags: [] };
+    for (const lg of ["ko", "ja", "en"]) {
+      const d = C.diagnose({ results: res, age: 30, gender: "m", seed: 9, lang: lg });
+      ok(d.title && !/undefined|\?\?|\{[a-z]+\}/.test(JSON.stringify(d)), `${t} 진단문(${lg}) 이상: ` + JSON.stringify(d).slice(0, 160));
+    }
+    ok(C.lineOf(t, res[t].m, "en") && !/undefined/.test(C.lineOf(t, res[t].m, "ja")), `${t} 한 줄 요약 이상`);
+  }
+  ok(C.abilities({ vision: 60 }).sense === 60 && C.abilities({ vision: 60, tap: 90 }).focus === 60, "감각 능력치 계산 이상");
+  ok(C.MODES.full.tests.length === 13 && !C.TESTS.hearing && C.MODES.quick.tests.length === 5 && C.CORE_VERSION === 2, "검사 구성 이상");
+  ok(C.TESTS.vision.dur >= 14 * (550 + 600 + 320 + 4000 + 600), "검사 최대 시간(dur)이 실제 최대보다 짧음");
+}
 io.close(); server.close();
 console.log(`\n진단소 시험: 통과 ${pass} · 실패 ${fail}`);
 process.exit(fail ? 1 : 0);

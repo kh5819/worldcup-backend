@@ -30,6 +30,8 @@ import { registerMystery } from "./mystery.js";
 import { registerMysteryMulti } from "./mystery-multi.js";
 import { registerClinic } from "./clinic.js";
 import { registerClinicMulti } from "./clinic-multi.js";
+import { registerClinicBroadcast } from "./clinic-broadcast.js";
+import { memberProfile as clinicMemberProfile } from "./clinic.js";
 import { registerDodge } from "./dodge.js";
 import { registerGachatd } from "./gachatd.js";
 import { registerGolf } from "./golf.js";
@@ -10474,6 +10476,7 @@ registerMysteryMulti(io, supabaseAdmin);
 // 게이머 에이징 커브 진단소 — clinic:* / clm:* 이벤트 + /clinic/* REST, 채점은 서버
 registerClinic(io, supabaseAdmin, app, { getOptionalUser });
 registerClinicMulti(io, supabaseAdmin);
+registerClinicBroadcast(io, supabaseAdmin, app, { memberProfile: clinicMemberProfile });
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {

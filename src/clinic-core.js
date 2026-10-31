@@ -5,7 +5,7 @@
 // 외부 import 금지 — 이 파일 하나로 돌아가야 서버에서도 그대로 씀
 // =========================
 
-export const CORE_VERSION = 1;
+export const CORE_VERSION = 2;   // 2: 정밀검사 13종 (주변 시야 추가)
 
 // ---------- 공통 ----------
 export function rng(seed) {
@@ -59,10 +59,11 @@ export const ABILITIES = {
   aim: { name: "에임 정확도", short: "에임" },
   rhythm: { name: "리듬감", short: "리듬" },
   evasion: { name: "회피 능력", short: "회피" },
+  sense: { name: "감각", short: "감각" },
 };
 export const ABILITY_IDS = Object.keys(ABILITIES);
 
-// ---------- 검사 12종 ----------
+// ---------- 검사 13종 ----------
 // dur = 실제 검사 최대 길이(ms, 멀티 라운드 마감 계산용) · room = 검사실 배경 · icon = 아틀라스 이름
 export const TESTS = {
   tap: {
@@ -137,10 +138,16 @@ export const TESTS = {
     how: ["도망 다니는 파리를 따라가세요", "1초 동안 놓치지 않으면 철썩!", "PC: 마우스 · 모바일: 손가락으로 따라가기"],
     unit: "마리",
   },
+  vision: {
+    name: "주변 시야", sub: "순간 시야 포착", room: "optic", icon: "e_star", dur: 86000,
+    abil: { sense: 0.5, focus: 0.5 },
+    how: ["가운데 얼굴과 바깥쪽 ★ 위치를 동시에 보세요", "아주 잠깐 보였다 사라져요", "얼굴 표정을 고르고 ★가 있던 칸을 누르세요"],
+    unit: "ms",
+  },
 };
 export const TEST_IDS = Object.keys(TESTS);
 export const MODES = {
-  full: { name: "정밀검사", tests: ["tap", "memory", "reaction", "qwer", "lasthit", "greenlight", "smash", "dodge", "rhythm", "aim", "stroop", "fly"], min: "7~10분" },
+  full: { name: "정밀검사", tests: ["tap", "memory", "reaction", "qwer", "lasthit", "greenlight", "smash", "dodge", "rhythm", "aim", "stroop", "fly", "vision"], min: "8~11분" },
   quick: { name: "빠른검사", tests: ["reaction", "tap", "memory", "aim", "stroop"], min: "약 3분" },
 };
 
@@ -297,6 +304,13 @@ const GEN = {
     }
     return { dur: 20000, tick: 50, ax, ay, acc: 0.000022, hitR: 0.085, catchMs: 1000, escMs: 500 };
   },
+
+  // 가운데 얼굴(웃음/화남) + 바깥 8칸 중 ★ 위치. 맞히면 보여 주는 시간 짧게, 틀리면 길게 (계단식)
+  vision: (R) => {
+    const T = [];
+    for (let i = 0; i < 14; i++) T.push({ c: R.int(0, 1), p: R.int(0, 7), dis: i >= 4 ? 1 : 0, far: i >= 9 ? 1 : 0 });
+    return { fix: 550, mask: 320, answer: 4000, start: 320, min: 34, max: 600, T };
+  },
 };
 
 export function genSpec(testId, seed) {
@@ -403,6 +417,21 @@ export function flyStep(spec, st, i, x, y, down) {
   return out;
 }
 export function flyInit() { return { streak: 0, catches: 0, esc: 0, ticks: 0, onTicks: 0, dsum: 0 }; }
+
+// 주변 시야: a=[[얼굴 0|1, 칸 0~7, t, rt]] (-1 = 시간초과) → 각 문제에 보여 준 시간(계단식)
+export function visionReplay(spec, a) {
+  let d = spec.start, ok = 0;
+  const ds = [], right = [];
+  for (let i = 0; i < spec.T.length; i++) {
+    ds.push(d);
+    const e = a[i];
+    if (!Array.isArray(e)) break;
+    const r = (e[0] | 0) === spec.T[i].c && (e[1] | 0) === spec.T[i].p;
+    right.push(r);
+    if (r) { ok++; d = Math.max(spec.min, Math.round(d * 0.72)); } else d = Math.min(spec.max, Math.round(d * 1.4));
+  }
+  return { ds, right, ok, next: d };
+}
 
 // 에임: 클릭 기록을 차례대로 처리 (화면·서버 공용)
 export function aimReplay(spec, clicks, upTo = Infinity) {
@@ -655,6 +684,21 @@ const SCORE = {
     const flags = st.onTicks > 100 && st.dsum / st.onTicks < 0.004 ? ["BOT_TRACK"] : [];
     return { score: ratio * 80 + st.catches * 2.5, m: { ratio: Math.round(ratio * 100), catches: st.catches }, flags, line: `${st.catches}마리 · 추적 ${Math.round(ratio * 100)}%` };
   },
+
+  vision(spec, log) {
+    const a = arr(log?.a, spec.T.length).map((e) => (Array.isArray(e) ? [e[0] | 0, e[1] | 0, num(e[2]), num(e[3])] : null));
+    let prev = -1; const clean = [];
+    for (const e of a) { if (!e || !Number.isFinite(e[2]) || e[2] < prev) break; clean.push(e); prev = e[2]; }
+    const r = visionReplay(spec, clean);
+    // 보여 준 시간의 계단이 머문 곳 = 뒤쪽 문제들(최대 8개)의 중앙값
+    const tail = r.ds.slice(0, clean.length).slice(-8);
+    const thr = tail.length >= 4 ? Math.round(median(tail)) : spec.max;
+    const acc = clean.length ? r.ok / clean.length : 0;
+    const fast = clean.filter((e, i) => r.right[i] && Number.isFinite(e[3]) && e[3] < 220).length;
+    const flags = fast >= 6 ? ["BOT_VISION"] : [];
+    const sc = curve(thr, [[34, 100], [50, 96], [70, 90], [100, 80], [140, 66], [200, 48], [280, 30], [400, 14], [600, 0]]) * (0.75 + 0.25 * acc);
+    return { score: sc, m: { thr, ok: r.ok, of: clean.length, acc: Math.round(acc * 100) }, flags, line: "" };
+  },
 };
 
 export function scoreTest(testId, spec, log, ctx = {}) {
@@ -763,17 +807,19 @@ const TEST_TX = {
   aim: { ja: ["エイム道場", "照準精度", ["現れる的を素早く正確にクリック", "外すと精度が下がります", "的はだんだん小さくなります"]], en: ["Aim Dojo", "Aim accuracy", ["Click the targets fast and accurately", "Misses lower your accuracy", "Targets keep getting smaller"]] },
   stroop: { ja: ["色まどわし", "色と文字の干渉", ["「文字の色」モード: 文字に塗られた色を選ぶ", "「文字の意味」モード: 文字が示す色を選ぶ", "モードは途中で切り替わります！"]], en: ["Color Confusion", "Stroop test", ["\"Ink\" mode: pick the color the word is painted in", "\"Meaning\" mode: pick the color the word says", "The mode switches mid-test!"]] },
   fly: { ja: ["ハエたたき", "目標追跡", ["逃げ回るハエを追いかけよう", "1秒間逃がさなければバシッ！", "PC: マウス・モバイル: 指で追いかける"]], en: ["Fly Swatter", "Target tracking", ["Chase the buzzing fly", "Stay on it for 1 second — SWAT!", "PC: mouse · Mobile: follow with your finger"]] },
+  vision: { ja: ["周辺視野", "瞬間視野キャッチ", ["中央の顔と外側の★の位置を同時に見て", "ほんの一瞬だけ表示されます", "顔の表情を選び、★があったマスを押して"]], en: ["Side Vision", "Split-second field of view", ["Watch the center face and the outer ★ at the same time", "They flash for just an instant", "Pick the face, then tap where the ★ was"]] },
 };
 export function testName(tid, lang) { const t = TESTS[tid]; const x = TEST_TX[tid]?.[lg(lang)]; return x ? x[0] : t?.name || tid; }
 export function testSub(tid, lang) { const t = TESTS[tid]; const x = TEST_TX[tid]?.[lg(lang)]; return x ? x[1] : t?.sub || ""; }
 export function testHow(tid, lang) { const t = TESTS[tid]; const x = TEST_TX[tid]?.[lg(lang)]; return x ? x[2] : t?.how || []; }
-const MODE_TX = { full: { ko: ["정밀검사", "7~10분"], ja: ["精密検査", "7〜10分"], en: ["Full Checkup", "7-10 min"] }, quick: { ko: ["빠른검사", "약 3분"], ja: ["クイック検査", "約3分"], en: ["Quick Checkup", "~3 min"] } };
+const MODE_TX = { full: { ko: ["정밀검사", "8~11분"], ja: ["精密検査", "8〜11分"], en: ["Full Checkup", "8-11 min"] }, quick: { ko: ["빠른검사", "약 3분"], ja: ["クイック検査", "約3分"], en: ["Quick Checkup", "~3 min"] } };
 export function modeName(mode, lang) { return MODE_TX[mode]?.[lg(lang)]?.[0] || mode; }
 const AB_TX = {
   reaction: { ja: ["反応速度", "反応"], en: ["Reaction", "React"] }, memory: { ja: ["記憶力", "記憶"], en: ["Memory", "Memory"] },
   dexterity: { ja: ["指の器用さ", "指先"], en: ["Finger dexterity", "Fingers"] }, judgment: { ja: ["判断力", "判断"], en: ["Judgment", "Judge"] },
   focus: { ja: ["集中力", "集中"], en: ["Focus", "Focus"] }, aim: { ja: ["エイム精度", "エイム"], en: ["Aim accuracy", "Aim"] },
   rhythm: { ja: ["リズム感", "リズム"], en: ["Rhythm", "Rhythm"] }, evasion: { ja: ["回避能力", "回避"], en: ["Evasion", "Evade"] },
+  sense: { ja: ["感覚", "感覚"], en: ["Senses", "Senses"] },
 };
 export function abilityName(a, lang, short = false) { const x = AB_TX[a]?.[lg(lang)]; return x ? x[short ? 1 : 0] : ABILITIES[a]?.[short ? "short" : "name"] || a; }
 export const AVATAR_TX = {
@@ -811,6 +857,7 @@ export function lineOf(tid, m = {}, lang = "ko") {
     aim: { ko: `${m.hits}/${m.of} 명중 · ${m.avg}ms`, ja: `${m.hits}/${m.of}命中・${m.avg}ms`, en: `${m.hits}/${m.of} hits · ${m.avg}ms` },
     stroop: { ko: `${m.ok}개 정답 · 오답 ${m.bad}`, ja: `正解${m.ok}・不正解${m.bad}`, en: `${m.ok} right · ${m.bad} wrong` },
     fly: { ko: `${m.catches}마리 · 추적 ${m.ratio}%`, ja: `${m.catches}匹・追跡${m.ratio}%`, en: `${m.catches} swatted · ${m.ratio}% tracked` },
+    vision: !m.of ? { ko: "측정 불가", ja: "測定不能", en: "No reading" } : !m.ok ? { ko: `★ 포착 실패 · 정답 0/${m.of}`, ja: `★捕捉失敗・正解0/${m.of}`, en: `Missed every ★ · 0/${m.of}` } : { ko: `${m.thr}ms 만에 포착 · 정답 ${m.ok}/${m.of}`, ja: `${m.thr}msで捕捉・正解${m.ok}/${m.of}`, en: `Caught in ${m.thr}ms · ${m.ok}/${m.of} right` },
   }[tid];
   if (!T || m == null || !Object.keys(m).length) return { ko: "기록 없음", ja: "記録なし", en: "No record" }[L];
   return T[L];
@@ -826,12 +873,14 @@ const TYPE_NOUN = {
   aim: { ko: ["저격수", "보이는 순간 이미 맞힌 타입. 마우스 감도에 진심입니다."], ja: ["スナイパー", "見えた瞬間にもう当てているタイプ。マウス感度にはガチです。"], en: ["Sniper", "Already hit it the moment it appeared. Dead serious about mouse sensitivity."] },
   rhythm: { ko: ["리듬 무희", "몸속에 메트로놈이 있는 타입. 스킬도 박자에 맞춰 씁니다."], ja: ["リズムの踊り子", "体内にメトロノームがあるタイプ。スキルもビートに合わせて撃ちます。"], en: ["Rhythm Dancer", "There's a metronome inside you. Even your skills land on the beat."] },
   evasion: { ko: ["무빙 장인", "맞기 전에 이미 피해 있는 타입. 체력바가 늘 가득 차 있습니다."], ja: ["ムーブ職人", "当たる前にもう避けているタイプ。体力バーはいつも満タン。"], en: ["Movement Master", "Already gone before the hit lands. Your HP bar is always full."] },
+  sense: { ko: ["광시야 레이더", "화면 구석의 적도 놓치지 않는 타입. 싸우면서 미니맵까지 봅니다."], ja: ["広視野レーダー", "画面の隅の敵も見逃さないタイプ。戦いながらミニマップまで見ています。"], en: ["Wide-view Radar", "Nothing in the corner of the screen gets past you. You watch the minimap mid-fight."] },
 };
 const TYPE_ADJ = {
   reaction: { ko: "번개같은", ja: "稲妻の", en: "Lightning" }, memory: { ko: "계산적인", ja: "計算高い", en: "Calculating" },
   dexterity: { ko: "손 빠른", ja: "手の速い", en: "Quick-handed" }, judgment: { ko: "신중한", ja: "慎重な", en: "Careful" },
   focus: { ko: "끈질긴", ja: "粘り強い", en: "Relentless" }, aim: { ko: "정밀한", ja: "精密な", en: "Precise" },
   rhythm: { ko: "박자 타는", ja: "ノリのいい", en: "Groovy" }, evasion: { ko: "잘 피하는", ja: "よけ上手な", en: "Slippery" },
+  sense: { ko: "예민한", ja: "鋭敏な", en: "Sharp-sensed" },
 };
 const TYPE_LOW = { ko: ["느긋한 관광객", "급할 것 없는 타입. 게임도 인생도 천천히 즐기는 여유파입니다."], ja: ["のんびり観光客", "急ぐ必要なしのタイプ。ゲームも人生もゆっくり楽しむ余裕派です。"], en: ["Laid-back Tourist", "No rush, ever. You enjoy games — and life — at your own pace."] };
 
@@ -848,6 +897,7 @@ const DX_TEST = {
   aim: { hi: { ko: ["에임 핵 의심 증후군", "헤드샷 습관성 반사", "조준점 고정 체질"], ja: ["エイムチート疑惑症候群", "ヘッドショット習慣性反射", "照準固定体質"], en: ["Suspected Aimbot Syndrome", "Habitual Headshot Reflex", "Locked-crosshair Constitution"] }, lo: { ko: ["에임 실종 증후군", "허공 사격 애호가", "마우스 가출 증후군"], ja: ["エイム行方不明症候群", "空中射撃愛好家", "マウス家出症候群"], en: ["Missing Aim Syndrome", "Thin-air Shooting Enthusiast", "Runaway Mouse Syndrome"] } },
   stroop: { hi: { ko: ["색깔 판독 과민증", "함정 문구 면역 체질", "판단력 과열 증후군"], ja: ["色判読過敏症", "ひっかけ文字免疫体質", "判断力オーバーヒート症候群"], en: ["Color-reading Hypersensitivity", "Trick-word Immunity", "Judgment Overheat Syndrome"] }, lo: { ko: ["색깔 혼선 증후군", "글자에 속는 체질", "빨강을 파랑이라 부르는 병"], ja: ["色混線症候群", "文字にだまされる体質", "赤を青と呼ぶ病"], en: ["Color Crossed-wires Syndrome", "Word-fooled Constitution", "Calls-Red-Blue Disease"] } },
   fly: { hi: { ko: ["파리 추적 집착증", "동체시력 과잉 반응", "날파리 천적 체질"], ja: ["ハエ追跡執着症", "動体視力過剰反応", "コバエの天敵体質"], en: ["Fly-tracking Obsession", "Motion Vision Overdrive", "Natural Fly Predator"] }, lo: { ko: ["파리 해방 운동가", "추적 포기 증후군", "날파리 친화형 시선"], ja: ["ハエ解放運動家", "追跡あきらめ症候群", "コバエ親和型の視線"], en: ["Fly Liberation Activist", "Chase-surrender Syndrome", "Fly-friendly Gaze"] } },
+  vision: { hi: { ko: ["미니맵 동시 시청 체질", "곁눈질 레이더 과민증", "광시야 렌즈 장착증"], ja: ["ミニマップ同時視聴体質", "横目レーダー過敏症", "広視野レンズ装着症"], en: ["Minimap-while-fighting Constitution", "Side-eye Radar Hypersensitivity", "Wide-angle Lens Implant"] }, lo: { ko: ["터널 시야 증후군", "미니맵 무관심증", "옆에서 온 적 깜짝 증후군"], ja: ["トンネル視野症候群", "ミニマップ無関心症", "横から来た敵にびっくり症候群"], en: ["Tunnel Vision Syndrome", "Minimap Indifference", "Ambushed-from-the-side Syndrome"] } },
 };
 const DX_AGE = [
   [-99, -15, { ko: ["피지컬 회춘 현상", "역노화 프로게이머 증후군", "시간 역행성 손놀림", "벤자민 버튼형 반사신경"], ja: ["フィジカル若返り現象", "逆老化プロゲーマー症候群", "時間逆行型の手さばき", "ベンジャミン・バトン型反射神経"], en: ["Physical Rejuvenation Phenomenon", "Reverse-aging Pro Gamer Syndrome", "Time-reversing Hands", "Benjamin Button Reflexes"] }],
@@ -870,6 +920,7 @@ const DX_SPECIAL = [
   [(c) => c.has("aim", "fly") && c.s.aim >= 78 && c.s.fly <= 45, 68, { ko: ["한 방 저격형 산만증"], ja: ["一発狙撃型の散漫症"], en: ["One-shot Sniper Distractibility"] }],
   [(c) => c.has("dodge", "lasthit") && c.s.dodge >= 78 && c.s.lasthit <= 45, 68, { ko: ["생존 우선 평화주의"], ja: ["生存優先の平和主義"], en: ["Survival-first Pacifism"] }],
   [(c) => c.has("memory", "stroop") && c.s.memory <= 40 && c.s.stroop >= 75, 68, { ko: ["순간 판단형 건망증"], ja: ["瞬間判断型の物忘れ"], en: ["Snap-judgment Forgetfulness"] }],
+  [(c) => c.has("vision", "aim") && c.s.vision >= 80 && c.s.aim >= 80, 70, { ko: ["매의 눈 증후군"], ja: ["鷹の目症候群"], en: ["Hawk-eye Syndrome"] }],
   [(c) => c.has("rhythm", "smash") && c.s.rhythm >= 80 && c.s.smash >= 80, 68, { ko: ["타이밍 귀신 증후군"], ja: ["タイミングの鬼症候群"], en: ["Timing Demon Syndrome"] }],
   [(c) => c.n >= 5 && c.spread <= 16, 66, { ko: ["완벽 밸런스형 육각형 증후군", "평균의 신 강림증"], ja: ["完璧バランス六角形症候群", "平均の神降臨症"], en: ["Perfect Hexagon Syndrome", "Avatar of the Average"] }],
   [(c) => c.n >= 5 && c.spread >= 62, 66, { ko: ["극단적 편식 피지컬", "롤러코스터형 재능 분포"], ja: ["極端な偏食フィジカル", "ジェットコースター型の才能分布"], en: ["Extreme Picky-eater Physique", "Roller-coaster Talent Curve"] }],
@@ -895,6 +946,7 @@ const BEST_TXT = {
   aim: { ko: ["평균 {avg}ms 만에 과녁 명중. 마우스가 순간이동합니다.", "명중 {hits}/{of}. 과녁들이 당신을 피해 다니고 싶어 합니다."], ja: ["平均{avg}msで命中。マウスが瞬間移動しています。", "命中{hits}/{of}。的のほうがあなたから逃げたがっています。"], en: ["Targets hit in {avg}ms on average. Your mouse teleports.", "{hits}/{of} hits. The targets want to run from you."] },
   stroop: { ko: ["{ok}개 정답. 색깔 함정에 전혀 속지 않는 단단한 판단력입니다.", "정확도 {acc}%. 글자가 아무리 속여도 넘어가지 않습니다."], ja: ["正解{ok}個。色のひっかけにまったくだまされない判断力です。", "精度{acc}%。文字がどれだけだましてもひっかかりません。"], en: ["{ok} correct. Rock-solid judgment that no color trick can fool.", "{acc}% accuracy. No word can trick you."] },
   fly: { ko: ["파리 {catches}마리를 잡았습니다. 여름철 주방의 수호자입니다.", "추적 유지율 {ratio}%. 한 번 찍은 목표는 끝까지 따라갑니다."], ja: ["ハエを{catches}匹仕留めました。夏のキッチンの守護者です。", "追跡維持率{ratio}%。一度狙った獲物は最後まで追います。"], en: ["{catches} flies swatted. Guardian of the summer kitchen.", "{ratio}% tracking. Once you lock on, you never let go."] },
+  vision: { ko: ["{thr}ms 만에 화면 구석까지 포착. 미니맵을 보면서 싸우는 눈입니다.", "주변 시야 정답 {ok}/{of}. 옆에서 오는 갱킹은 안 통합니다."], ja: ["{thr}msで画面の隅まで捕捉。ミニマップを見ながら戦える目です。", "周辺視野の正解{ok}/{of}。横からのガンクは通用しません。"], en: ["Caught the screen corners in {thr}ms. Eyes that fight while watching the minimap.", "{ok}/{of} on side vision. Ganks from the side won't work on you."] },
 };
 const WORST_TXT = {
   tap: { ko: ["다만 연타는 {taps}번에 그쳐, 손가락이 아직 예열 중인 것으로 보입니다.", "연타 검사에서 손가락이 '천천히 가자'고 주장했습니다."], ja: ["ただし連打は{taps}回止まりで、指はまだ温まっていないようです。", "連打検査では指が「ゆっくり行こう」と主張しました。"], en: ["That said, only {taps} taps — your fingers are still warming up.", "In the tap test, your fingers insisted on taking it slow."] },
@@ -909,6 +961,7 @@ const WORST_TXT = {
   aim: { ko: ["다만 과녁 명중 {hits}/{of}로, 마우스가 가끔 가출합니다.", "에임 검사에서 허공을 꽤 많이 맞히셨습니다."], ja: ["ただし命中{hits}/{of}で、マウスがときどき家出します。", "エイム検査で空中をかなり撃ち抜きました。"], en: ["That said, {hits}/{of} hits — your mouse runs away from home sometimes.", "In the aim test, you hit a lot of thin air."] },
   stroop: { ko: ["다만 색깔 검사 오답 {bad}개로, 빨강과 파랑이 잠시 헷갈렸습니다.", "색깔 헷갈림 검사가 이름값을 제대로 했습니다."], ja: ["ただし色検査の不正解{bad}個で、赤と青が少し混ざりました。", "色まどわし検査が名前どおりの仕事をしました。"], en: ["That said, {bad} wrong answers — red and blue got mixed up for a moment.", "The color-confusion test lived up to its name."] },
   fly: { ko: ["다만 파리는 {catches}마리만 잡혀, 주방 위생이 걱정됩니다.", "파리 잡기에서 파리가 자유를 얻었습니다."], ja: ["ただしハエは{catches}匹だけで、キッチンの衛生が心配です。", "ハエたたきではハエが自由を手に入れました。"], en: ["That said, only {catches} flies caught — I'm worried about kitchen hygiene.", "In the fly test, the flies won their freedom."] },
+  vision: { ko: ["다만 주변 시야는 {thr}ms가 필요해, 옆에서 오는 적에게 자주 놀랍니다.", "주변 시야 검사에서 ★이 시야 밖으로 도망갔습니다."], ja: ["ただし周辺視野には{thr}ms必要で、横から来る敵によく驚きます。", "周辺視野検査で★が視界の外へ逃げていきました。"], en: ["That said, your side vision needs {thr}ms — enemies from the side often surprise you.", "In the side-vision test, the ★ escaped your field of view."] },
 };
 const AGE_TXT = [
   [-99, -8, { ko: ["실제 나이보다 {gap}살 젊은 손가락을 갖고 계십니다.", "피지컬 시계가 {gap}년 거꾸로 돌고 있습니다."], ja: ["実年齢より{gap}歳若い指をお持ちです。", "フィジカル時計が{gap}年逆回転しています。"], en: ["Your fingers are {gap} years younger than you are.", "Your physical clock is running {gap} years backward."] }],
@@ -932,6 +985,7 @@ const RX = {
   aim: { ko: ["처방: 마우스 감도 점검 및 패드 청소.", "처방: 에임 연습장 하루 5분 복용."], ja: ["処方：マウス感度の点検とマウスパッドの掃除。", "処方：エイム練習場を1日5分服用。"], en: ["Rx: check your mouse sensitivity and clean your pad.", "Rx: one 5-minute dose of aim training daily."] },
   rhythm: { ko: ["처방: 좋아하는 노래에 맞춰 책상 두드리기.", "처방: 메트로놈과 화해하기."], ja: ["処方：好きな曲に合わせて机をたたく。", "処方：メトロノームと仲直りする。"], en: ["Rx: drum on your desk to your favorite song.", "Rx: make peace with the metronome."] },
   evasion: { ko: ["처방: 날아오는 것은 일단 피하고 보기.", "처방: 무빙 연습 — 제자리 서 있기 금지."], ja: ["処方：飛んでくるものはとりあえず避ける。", "処方：ムーブ練習 — その場に立ち止まるの禁止。"], en: ["Rx: if it's flying at you, dodge first, ask later.", "Rx: movement practice — no standing still."] },
+  sense: { ko: ["처방: 30초마다 미니맵 한 번씩 보기.", "처방: 화면 가운데만 보지 말고 가장자리도 훑기."], ja: ["処方：30秒ごとにミニマップを1回見る。", "処方：画面の中央だけでなく端も見渡す。"], en: ["Rx: glance at the minimap every 30 seconds.", "Rx: scan the screen edges, not just the center."] },
 };
 const GENRE = {
   reaction: { ko: ["격투 게임", "FPS"], ja: ["格闘ゲーム", "FPS"], en: ["Fighting games", "FPS"] },
@@ -942,6 +996,7 @@ const GENRE = {
   aim: { ko: ["FPS", "슈팅"], ja: ["FPS", "シューティング"], en: ["FPS", "Shooters"] },
   rhythm: { ko: ["리듬 게임", "댄스"], ja: ["リズムゲーム", "ダンス"], en: ["Rhythm games", "Dance"] },
   evasion: { ko: ["탄막 슈팅", "액션 RPG"], ja: ["弾幕シューティング", "アクションRPG"], en: ["Bullet hell", "Action RPG"] },
+  sense: { ko: ["배틀로얄", "FPS"], ja: ["バトロワ", "FPS"], en: ["Battle royale", "FPS"] },
 };
 const RETEST = {
   ko: ["충분히 자고 일어난 뒤 재검사하면 수치가 달라질 수 있습니다.", "따뜻한 손으로 다시 검사하면 숨은 피지컬이 깨어날 수 있습니다.", "1주일 뒤 같은 시간에 재검사를 권장합니다.", "친구와 함께 검사하면 승부욕 때문에 수치가 오르는 경향이 있습니다.", "커피 한 잔 후 재검사 시 반응속도 변화를 관찰해 보세요.", "오늘 기록을 기억해 두고 한 달 뒤 변화를 비교해 보세요.", "모바일과 PC 결과는 따로 비교하는 것이 정확합니다.", "기록 갱신은 보통 세 번째 검사에서 일어납니다."],
@@ -963,6 +1018,7 @@ const HIGHLIGHT = {
   aim: (m) => m.avg && m.avg <= 420 && m.hits >= 15 ? [0, 600 - m.avg] : m.miss >= 15 ? [1, -m.miss] : null,
   stroop: (m) => m.ok >= 30 && m.acc >= 95 ? [0, m.ok] : null,
   fly: (m) => m.catches >= 10 ? [0, m.catches] : m.catches === 0 ? [1, -3] : null,
+  vision: (m) => m.thr && m.thr <= 70 ? [0, 100 - m.thr] : m.thr >= 280 ? [1, -m.thr / 20] : null,
 };
 const HL_TX = {
   tap: { ko: ["초당 {tps}회 연타", "10초에 {taps}번 연타 (절전 모드)"], ja: ["毎秒{tps}回の連打", "10秒で{taps}回の連打（省電力モード）"], en: ["{tps} taps per second", "{taps} taps in 10s (power-saving mode)"] },
@@ -977,6 +1033,7 @@ const HL_TX = {
   aim: { ko: ["평균 {avg}ms 명중", "허공 사격 {miss}발"], ja: ["平均{avg}msで命中", "空中射撃{miss}発"], en: ["Hits in {avg}ms on average", "{miss} shots into thin air"] },
   stroop: { ko: ["색깔 {ok}개 정답 (정확도 {acc}%)"], ja: ["色{ok}個正解（精度{acc}%）"], en: ["{ok} colors right ({acc}% accuracy)"] },
   fly: { ko: ["파리 {catches}마리 포획", "파리 0마리 (파리 해방)"], ja: ["ハエ{catches}匹捕獲", "ハエ0匹（ハエ解放）"], en: ["{catches} flies caught", "Zero flies (fly liberation)"] },
+  vision: { ko: ["{thr}ms 순간 시야 포착", "주변 시야 {thr}ms (터널 시야)"], ja: ["{thr}msの瞬間視野キャッチ", "周辺視野{thr}ms（トンネル視野）"], en: ["Caught a {thr}ms flash", "Side vision {thr}ms (tunnel vision)"] },
 };
 export function hlText(h, lang) { return fill(pk(HL_TX[h.test], lang)[h.k], h.m); }
 
