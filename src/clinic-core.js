@@ -297,12 +297,12 @@ const GEN = {
   },
 
   fly: (R) => {
-    const ax = [], ay = [];
+    const ax = [], ay = [];   // 11-01: 속도 1.3배 + 판정 0.085→0.09 (점수는 기존보다 낮아짐 — 운영자 결정)
     for (let k = 0; k < 3; k++) {
-      ax.push([0.24 / (k + 1.4), 0.00095 * (k + 1) * (0.8 + R() * 0.5), R() * 6.28]);
-      ay.push([0.24 / (k + 1.4), 0.001 * (k + 1) * (0.8 + R() * 0.5), R() * 6.28]);
+      ax.push([0.24 / (k + 1.4), 0.00125 * (k + 1) * (0.8 + R() * 0.5), R() * 6.28]);
+      ay.push([0.24 / (k + 1.4), 0.0013 * (k + 1) * (0.8 + R() * 0.5), R() * 6.28]);
     }
-    return { dur: 20000, tick: 50, ax, ay, acc: 0.000022, hitR: 0.085, catchMs: 1000, escMs: 500 };
+    return { dur: 20000, tick: 50, ax, ay, acc: 0.000022, hitR: 0.09, catchMs: 1000, escMs: 500 };
   },
 
   // 가운데 얼굴(웃음/화남) + 바깥 8칸 중 ★ 위치. 맞히면 보여 주는 시간 짧게, 틀리면 길게 (계단식)
@@ -733,9 +733,10 @@ export function totalScore(scores) {
 // 오락용 추정치 — 실제 연령대 기준 데이터 없음
 // 2026-11-01 조정: 실제 기록 557건 기준으로 너무 후했음(PC 평균 실제보다 2~5살 젊게, 회춘 29%) → PC 평균 +3살·회춘 10%
 // 휴대폰은 터치 조작이라 점수가 평균 4~5점 낮게 나와서, 나이 계산할 때만 +5점 보정 (점수·순위는 그대로)
-export function physicalAge(total, device) {
+export function physicalAge(total, device) {   // 11-01: +3살 (80점까지 +3, 그 위로 줄어 100점은 그대로 15세)
   const t = device === "mobile" ? Math.min(100, total + 5) : total;
-  return Math.round(curve(t, [[0, 76], [20, 62], [35, 52], [45, 44], [55, 37], [62, 32], [68, 28], [74, 25], [80, 22], [86, 19], [92, 17], [100, 15]]));
+  const add = t <= 80 ? 3 : (3 * (100 - t)) / 20;
+  return Math.round(add + curve(t, [[0, 76], [20, 62], [35, 52], [45, 44], [55, 37], [62, 32], [68, 28], [74, 25], [80, 22], [86, 19], [92, 17], [100, 15]]));
 }
 export function verdictOf(diff) {
   if (diff <= -8) return { key: "young", name: "회춘 판정", color: "#2fae58", stamp: "회춘" };
