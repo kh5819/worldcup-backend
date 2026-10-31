@@ -214,6 +214,28 @@ const prof = (nick, g = "f", age = 30) => ({ nick, gender: g, age, avatar: { ski
   q.close(); hid.close();
 }
 
+// 3-3) 스트리머 랭킹: 체크한 사람만, 사람당 최고 1개, 최대 200명
+{
+  const st = await conn("guest_streamer01"), nst = await conn("guest_notstream1");
+  const a1 = await fullRun(st, prof("방송인", "f", 27), { streamer: true }, { mode: "full", rt: 300 });
+  const st2 = await conn("guest_streamer01"), st3 = await conn("guest_streamer01");   // 같은 사람, 새 연결(속도 제한 피함)
+  const a2 = await fullRun(st2, prof("방송인", "f", 27), { streamer: true }, { mode: "full", rt: 200 });
+  await fullRun(nst, prof("일반인", "m", 27), {}, { mode: "full", rt: 190 });
+  await fullRun(st3, prof("방송인", "f", 27), { streamer: true }, { mode: "quick", rt: 150 });
+  st2.close(); st3.close();
+  ok(DB.clinic_results.find((r) => r.id === a1.id).is_streamer === true, "스트리머 표시가 저장 안 됨");
+  const sb1 = await get(`/clinic/ranking?board=streamer&device=pc&period=all`);
+  ok(sb1.ok && sb1.rows.length === 1 && sb1.rows[0].nick === "방송인", "스트리머 랭킹 이상: " + JSON.stringify(sb1.rows.map((r) => r.nick)));
+  ok(sb1.rows[0].total === Math.max(a1.result.total, a2.result.total), "스트리머 랭킹이 최고 기록이 아님");
+  // 200명 제한
+  for (let i = 0; i < 230; i++) DB.clinic_results.push({ ...DB.clinic_results.find((r) => r.id === a1.id), id: "fake" + i, owner_key: "g:fake" + i, nickname: "s" + i, total: i % 100 });
+  const sb2 = await get(`/clinic/ranking?board=streamer&device=pc&period=week`);
+  ok(sb2.rows.length === 200 && new Set(sb2.rows.map((r) => r.nick)).size === 200, "스트리머 랭킹 200명 제한/중복 이상: " + sb2.rows.length);
+  DB.clinic_results = DB.clinic_results.filter((r) => !String(r.id).startsWith("fake"));
+  // 다른 랭킹은 여전히 50명
+  st.close(); nst.close();
+}
+
 // 4) 입력 검증: XSS 닉네임·나이 경계
 {
   const s = await conn("guest_validate01");

@@ -4,7 +4,7 @@
 // 흐름: lobby → [intro → play → result] × 검사 수 → final
 // =========================
 import * as C from "./clinic-core.js";
-import { judgeSubmit, resultId, publicRow, memberProfile, sanitizePrefs, withI18n } from "./clinic.js";
+import { judgeSubmit, resultId, publicRow, memberProfile, sanitizePrefs, withI18n, insertResults } from "./clinic.js";
 
 const ROOMS = new Map();       // roomId → room
 const CODES = new Map();       // 초대 코드 → roomId
@@ -156,7 +156,7 @@ async function finish(io, r) {
       scores: diag.scores, metrics: Object.fromEntries(Object.entries(x.results).map(([k, v]) => [k, { m: v.m, line: v.line, flags: v.flags }])),
       total: diag.total, phys: diag.phys, diff: diag.diff, diag, is_public: true, flagged: diag.flagged,
       group_id: groupId, rank: rankOf[x.id], rank_of: people.length, created_at: new Date().toISOString(),
-      show_gender: x.p.prefs.showGender, show_age: x.p.prefs.showAge, avatar_url: x.p.avatarUrl || null,
+      show_gender: x.p.prefs.showGender, show_age: x.p.prefs.showAge, avatar_url: x.p.avatarUrl || null, is_streamer: !!x.p.prefs.streamer,
     };
     rows.push(row);
     individual[x.id] = publicRow(row, { owner: true });
@@ -171,7 +171,7 @@ async function finish(io, r) {
   for (const x of people) if (x.p.connected && x.p.socketId) io.to(x.p.socketId).emit("clm:mine", individual[x.id]);
   if (r.sb) {
     try {
-      const { error: e1 } = await r.sb.from("clinic_results").insert(rows);
+      const { error: e1 } = await insertResults(r.sb, rows);
       const { error: e2 } = await r.sb.from("clinic_groups").insert({ id: groupId, host_key: r.hostKey, mode: r.mode, tests: r.tests, players: playersPub, report });
       if (e1 || e2) console.error("[clm] save", e1?.message, e2?.message);
       else { r.final.saved = true; io.to(sockRoom(r.id)).emit("clm:saved", { groupId }); }

@@ -63,10 +63,19 @@ function sweep() {
   for (const [k, s] of SESS) if (now - s.createdAt > SESS_TTL) SESS.delete(k);
 }
 
+// DB에 아직 없는 칸(is_streamer 등) 때문에 저장이 실패하면 그 칸만 빼고 다시 저장 — 배포 순서가 바뀌어도 결과는 남게
+export async function insertResults(sb, rows) {
+  let { error } = await sb.from("clinic_results").insert(rows);
+  if (error && /is_streamer/.test(error.message || "")) {
+    const strip = (Array.isArray(rows) ? rows : [rows]).map(({ is_streamer, ...r }) => r);
+    ({ error } = await sb.from("clinic_results").insert(Array.isArray(rows) ? strip : strip[0]));
+  }
+  return { error };
+}
 async function saveResult(sb, row) {
   if (!sb) return null;
   try {
-    const { error } = await sb.from("clinic_results").insert(row);
+    const { error } = await insertResults(sb, row);
     if (error) { console.error("[clinic] save", error.message); return null; }
     return row.id;
   } catch (e) { console.error("[clinic] save", e?.message); return null; }
@@ -131,7 +140,7 @@ export async function memberProfile(sb, me) {
   return v;
 }
 // 진단소 전용 접수 정보(성별·나이·캐릭터·공개 설정) — clinic_profiles
-export function sanitizePrefs(p) { return { showGender: p?.showGender !== false, showAge: p?.showAge !== false, shareMulti: !!p?.shareMulti }; }
+export function sanitizePrefs(p) { return { showGender: p?.showGender !== false, showAge: p?.showAge !== false, shareMulti: !!p?.shareMulti, streamer: !!p?.streamer }; }
 async function loadClinicProfile(sb, key) {
   if (!sb) return null;
   try { const { data } = await sb.from("clinic_profiles").select("nickname, gender, age, avatar, prefs, updated_at").eq("owner_key", key).maybeSingle(); return data || null; } catch { return null; }
@@ -236,7 +245,7 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
         mode: s.mode, device: s.device,
         scores: diag.scores, metrics: Object.fromEntries(Object.entries(results).map(([k, v]) => [k, { m: v.m, line: v.line, flags: v.flags }])),
         total: diag.total, phys: diag.phys, diff: diag.diff, diag, is_public: p.isPublic !== false, flagged: diag.flagged,
-        show_gender: prefs.showGender, show_age: prefs.showAge, avatar_url: mp?.avatar_url || null,
+        show_gender: prefs.showGender, show_age: prefs.showAge, avatar_url: mp?.avatar_url || null, is_streamer: prefs.streamer,
         created_at: new Date().toISOString(),
       };
       const saved = await saveResult(supabaseAdmin, row);
@@ -346,7 +355,8 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
   const rankCache = new Map();
   app.get("/clinic/ranking", async (req, res) => {
     try {
-      const board = ["total", "young", "test"].includes(req.query.board) ? req.query.board : "total";
+      const board = ["total", "young", "test", "streamer"].includes(req.query.board) ? req.query.board : "total";
+      const maxRows = board === "streamer" ? 200 : 50;   // 스트리머 랭킹은 최대 200명
       const period = ["day", "week", "all"].includes(req.query.period) ? req.query.period : "all";
       const dev = device(req.query.device);
       const test = C.TESTS[req.query.test] ? req.query.test : "tap";
@@ -375,10 +385,11 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
         let q = supabaseAdmin.from("clinic_results").select("owner_key, user_id, nickname, age, avatar, avatar_url, total, phys, diff, show_age, diag->>title, diag->i18n, created_at, id")
           .eq("mode", mode).eq("device", dev).eq("is_public", true);   // 의심 기록도 포함 (해당 검사는 이미 40점 처리) · 사람당 최고 1개
         if (since) q = q.gte("created_at", since.toISOString());
+        if (board === "streamer") q = q.eq("is_streamer", true);
         if (ageG || board === "young") q = q.eq("show_age", true);   // 나이 비공개 결과는 나이 관련 랭킹에서 제외
         if (ageG) q = ageG === 60 ? q.gte("age", 60) : ageG === 10 ? q.lt("age", 20) : q.gte("age", ageG).lt("age", ageG + 10);
         q = board === "young" ? q.order("diff", { ascending: true }).order("total", { ascending: false }) : q.order("total", { ascending: false }).order("created_at", { ascending: true });
-        const { data, error } = await q.limit(400);
+        const { data, error } = await q.limit(board === "streamer" ? 2000 : 400);
         if (error) return res.status(500).json({ ok: false, error: "QUERY_FAIL" });
         const seen = new Set();
         for (const r of data || []) {
@@ -386,7 +397,7 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
           seen.add(r.owner_key);
           const showA = r.show_age !== false;
           rows.push({ id: r.id, nick: r.nickname, ageGroup: showA ? C.ageGroup(r.age) : null, avatar: r.avatar, avatarUrl: r.avatar_url || null, total: r.total, phys: r.phys, diff: showA ? r.diff : null, title: r.title, i18n: r.i18n || null, isGuest: !r.user_id, at: r.created_at });
-          if (rows.length >= 50) break;
+          if (rows.length >= maxRows) break;
         }
       }
       const body = { ok: true, board, period, device: dev, test, age: ageG, rows };

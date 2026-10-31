@@ -79,4 +79,8 @@ alter table public.clinic_profiles enable row level security;
 
 commit;
 
+-- 2026-10-31 추가: 스트리머 랭킹
+alter table public.clinic_results add column if not exists is_streamer boolean not null default false;
+create index if not exists clinic_results_streamer_idx on public.clinic_results (device, total desc) where is_streamer and is_public;
+
 -- 되돌리기: drop table public.clinic_results, public.clinic_best, public.clinic_groups, public.clinic_profiles;
