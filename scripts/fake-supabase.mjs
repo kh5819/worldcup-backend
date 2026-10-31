@@ -25,6 +25,7 @@ class Q {
   eq(c, v) { this.f.push((r) => r[c] === v); return this; }
   neq(c, v) { this.f.push((r) => r[c] !== v); return this; }
   gte(c, v) { this.f.push((r) => r[c] >= v); return this; }
+  gt(c, v) { this.f.push((r) => r[c] > v); return this; }
   lt(c, v) { this.f.push((r) => r[c] < v); return this; }
   not(c, op, v) { if (op === "is" && v === null) this.f.push((r) => r[c] != null); return this; }
   order(c, o = {}) { this.ord.push([c, o.ascending !== false]); return this; }

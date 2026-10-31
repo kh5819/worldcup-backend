@@ -12,7 +12,7 @@ let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("  ✗", m); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 DB.profiles.push({ id: "u_streamer", nickname: "테스트방송인", avatar_url: null });
-DB.clinic_broadcasts = []; DB.clinic_bc_entries = [];
+DB.clinic_broadcasts = []; DB.clinic_bc_entries = []; DB.streamer_chat_log = [];
 
 const app = express(); const server = http.createServer(app);
 const io = new Server(server, { allowEIO3: true });
@@ -45,10 +45,30 @@ async function finish(s, b, profile, { rt = 250, cheat = false, showName = true 
 
 // 1) 만들기: 게스트 불가, 회원 가능, 프로필 닉네임
 const st = await conn("u_streamer");
-ok(!(await emit(await conn("guest_nobc"), "clinic:bc:create", { title: "x" })).ok, "게스트가 방송 진단소를 만듦");
+// 게스트(로그인 없음)도 만들 수 있음: 닉네임 직접 입력 필수, 동시에 1개, user_id 없음
+{
+  const g = await conn("guest_nobc");
+  ok((await emit(g, "clinic:bc:create", { title: "x" })).error === "NEED_NICK", "게스트가 닉네임 없이 만듦");
+  const gc = await emit(g, "clinic:bc:create", { title: "게스트 방송", streamerNick: "<i>방송인</i>", mode: "quick", minutes: 30 });
+  ok(gc.ok && gc.bc.streamer_nick === "i방송인/i" && gc.bc.user_id === null && gc.bc.owner_key === "g:guest_nobc", "게스트 방송 만들기 이상: " + JSON.stringify(gc).slice(0, 160));
+  ok((await emit(g, "clinic:bc:create", { title: "둘째", streamerNick: "방송인" })).error === "TOO_MANY_OPEN", "게스트가 동시에 2개 만듦");
+  ok((await emit(g, "clinic:bc:mine", {})).rows.length === 1, "게스트 내 방송 목록 없음");
+  await sleep(50);
+  const lg = DB.streamer_chat_log.find((x) => x.channel_id === gc.bc.id);
+  ok(lg && lg.platform === "clinic" && lg.nickname === "i방송인/i" && lg.content_title === "게스트 방송" && lg.host_user_id === null && lg.host_nick === null, "admin 스트리머 기록(게스트) 이상: " + JSON.stringify(lg));
+  ok((await emit(g, "clinic:bc:watch", { id: gc.bc.id })).owner === true && (await emit(await conn("guest_other1"), "clinic:bc:watch", { id: gc.bc.id })).owner === false, "게스트 방송 주인 판정 이상");
+  ok((await emit(g, "clinic:bc:control", { id: gc.bc.id, action: "close" })).ok, "게스트 주인이 마감 못 함");
+  // 같은 IP 10분에 5개까지 (위에서 1개 만듦 → 4개 더 되고 그다음 막힘)
+  const made = [];
+  for (let i = 0; i < 5; i++) made.push(await emit(await conn(`guest_ipspam${i}`), "clinic:bc:create", { title: "도배", streamerNick: "도배" + i }));
+  ok(made.slice(0, 4).every((x) => x.ok) && made[4].error === "RATE_LIMITED", "게스트 IP 도배 제한 이상: " + made.map((x) => x.ok || x.error).join(","));
+}
 const c = await emit(st, "clinic:bc:create", { title: "<b>오늘의 피지컬</b>", mode: "quick", minutes: 30, streamerNick: "가짜" });
 ok(c.ok && c.bc.streamer_nick === "테스트방송인" && !/[<>]/.test(c.bc.title) && c.bc.mode === "quick", "방송 진단소 생성 이상");
 const BCID = c.bc.id;
+await sleep(50);
+{ const lm = DB.streamer_chat_log.find((x) => x.channel_id === BCID);
+  ok(lm && lm.platform === "clinic" && lm.nickname === "테스트방송인" && lm.host_user_id === "u_streamer" && lm.host_nick === "테스트방송인" && lm.content_title === "b오늘의 피지컬/b", "admin 스트리머 기록(회원) 이상: " + JSON.stringify(lm)); }
 // 모드가 다르면 참여 불가
 ok((await emit(await conn("guest_wrongmode"), "clinic:begin", { mode: "full", device: "pc", bc: BCID })).error === "BC_MODE", "모드 다른 참여 허용");
 

@@ -13,6 +13,15 @@ const STATS_MS = 2000;             // 통계 재계산·전송 묶음 간격
 const GRACE_MS = 15 * 60 * 1000;   // 마감 전에 시작한 검사는 마감 후 15분까지 인정
 const MIN_BATTLE = 10;             // 대항전 순위에 넣을 최소 참여자 수
 const MAX_DEADLINE_MIN = 24 * 60;
+const GUEST_MAX_OPEN = 1, MEMBER_MAX_OPEN = 3;      // 동시에 열 수 있는 방송 수 (게스트는 브라우저 = 주인)
+const GUEST_IP_WIN = 10 * 60 * 1000, GUEST_IP_MAX = 5;   // 게스트 만들기: 같은 IP 10분에 5개까지 (도배 방지)
+const ipMakes = new Map();
+function sockIp(socket) {
+  const h = socket.handshake?.headers || {};
+  const cf = String(h["cf-connecting-ip"] || "").trim(); if (cf) return cf;
+  const xff = String(h["x-forwarded-for"] || "").split(",").map((x) => x.trim()).filter(Boolean); if (xff.length) return xff[0];
+  return String(socket.handshake?.address || "").replace(/^::ffff:/, "");
+}
 
 const now = () => Date.now();
 function bcId() { const a = "abcdefghijkmnpqrstuvwxyz23456789"; let s = ""; for (let i = 0; i < 8; i++) s += a[Math.floor(Math.random() * a.length)]; return s; }
@@ -144,27 +153,39 @@ export function registerClinicBroadcast(io, supabaseAdmin, app, { memberProfile 
       try { await fn(p || {}, reply); } catch (e) { console.error(`[${ev}]`, e); reply({ ok: false, error: "INTERNAL" }); }
     });
 
-    // 방송 진단소 만들기 — 로그인한 스트리머만
+    // 방송 진단소 만들기 — 회원(프로필 닉네임) 또는 게스트(직접 입력 닉네임, 이 브라우저가 주인)
     on("clinic:bc:create", async (p, reply) => {
-      if (me.isGuest) return reply({ ok: false, error: "LOGIN_REQUIRED" });
       if (!SB) return reply({ ok: false, error: "NO_DB" });
+      if (me.isGuest) {
+        if (!String(p.streamerNick || "").replace(/[<>]/g, "").trim()) return reply({ ok: false, error: "NEED_NICK" });
+        const ip = sockIp(socket), n = now();
+        const arr = (ipMakes.get(ip) || []).filter((t) => n - t < GUEST_IP_WIN);
+        if (arr.length >= GUEST_IP_MAX) return reply({ ok: false, error: "RATE_LIMITED" });
+        ipMakes.set(ip, arr);
+      }
       const mode = p.mode === "full" ? "full" : "quick";
       const mins = Math.min(MAX_DEADLINE_MIN, Math.max(5, Math.round(Number(p.minutes) || 30)));
-      const mp = memberProfile ? await memberProfile(SB, me) : null;
-      const nick = String(mp?.nickname || p.streamerNick || "스트리머").replace(/[<>]/g, "").slice(0, 16);
+      const mp = !me.isGuest && memberProfile ? await memberProfile(SB, me) : null;
+      const nick = String(mp?.nickname || p.streamerNick || "스트리머").replace(/[<>]/g, "").trim().slice(0, 16) || "스트리머";
       const title = String(p.title || `${nick} 방송 진단소`).replace(/[<>]/g, "").trim().slice(0, 40) || `${nick} 방송 진단소`;
-      // 한 스트리머가 동시에 열 수 있는 방송은 3개까지
-      const { count } = await SB.from("clinic_broadcasts").select("id", { count: "exact", head: true }).eq("owner_key", key).eq("status", "open");
-      if ((count || 0) >= 3) return reply({ ok: false, error: "TOO_MANY_OPEN" });
-      const row = { id: bcId(), owner_key: key, user_id: me.id, title, streamer_nick: nick, avatar_url: mp?.avatar_url || null, mode, core_ver: C.CORE_VERSION, status: "open", closes_at: new Date(now() + mins * 60000).toISOString(), created_at: new Date().toISOString() };
+      // 동시에 열 수 있는 방송: 회원 3개 · 게스트 1개 (마감 시간이 지난 방송은 안 셈)
+      const { count } = await SB.from("clinic_broadcasts").select("id", { count: "exact", head: true }).eq("owner_key", key).eq("status", "open").gt("closes_at", new Date().toISOString());
+      if ((count || 0) >= (me.isGuest ? GUEST_MAX_OPEN : MEMBER_MAX_OPEN)) return reply({ ok: false, error: "TOO_MANY_OPEN", max: me.isGuest ? GUEST_MAX_OPEN : MEMBER_MAX_OPEN });
+      const row = { id: bcId(), owner_key: key, user_id: me.isGuest ? null : me.id, title, streamer_nick: nick, avatar_url: mp?.avatar_url || null, mode, core_ver: C.CORE_VERSION, status: "open", closes_at: new Date(now() + mins * 60000).toISOString(), created_at: new Date().toISOString() };
       const { error } = await SB.from("clinic_broadcasts").insert(row);
       if (error) { console.error("[bc] create", error.message); return reply({ ok: false, error: "SAVE_FAIL" }); }
+      if (me.isGuest) { const ip = sockIp(socket); ipMakes.set(ip, [...(ipMakes.get(ip) || []), now()]); if (ipMakes.size > 5000) ipMakes.clear(); }   // 실제로 만든 것만 셈
+      // admin 「📺 스트리머」 탭에 "닉네임 (에이징커브)"로 남김 — 실패해도 방송 만들기에는 영향 없음
+      SB.from("streamer_chat_log").insert({
+        platform: "clinic", channel_id: row.id, nickname: nick, content_id: null, content_title: title, content_mode: null,
+        room_code: row.id, host_user_id: me.isGuest ? null : me.id, host_nick: me.isGuest ? null : (mp?.nickname || null),
+      }).then(({ error: le }) => { if (le) console.error("[bc] streamer log", le.message); }, () => {});
       BC.set(row.id, { row, entries: new Map(), stats: null, dirty: true, at: 0, timer: null });
       reply({ ok: true, bc: row });
     });
 
     on("clinic:bc:mine", async (_p, reply) => {
-      if (me.isGuest || !SB) return reply({ ok: true, rows: [] });
+      if (!SB) return reply({ ok: true, rows: [] });
       const { data } = await SB.from("clinic_broadcasts").select("id, title, mode, status, closes_at, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(20);
       reply({ ok: true, rows: data || [] });
     });
