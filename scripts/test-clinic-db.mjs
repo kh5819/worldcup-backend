@@ -20,7 +20,9 @@ function project(row, cols) {
   const o = {};
   for (let c of cols.split(",")) {
     c = c.trim();
-    let m;
+    let m, alias = null;
+    if ((m = c.match(/^(\w+):(.+)$/))) { alias = m[1]; c = m[2]; }
+    if (alias) { const [x, y] = c.split(/->>?/); o[alias] = y ? row[x]?.[y] ?? null : row[x]; continue; }
     if ((m = c.match(/^(\w+)->>(\w+)$/))) o[m[2]] = row[m[1]]?.[m[2]] == null ? null : String(row[m[1]][m[2]]);
     else if ((m = c.match(/^(\w+)->(\w+)$/))) o[m[2]] = row[m[1]]?.[m[2]] ?? null;
     else o[c] = row[c];
@@ -51,7 +53,8 @@ class Q {
     if (this.op === "update") { const hit = T.filter(match); hit.forEach((r) => Object.assign(r, this.val)); return { error: null, data: this.retSel ? hit.map((r) => project(r, this.retSel)) : null }; }
     if (this.op === "delete") { const keep = T.filter((r) => !match(r)); DB[this.t] = keep; return { error: null }; }
     let rows = T.filter(match);
-    for (const [c, asc] of [...this.ord].reverse()) rows.sort((a, b) => (a[c] < b[c] ? -1 : a[c] > b[c] ? 1 : 0) * (asc ? 1 : -1));
+    const val = (r, c) => { const [x, y] = c.split(/->>?/); return y ? r[x]?.[y] : r[c]; };
+    for (const [c, asc] of [...this.ord].reverse()) rows.sort((a, b) => { const A = val(a, c), B = val(b, c); return (A < B ? -1 : A > B ? 1 : 0) * (asc ? 1 : -1); });
     if (this.opts.head) return { error: null, count: rows.length, data: null };
     if (this.lim != null) rows = rows.slice(0, this.lim);
     const data = rows.map((r) => project(r, this.cols));
@@ -141,7 +144,7 @@ const prof = (nick, g = "f", age = 30) => ({ nick, gender: g, age, avatar: { ski
   ok(ps.best?.isNewBest, "게스트 최고 기록 저장 안 됨");
   // 랭킹 (빠른검사는 종합 랭킹 대상 아님 → 검사별 랭킹으로 확인)
   const rk = await get(`/clinic/ranking?board=test&test=reaction&device=pc&period=all`);
-  ok(rk.ok && rk.rows.some((r) => r.isGuest && r.nick === "게스트짱"), "게스트가 검사별 랭킹에 없음");
+  ok(rk.ok && !rk.rows.some((r) => r.nick === "게스트짱"), "연습·빠른검사가 검사별 랭킹에 뜸");
   // 회원 전환: 레무르로 로그인한 같은 브라우저
   const L = await conn("u_lemur");
   const meL = await emit(L, "clinic:me", { guestId: G });
@@ -189,6 +192,24 @@ const prof = (nick, g = "f", age = 30) => ({ nick, gender: g, age, avatar: { ski
   ok(fd.ok && fd.result.flagged, "조작 기록이 의심 표시 안 됨");
   ok(!(await get(`/clinic/ranking?board=total&device=pc&period=all`)).rows.some((r) => r.nick === "치터"), "조작 기록이 랭킹에 나옴");
   [a, b, c, d].forEach((x) => x.close());
+}
+
+// 3-2) 랭킹 = 정밀검사만 (하면 자동 등록), 빠른검사·연습은 제외, 비공개 제외
+{
+  const q = await conn("guest_quickonly1"), hid = await conn("guest_hiddenone1");
+  const fq = await fullRun(q, prof("빠른이", "f", 28), {}, { rt: 190 });
+  const ff = await fullRun(q, prof("빠른이", "f", 28), {}, { rt: 190, mode: "full" });
+  const fh = await fullRun(hid, prof("숨김이", "m", 28), {}, { rt: 185, isPublic: false, mode: "full" });
+  await sleep(100);
+  const fb = await get(`/clinic/ranking?board=total&device=pc&period=week&mode=quick`);   // 30초 캐시 피하려고 다른 조건
+  ok(fq.ok && ff.ok && fb.rows.filter((r) => r.nick === "빠른이").length === 1, "정밀검사 결과가 종합 랭킹에 1번 안 뜸(또는 빠른검사가 섞임)");
+  ok(!fb.rows.some((r) => r.nick === "숨김이"), "비공개 결과가 랭킹에 뜸");
+  const tb = await get(`/clinic/ranking?board=test&test=reaction&device=pc&period=week`);
+  ok(tb.rows.some((r) => r.nick === "빠른이") && tb.rows.find((r) => r.nick === "빠른이").score === ff.result.scores.reaction, "정밀검사 기록이 검사별 랭킹에 안 뜸");
+  ok(!tb.rows.some((r) => r.nick === "숨김이"), "비공개 검사 기록이 검사별 랭킹에 뜸");
+  ok(!tb.rows.some((r) => r.nick === "게스트짱"), "연습·빠른검사 기록이 검사별 랭킹에 뜸");
+  ok(tb.rows.every((r, i, A) => i === 0 || A[i - 1].score >= r.score) && new Set(tb.rows.map((r) => r.nick)).size === tb.rows.length, "검사별 랭킹 정렬/중복 이상");
+  q.close(); hid.close();
 }
 
 // 4) 입력 검증: XSS 닉네임·나이 경계

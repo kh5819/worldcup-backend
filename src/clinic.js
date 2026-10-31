@@ -350,6 +350,7 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
       const period = ["day", "week", "all"].includes(req.query.period) ? req.query.period : "all";
       const dev = device(req.query.device);
       const test = C.TESTS[req.query.test] ? req.query.test : "tap";
+      const mode = "full";   // 랭킹은 정밀검사(혼자·단체) 결과만 — 검사만 하면 자동 등록
       const ageG = [10, 20, 30, 40, 50, 60].includes(Number(req.query.age)) ? Number(req.query.age) : null;
       const ck = JSON.stringify([board, period, dev, test, ageG]);
       const hit = rankCache.get(ck);
@@ -357,14 +358,22 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
       const since = period === "day" ? new Date(Date.now() - 864e5) : period === "week" ? new Date(Date.now() - 7 * 864e5) : null;
       let rows = [];
       if (board === "test") {
-        let q = supabaseAdmin.from("clinic_best").select("owner_key, user_id, nickname, score, m, updated_at").eq("test_id", test).eq("device", dev);
-        if (since) q = q.gte("updated_at", since.toISOString());
-        const { data, error } = await q.order("score", { ascending: false }).order("updated_at", { ascending: true }).limit(50);
+        let q = supabaseAdmin.from("clinic_results").select(`id, owner_key, user_id, nickname, avatar, avatar_url, score:scores->${test}, rec:metrics->${test}, created_at`)
+          .eq("mode", mode).eq("device", dev).eq("is_public", true).eq("flagged", false);
+        if (since) q = q.gte("created_at", since.toISOString());
+        const { data, error } = await q.order(`scores->${test}`, { ascending: false }).order("created_at", { ascending: true }).limit(400);
         if (error) return res.status(500).json({ ok: false, error: "QUERY_FAIL" });
-        rows = (data || []).map((r) => ({ nick: r.nickname || "익명", score: r.score, m: r.m, at: r.updated_at, isGuest: !r.user_id }));
+        const seen = new Set();
+        for (const r of data || []) {
+          const sc = Number(r.score);
+          if (!Number.isFinite(sc) || seen.has(r.owner_key)) continue;
+          seen.add(r.owner_key);
+          rows.push({ id: r.id, nick: r.nickname || "익명", score: sc, m: r.rec?.m || {}, avatar: r.avatar, avatarUrl: r.avatar_url || null, at: r.created_at, isGuest: !r.user_id });
+          if (rows.length >= 50) break;
+        }
       } else {
         let q = supabaseAdmin.from("clinic_results").select("owner_key, user_id, nickname, age, avatar, avatar_url, total, phys, diff, show_age, diag->>title, diag->i18n, created_at, id")
-          .eq("mode", "full").eq("device", dev).eq("is_public", true).eq("flagged", false);
+          .eq("mode", mode).eq("device", dev).eq("is_public", true).eq("flagged", false);
         if (since) q = q.gte("created_at", since.toISOString());
         if (ageG || board === "young") q = q.eq("show_age", true);   // 나이 비공개 결과는 나이 관련 랭킹에서 제외
         if (ageG) q = ageG === 60 ? q.gte("age", 60) : ageG === 10 ? q.lt("age", 20) : q.gte("age", ageG).lt("age", ageG + 10);
