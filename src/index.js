@@ -16,8 +16,6 @@ import { registerLifegame } from "./lifegame.js";
 import { registerLiar } from "./liar.js";
 // DUO GAME ZONE — 우리방 OX (별도 모듈)
 import { registerOxGame } from "./oxgame.js";
-// DUO GAME ZONE — 거짓말 매치 (별도 모듈)
-import { registerFibbage } from "./fibbage.js";
 // DUO GAME ZONE — 멀티 오목 (별도 모듈)
 import { registerOmok } from "./omok.js";
 // DUO GAME ZONE — 난장 카드게임 (별도 모듈)
@@ -1063,7 +1061,6 @@ function generateSeoHtml({ title, description, image, canonical, jsonLd, bodyHtm
       <a href="${SITE_URL}/omok.html">⚫⚪ 멀티 오목</a>
       <a href="${SITE_URL}/cardgame-multi.html">🃏 난장 카드게임</a>
       <a href="${SITE_URL}/liar-multi.html">🕵️ 라이어 키워드</a>
-      <a href="${SITE_URL}/fibbage-multi.html">🎭 거짓말 매치</a>
       <a href="${SITE_URL}/lifegame.html">🎲 인생게임</a>
       <a href="${SITE_URL}/oxgame-multi.html">⭕ 우리방 OX</a>
       <a href="${SITE_URL}/merge.html">🍱 수라상 (한식 합성)</a>
@@ -10440,9 +10437,7 @@ registerLiar(io, supabaseAdmin);
 registerOxGame(io, supabaseAdmin);
 
 // =========================
-// 거짓말 매치 — 독립 모듈 등록 (fb:* 이벤트 prefix)
-// =========================
-registerFibbage(io, supabaseAdmin);
+// (거짓말 매치는 2026-11-01 삭제 — _archive/fibbage-removed-20261101)
 
 // =========================
 // 멀티 오목 — 독립 모듈 등록 (omok:* 이벤트 prefix)
