@@ -93,7 +93,9 @@ function markDirty(b) {
 }
 function getStats(b) {
   if (b.row.final_stats) return b.row.final_stats;
-  if (!b.stats || (b.dirty && now() - b.at > STATS_MS)) { b.stats = computeStats(b); b.dirty = false; b.at = now(); }
+  // 마감 시각이 지났거나(시간이 흘러서) 마감·연장으로 열림 상태가 바뀌었으면 묶음 간격과 상관없이 바로 다시 계산
+  const stale = b.stats && (b.stats.open !== isOpen(b) || b.stats.closesAt !== b.row.closes_at || b.stats.status !== b.row.status);
+  if (!b.stats || stale || (b.dirty && now() - b.at > STATS_MS)) { b.stats = computeStats(b); b.dirty = false; b.at = now(); }
   return b.stats;
 }
 

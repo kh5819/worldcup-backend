@@ -164,6 +164,7 @@ ok(rest.ok && rest.stats.count === 490 && rest.stats.open === true, "오버레�
 const late = await conn("guest_lateone1");
 const lb = await play(late, BCID, prof(900), { beginOnly: true });
 ok((await emit(st, "clinic:bc:control", { id: BCID, action: "close" })).ok, "마감 실패");
+ok((await (await fetch(URL + "/clinic/bc/" + BCID)).json()).stats.open === false, "마감 직후 조회에 아직 열림으로 나옴");
 ok((await emit(await conn("guest_afterclose"), "clinic:begin", { mode: "quick", device: "pc", bc: BCID })).error === "BC_CLOSED", "마감 후 참여 시작 허용");
 const lf = await finish(late, lb, prof(900), { rt: 180 });
 ok(lf.ok && lf.bc?.counted === true, "마감 직전 시작한 검사가 집계 안 됨 " + JSON.stringify(lf.bc || lf.error));
@@ -182,6 +183,16 @@ ok(after.stats.count === 491 && after.stats.status === "final", "확정 후 결�
 _bcTest.BC.delete(BCID);
 const re = await get(`/clinic/bc/${BCID}`);
 ok(re.stats.count === 491 && re.stats.avgTotal === fz.stats.avgTotal, "확정 결과 재현 실패");
+
+// 6-2) 시간이 지나 저절로 마감돼도(새 참여 없음) 바로 마감으로 보임
+{
+  const tc = await emit(st, "clinic:bc:create", { title: "시간 마감", mode: "quick", minutes: 30 });   // (게스트는 IP 도배 제한에 걸려서 회원으로)
+  ok(tc.ok && (await (await fetch(URL + "/clinic/bc/" + tc.bc.id)).json()).stats.open === true, "새 방송이 열림이 아님");
+  const past = new Date(Date.now() - 1000).toISOString();   // 마감 시각 지남 (메모리·DB 둘 다)
+  _bcTest.BC.get(tc.bc.id).row.closes_at = past; DB.clinic_broadcasts.find((x) => x.id === tc.bc.id).closes_at = past;
+  await sleep(1600);   // 조회 캐시(1.5초) 지난 뒤
+  ok((await (await fetch(URL + "/clinic/bc/" + tc.bc.id)).json()).stats.open === false, "마감 시각이 지났는데 계속 열림으로 나옴");
+}
 
 // 7) 대항전: 같은 모드·채점 버전만 순위, 참여자 적은 방송 별도
 const c2 = await emit(st, "clinic:bc:create", { title: "두번째 방송", mode: "quick", minutes: 30 });
