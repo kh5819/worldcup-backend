@@ -28,6 +28,8 @@ import { registerDraw } from "./draw.js";
 import { registerSuspect } from "./suspect.js";
 import { registerMystery } from "./mystery.js";
 import { registerMysteryMulti } from "./mystery-multi.js";
+import { registerClinic } from "./clinic.js";
+import { registerClinicMulti } from "./clinic-multi.js";
 import { registerDodge } from "./dodge.js";
 import { registerGachatd } from "./gachatd.js";
 import { registerGolf } from "./golf.js";
@@ -2466,6 +2468,41 @@ app.post("/api/youtube-videos", requireAuth, async (req, res) => {
 // POST /api/proxy-image — 외부 이미지 URL → Supabase Storage 복사 저장
 // 핫링크 차단(namu.wiki 등) 방지: 서버에서 fetch → Storage upload → publicUrl 반환
 // =============================================
+// 외부 이미지 복사 시 압축 — scripts/compress-existing-media.js 백필과 같은 규칙
+//  300KB 이하·움짤(GIF/움직이는 WebP·APNG)은 그대로, 투명 이미지는 리사이즈 필요할 때만(PNG 유지),
+//  불투명은 긴 변 1280 + JPEG 85 (리사이즈 없으면 20% 이상 줄 때만). 실패하면 null → 원본 저장.
+let _sharpMod = null;
+async function _compressProxyImage(buf) {
+  try {
+    if (buf.length <= 300 * 1024) return null;
+    if (!_sharpMod) _sharpMod = (await import("sharp")).default;
+    const sharp = _sharpMod;
+    const meta = await sharp(buf).metadata();
+    if (meta.format === "gif" || (meta.pages || 1) > 1) return null;
+    let hasAlpha = false;
+    if (meta.hasAlpha) {
+      try { const st = await sharp(buf).stats(); hasAlpha = !!st.channels[3] && st.channels[3].min < 250; }
+      catch { hasAlpha = true; }
+    }
+    const needsResize = meta.width > 1280 || meta.height > 1280;
+    if (!needsResize && hasAlpha) return null;
+    let pipe = sharp(buf);
+    if (needsResize) pipe = pipe.resize({ width: 1280, height: 1280, fit: "inside", withoutEnlargement: true });
+    let out, ext, contentType;
+    if (hasAlpha) { out = await pipe.png().toBuffer(); ext = "png"; contentType = "image/png"; }
+    else {
+      if (meta.hasAlpha) pipe = pipe.flatten({ background: "#ffffff" });
+      out = await pipe.jpeg({ quality: 85 }).toBuffer(); ext = "jpg"; contentType = "image/jpeg";
+    }
+    if (out.length >= buf.length) return null;
+    if (!needsResize && out.length > buf.length * 0.8) return null;
+    return { buffer: out, ext, contentType };
+  } catch (e) {
+    console.warn("[proxy-image] 압축 건너뜀:", e.message);
+    return null;
+  }
+}
+
 app.post("/api/proxy-image", proxyImageLimiter, requireAuth, async (req, res) => {
   const MAX_SIZE = 10 * 1024 * 1024; // 10MB
   const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
@@ -2527,7 +2564,7 @@ app.post("/api/proxy-image", proxyImageLimiter, requireAuth, async (req, res) =>
       return res.status(502).json({ ok: false, error: "빈 응답" });
     }
 
-    const buffer = Buffer.from(arrayBuf);
+    let buffer = Buffer.from(arrayBuf);
 
     // 확장자 결정
     const MIME_EXT = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };
@@ -2535,6 +2572,14 @@ app.post("/api/proxy-image", proxyImageLimiter, requireAuth, async (req, res) =>
     if (!ext) {
       const extMatch = url.match(/\.(jpe?g|png|gif|webp)(\?|#|$)/i);
       ext = extMatch ? extMatch[1].toLowerCase().replace("jpeg", "jpg") : "jpg";
+    }
+    let uploadType = contentType.startsWith("image/") ? contentType : `image/${ext}`;
+
+    // 압축 (줄어들 때만 교체)
+    const _cmp = await _compressProxyImage(buffer);
+    if (_cmp) {
+      console.log(`[proxy-image] 압축 ${Math.round(buffer.length / 1024)}KB → ${Math.round(_cmp.buffer.length / 1024)}KB`);
+      buffer = _cmp.buffer; ext = _cmp.ext; uploadType = _cmp.contentType;
     }
 
     // Storage 경로 생성
@@ -2548,7 +2593,7 @@ app.post("/api/proxy-image", proxyImageLimiter, requireAuth, async (req, res) =>
     const { error: upErr } = await supabaseAdmin.storage
       .from(targetBucket)
       .upload(storagePath, buffer, {
-        contentType: contentType.startsWith("image/") ? contentType : `image/${ext}`,
+        contentType: uploadType,
         cacheControl: "public, max-age=31536000",
         upsert: false,
       });
@@ -10426,6 +10471,9 @@ registerRaisingPvp(io, supabaseAdmin);
 // 플듀 미스터리 — mys:* 이벤트, 사건 진행·정답 판정 전부 서버
 registerMystery(io, supabaseAdmin);
 registerMysteryMulti(io, supabaseAdmin);
+// 게이머 에이징 커브 진단소 — clinic:* / clm:* 이벤트 + /clinic/* REST, 채점은 서버
+registerClinic(io, supabaseAdmin, app, { getOptionalUser });
+registerClinicMulti(io, supabaseAdmin);
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {
