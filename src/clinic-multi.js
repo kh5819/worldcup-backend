@@ -139,7 +139,7 @@ async function finish(io, r) {
     r.tests.forEach((t, i) => { results[t] = p.rounds[i] || { score: 0, m: {}, flags: [] }; });
     const scores = Object.fromEntries(Object.entries(results).map(([k, v]) => [k, v.score]));
     const total = C.totalScore(scores);
-    return { id: u, p, results, total, phys: C.physicalAge(total), age: p.profile?.age || 30 };
+    return { id: u, p, results, total, phys: C.physicalAge(total, p.device), age: p.profile?.age || 30 };
   });
   const report = C.groupReport(people, r.tests, C.hashSeed(groupId));
   const rankOf = Object.fromEntries(report.ranking.map((x) => [x.id, x.rank]));
@@ -147,7 +147,7 @@ async function finish(io, r) {
   const individual = {};
   for (const x of people) {
     const prof = x.p.profile || { nick: x.p.name, gender: "m", age: 30, avatar: C.defaultAvatar("m", C.hashSeed(x.id)) };
-    const dArgs = { results: x.results, age: prof.age, gender: prof.gender, seed: C.hashSeed(groupId + x.id), rank: rankOf[x.id], of: people.length };
+    const dArgs = { results: x.results, age: prof.age, gender: prof.gender, seed: C.hashSeed(groupId + x.id), rank: rankOf[x.id], of: people.length, device: x.p.device };
     const diag = withI18n(C.diagnose(dArgs), dArgs);
     const id = resultId();
     const row = {

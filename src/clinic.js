@@ -246,7 +246,7 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
       s.plan.forEach((it, i) => { results[it.id] = s.results[i]; });
       const prev = await prevResult(supabaseAdmin, key);
       const seed = C.hashSeed(p.sid);
-      const dArgs = { results, age: prof.age, gender: prof.gender, seed, prev: prev && prev.mode === s.mode ? prev : null };
+      const dArgs = { results, age: prof.age, gender: prof.gender, seed, prev: prev && prev.mode === s.mode ? prev : null, device: s.device };
       const diag = withI18n(C.diagnose(dArgs), dArgs);
       const id = resultId();
       const row = {

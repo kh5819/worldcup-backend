@@ -731,8 +731,11 @@ export function totalScore(scores) {
   return v.length ? Math.round(mean(v)) : 0;
 }
 // 오락용 추정치 — 실제 연령대 기준 데이터 없음
-export function physicalAge(total) {
-  return Math.round(curve(total, [[0, 75], [10, 67], [20, 58], [28, 50], [36, 43], [44, 37], [52, 32], [60, 28], [68, 25], [76, 22], [84, 19], [92, 17], [100, 15]]));
+// 2026-11-01 조정: 실제 기록 557건 기준으로 너무 후했음(PC 평균 실제보다 2~5살 젊게, 회춘 29%) → PC 평균 +3살·회춘 10%
+// 휴대폰은 터치 조작이라 점수가 평균 4~5점 낮게 나와서, 나이 계산할 때만 +5점 보정 (점수·순위는 그대로)
+export function physicalAge(total, device) {
+  const t = device === "mobile" ? Math.min(100, total + 5) : total;
+  return Math.round(curve(t, [[0, 76], [20, 62], [35, 52], [45, 44], [55, 37], [62, 32], [68, 28], [74, 25], [80, 22], [86, 19], [92, 17], [100, 15]]));
 }
 export function verdictOf(diff) {
   if (diff <= -8) return { key: "young", name: "회춘 판정", color: "#2fae58", stamp: "회춘" };
@@ -1059,7 +1062,7 @@ export function diagnose(o) {
   const s = Object.fromEntries(Object.entries(res).map(([k, v]) => [k, v.score]));
   const ids = Object.keys(s);
   const total = totalScore(s);
-  const phys = physicalAge(total);
+  const phys = Number.isFinite(o.phys) ? o.phys : physicalAge(total, o.device);   // 저장된 결과 다시 그릴 땐 저장된 나이 그대로
   const age = o.age;
   const diff = phys - age;
   const ab = abilities(s);
@@ -1139,7 +1142,7 @@ export function localizeResult(r, lang) {
   }
   const results = {};
   for (const [t, sc] of Object.entries(r.scores || {})) results[t] = { score: sc, m: r.metrics?.[t]?.m || {}, flags: r.metrics?.[t]?.flags || [] };
-  const d = diagnose({ results, age: r.age, gender: r.gender, seed: r.diag.seed, rank: r.diag.rank, of: r.diag.of, prev: r.diag.prevTotal != null ? { total: r.diag.prevTotal } : null, lang });
+  const d = diagnose({ results, age: r.age, gender: r.gender, seed: r.diag.seed, rank: r.diag.rank, of: r.diag.of, prev: r.diag.prevTotal != null ? { total: r.diag.prevTotal } : null, lang, device: r.device, phys: Number.isFinite(r.phys) ? r.phys : undefined });
   return { ...r, diag: d };
 }
 
