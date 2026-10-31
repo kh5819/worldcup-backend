@@ -68,7 +68,7 @@ export const TESTS = {
   tap: {
     name: "손가락 불나게", sub: "연타 속도", room: "rehab", icon: "boom1", dur: 10000,
     abil: { dexterity: 1 },
-    how: ["10초 동안 최대한 빠르게 연타!", "PC: 스페이스·아무 키·클릭", "모바일: 큰 버튼 두 개를 양손으로"],
+    how: ["10초 동안 최대한 빠르게 연타!", "PC: 스페이스바 또는 마우스 클릭 (두 가지만)", "모바일: 큰 버튼 두 개를 양손으로"],
     unit: "회",
   },
   memory: {
@@ -292,10 +292,10 @@ const GEN = {
   fly: (R) => {
     const ax = [], ay = [];
     for (let k = 0; k < 3; k++) {
-      ax.push([0.24 / (k + 1.4), 0.00075 * (k + 1) * (0.8 + R() * 0.5), R() * 6.28]);
-      ay.push([0.24 / (k + 1.4), 0.0008 * (k + 1) * (0.8 + R() * 0.5), R() * 6.28]);
+      ax.push([0.24 / (k + 1.4), 0.00095 * (k + 1) * (0.8 + R() * 0.5), R() * 6.28]);
+      ay.push([0.24 / (k + 1.4), 0.001 * (k + 1) * (0.8 + R() * 0.5), R() * 6.28]);
     }
-    return { dur: 20000, tick: 50, ax, ay, acc: 0.000016, hitR: 0.085, catchMs: 1000, escMs: 500 };
+    return { dur: 20000, tick: 50, ax, ay, acc: 0.000022, hitR: 0.085, catchMs: 1000, escMs: 500 };
   },
 };
 
@@ -462,7 +462,7 @@ const SCORE = {
     const tps = n / (spec.dur / 1000);
     let peak = 0; for (let i = 0, j = 0; i < n; i++) { while (t[i] - t[j] > 1000) j++; peak = Math.max(peak, i - j + 1); }
     const flags = [];
-    if (tps > 18 || peak > 24) flags.push("MACRO_SPEED");
+    if (tps > 22 || peak > 28) flags.push("MACRO_SPEED");   // 입력 2가지(스페이스·클릭 / 버튼 2개) 기준 사람 한계
     if (n >= 40 && cv < 0.035) flags.push("MACRO_RHYTHM");
     const speed = curve(tps, [[0, 0], [3, 10], [5, 35], [7, 60], [9, 78], [11, 90], [13, 97], [15, 100]]);
     const cons = n >= 6 ? 100 * (1 - clamp((cv - 0.08) / 0.5, 0, 1)) : 0;
@@ -751,7 +751,7 @@ const pk = (pool, lang) => pool[lg(lang)] || pool.ko;
 function fill(tpl, m) { return String(tpl).replace(/\{(\w+)\}/g, (_, k) => (m?.[k] ?? "?")); }
 
 const TEST_TX = {
-  tap: { ja: ["指が燃えるほど", "連打速度", ["10秒間できるだけ速く連打！", "PC: スペース・任意のキー・クリック", "モバイル: 大きなボタン2つを両手で"]], en: ["Finger Fire", "Tap speed", ["Tap as fast as you can for 10 seconds!", "PC: Space, any key or click", "Mobile: hit the two big buttons with both thumbs"]] },
+  tap: { ja: ["指が燃えるほど", "連打速度", ["10秒間できるだけ速く連打！", "PC: スペースキーかマウスクリック（この2つだけ）", "モバイル: 大きなボタン2つを両手で"]], en: ["Finger Fire", "Tap speed", ["Tap as fast as you can for 10 seconds!", "PC: Space bar or mouse click (only these two)", "Mobile: hit the two big buttons with both thumbs"]] },
   memory: { ja: ["短期記憶", "順番記憶", ["光るタイルの順番を覚えて", "同じ順番で押してください", "チャンスは2回、長さはだんだん増えます"]], en: ["Short-term Memory", "Sequence recall", ["Watch the order the tiles light up", "Press them back in the same order", "2 lives, and the sequence keeps growing"]] },
   reaction: { ja: ["気絶から復帰", "反応速度", ["気絶したキャラを見ていて", "「！」が出た瞬間にタッチ！", "合図の前に押すとフライング"]], en: ["Stun Breaker", "Reaction time", ["Watch your stunned character", "Tap the instant the \"!\" appears", "Pressing early is a false start"]] },
   qwer: { ja: ["スキルコンボQWER", "連続入力", ["画面のスキルコンボを順番に入力", "PC: Q W E R キー・モバイル: 下の4ボタン", "間違えるとそのコンボは失敗"]], en: ["QWER Skill Combo", "Combo input", ["Enter the skill combo shown, in order", "PC: Q W E R keys · Mobile: the 4 buttons", "One wrong key breaks the combo"]] },

@@ -359,7 +359,7 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
       let rows = [];
       if (board === "test") {
         let q = supabaseAdmin.from("clinic_results").select(`id, owner_key, user_id, nickname, avatar, avatar_url, score:scores->${test}, rec:metrics->${test}, created_at`)
-          .eq("mode", mode).eq("device", dev).eq("is_public", true).eq("flagged", false);
+          .eq("mode", mode).eq("device", dev).eq("is_public", true);   // 의심 기록도 포함 (해당 검사는 이미 40점 처리) · 사람당 최고 1개
         if (since) q = q.gte("created_at", since.toISOString());
         const { data, error } = await q.order(`scores->${test}`, { ascending: false }).order("created_at", { ascending: true }).limit(400);
         if (error) return res.status(500).json({ ok: false, error: "QUERY_FAIL" });
@@ -373,7 +373,7 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
         }
       } else {
         let q = supabaseAdmin.from("clinic_results").select("owner_key, user_id, nickname, age, avatar, avatar_url, total, phys, diff, show_age, diag->>title, diag->i18n, created_at, id")
-          .eq("mode", mode).eq("device", dev).eq("is_public", true).eq("flagged", false);
+          .eq("mode", mode).eq("device", dev).eq("is_public", true);   // 의심 기록도 포함 (해당 검사는 이미 40점 처리) · 사람당 최고 1개
         if (since) q = q.gte("created_at", since.toISOString());
         if (ageG || board === "young") q = q.eq("show_age", true);   // 나이 비공개 결과는 나이 관련 랭킹에서 제외
         if (ageG) q = ageG === 60 ? q.gte("age", 60) : ageG === 10 ? q.lt("age", 20) : q.gte("age", ageG).lt("age", ageG + 10);
@@ -404,7 +404,7 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
       const dev = device(req.query.device);
       if (!(total >= 0 && total <= 100) || !(age >= 7 && age <= 99)) return res.status(400).json({ ok: false });
       const lo = age < 20 ? 0 : age >= 60 ? 60 : Math.floor(age / 10) * 10, hi = age < 20 ? 20 : age >= 60 ? 200 : lo + 10;
-      const base = () => supabaseAdmin.from("clinic_results").select("id", { count: "exact", head: true }).eq("mode", "full").eq("device", dev).eq("flagged", false).gte("age", lo).lt("age", hi);
+      const base = () => supabaseAdmin.from("clinic_results").select("id", { count: "exact", head: true }).eq("mode", "full").eq("device", dev).gte("age", lo).lt("age", hi);
       const [{ count: n }, { count: below }] = await Promise.all([base(), base().lt("total", total)]);
       if (!n || n < 100) return res.json({ ok: true, enough: false, n: n || 0 });
       res.json({ ok: true, enough: true, n, top: Math.max(1, Math.round(100 - (below / n) * 100)), group: C.ageGroup(age) });
