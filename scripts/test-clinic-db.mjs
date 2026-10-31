@@ -190,10 +190,9 @@ const prof = (nick, g = "f", age = 30) => ({ nick, gender: g, age, avatar: { ski
   for (let i = 0; i < bb.plan.length; i++) { await emit(d, "clinic:testStart", { sid: bb.sid, idx: i }); await emit(d, "clinic:submit", { sid: bb.sid, idx: i, log: bb.plan[i].id === "tap" ? { t: Array.from({ length: 140 }, (_, k) => k * 70) } : {} }); }
   const fd = await emit(d, "clinic:finish", { sid: bb.sid, profile: prof("치터"), isPublic: true });
   ok(fd.ok && fd.result.flagged, "조작 기록이 의심 표시 안 됨");
-  const withCheat = await get(`/clinic/ranking?board=total&device=mobile&period=all`);   // 다른 조건(캐시 피함)
   const cheatTap = DB.clinic_results.find((r) => r.id === fd.id).scores.tap;
   ok(cheatTap <= 40, "의심 검사가 40점으로 처리 안 됨");
-  ok((await get(`/clinic/ranking?board=total&device=pc&period=week`)).rows.filter((r) => r.nick === "치터").length === 1, "의심 기록이 랭킹에 안 나옴(또는 중복)");
+  ok((await get(`/clinic/ranking?board=total&device=pc&period=day`)).rows.filter((r) => r.nick === "치터").length === 1, "의심 기록이 랭킹에 안 나옴(또는 중복)");
   [a, b, c, d].forEach((x) => x.close());
 }
 
