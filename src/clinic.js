@@ -5,7 +5,7 @@
 // DB: clinic_results / clinic_best (sql/clinic_tables.sql, RLS 켬·정책 0 = 서버 전용)
 // =========================
 import * as C from "./clinic-core.js";
-import { bcOnBegin, bcOnFinish } from "./clinic-broadcast.js";
+import { bcOnBegin, bcOnFinish, bcPlay, bcPlayEnd } from "./clinic-broadcast.js";
 
 const SESS = new Map();          // sid → session
 const SESS_TTL = 60 * 60 * 1000;
@@ -188,6 +188,7 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
       const id = sid();
       const s = { key, mode: p.mode, device: device(p.device), createdAt: Date.now(), plan: tests.map((t) => ({ id: t, seed: newSeed() })), started: {}, results: {}, finished: false, bcId };
       SESS.set(id, s);
+      if (bcId) { s.bcNick = String(p.bcNick || "").slice(0, 12); s.bcShow = p.bcShowName !== false; bcPlay(bcId, key, { nick: s.bcNick, showName: s.bcShow, total: s.plan.length, round: 1, done: 0, device: s.device }); }
       reply({ ok: true, sid: id, plan: s.plan, device: s.device, coreVersion: C.CORE_VERSION });
     });
 
@@ -197,6 +198,7 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
       if (!s || s.key !== key || s.finished || s.mode === "practice") return reply({ ok: false, error: "NO_SESSION" });
       const results = s.plan.map((_, i) => s.results[i] || null);
       const idx = results.findIndex((x) => !x);
+      if (s.bcId) bcPlay(s.bcId, key, { nick: s.bcNick, showName: s.bcShow, total: s.plan.length, round: Math.min(s.plan.length, (idx < 0 ? s.plan.length : idx) + 1), done: idx < 0 ? s.plan.length : idx, device: s.device });
       reply({ ok: true, mode: s.mode, plan: s.plan, results, idx: idx < 0 ? s.plan.length : idx });
     });
 
@@ -208,6 +210,7 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
       if (s.results[i]) return reply({ ok: false, error: "ALREADY_DONE" });
       if (s.plan.slice(0, i).some((_, j) => !s.results[j])) return reply({ ok: false, error: "BAD_ORDER" });   // 순서 건너뛰기 금지
       s.started[i] = Date.now();
+      if (s.bcId) bcPlay(s.bcId, key, { nick: s.bcNick, showName: s.bcShow, total: s.plan.length, round: i + 1, done: i, device: s.device });
       reply({ ok: true });
     });
 
@@ -221,6 +224,7 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
       if (!s.started[i]) return reply({ ok: false, error: "NOT_STARTED" });
       const r = judgeSubmit(item.id, item.seed, p.log, s.device, Date.now() - s.started[i]);
       s.results[i] = r;
+      if (s.bcId) bcPlay(s.bcId, key, { done: i + 1 });
       let best = null;
       if (s.mode === "practice") best = await updateBest(supabaseAdmin, key, me, String(p.nick || "").slice(0, 12), item.id, s.device, r);
       reply({ ok: true, result: r, best });
@@ -258,6 +262,7 @@ export function registerClinic(io, supabaseAdmin, app, { getOptionalUser } = {})
       if (s.bcId && (saved || !supabaseAdmin)) {   // 방송 집계: 서버가 채점·저장한 결과로만
         try { s.finished.bc = { id: s.bcId, ...(await bcOnFinish(s.bcId, { key, me, row, sessStarted: s.createdAt, showName: p.bcShowName !== false })) }; } catch (e) { console.error("[bc] finish", e); }
       }
+      if (s.bcId) bcPlayEnd(s.bcId, key);   // 다 끝남 → "검사 중" 목록에서 빠짐 (저장 실패여도)
       reply({ ok: true, ...s.finished });
     });
 

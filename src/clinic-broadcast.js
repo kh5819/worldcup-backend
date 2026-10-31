@@ -16,6 +16,7 @@ const MAX_DEADLINE_MIN = 24 * 60;
 const GUEST_MAX_OPEN = 1, MEMBER_MAX_OPEN = 3;      // 동시에 열 수 있는 방송 수 (게스트는 브라우저 = 주인)
 const GUEST_IP_WIN = 10 * 60 * 1000, GUEST_IP_MAX = 5;   // 게스트 만들기: 같은 IP 10분에 5개까지 (도배 방지)
 const ipMakes = new Map();
+const PLAY_TTL = 4 * 60 * 1000;    // 이 시간 동안 아무 진행이 없으면 "검사 중" 목록에서 뺌 (창 닫음 등)
 function sockIp(socket) {
   const h = socket.handshake?.headers || {};
   const cf = String(h["cf-connecting-ip"] || "").trim(); if (cf) return cf;
@@ -73,6 +74,10 @@ export function computeStats(b) {
     beatStreamer: streamer && valid.length ? Math.round((valid.filter((e) => e.total > streamer.total).length / valid.length) * 100) : null,
     updatedAt: new Date().toISOString(),
   };
+  // 지금 검사 중인 시청자 (메모리에만 — 저장 안 함). 닉네임 숨김 선택이면 익명
+  const play = [...(b.playing?.values() || [])].filter((x) => now() - x.at < PLAY_TTL).sort((x, y) => y.round - x.round || x.since - y.since);
+  s.playing = b.row.status === "final" ? 0 : play.length;
+  s.playingList = b.row.status === "final" ? [] : play.slice(0, 30).map((x) => ({ nick: x.streamer ? x.nick : x.showName ? x.nick : "익명 시청자", anon: !x.streamer && !x.showName, round: x.round, total: x.total, done: x.done, device: x.device, streamer: !!x.streamer }));
   return s;
 }
 function markDirty(b) {
@@ -101,6 +106,22 @@ export async function bcOnBegin(bcIdArg, mode) {
   if (!isOpen(b)) return { ok: false, error: "BC_CLOSED" };
   if (mode !== b.row.mode) return { ok: false, error: "BC_MODE" };
   return { ok: true, bc: b.row.id };
+}
+// 진행 표시: 시작·라운드 넘어감·제출 때 부름 (round = 지금 하는 라운드 1부터, done = 끝낸 라운드 수)
+export function bcPlay(bcIdArg, key, info) {
+  const b = BC.get(String(bcIdArg || ""));
+  if (!b || b.row.status === "final") return;
+  b.playing ||= new Map();
+  const cur = b.playing.get(key);
+  const x = { since: cur?.since || now(), ...cur, ...info, at: now(), streamer: b.row.owner_key === key };
+  x.nick = String(x.nick || "시청자").replace(/[<>]/g, "").slice(0, 12) || "시청자";
+  b.playing.set(key, x);
+  if (b.playing.size > 3000) { const old = [...b.playing.entries()].sort((p, q) => p[1].at - q[1].at)[0]; if (old) b.playing.delete(old[0]); }
+  markDirty(b);
+}
+export function bcPlayEnd(bcIdArg, key) {
+  const b = BC.get(String(bcIdArg || ""));
+  if (b?.playing?.delete(key)) markDirty(b);
 }
 // 발급: 서버가 채점·저장한 결과로만 집계 (한 사람당 첫 완료 기록 1개)
 export async function bcOnFinish(bcIdArg, { key, me, row, sessStarted, showName }) {
@@ -140,7 +161,12 @@ async function finalizeIfDue(b, force = false) {
 
 export function registerClinicBroadcast(io, supabaseAdmin, app, { memberProfile } = {}) {
   SB = supabaseAdmin; IO = io;
-  setInterval(() => { for (const b of BC.values()) finalizeIfDue(b).catch(() => {}); }, 30000).unref?.();
+  setInterval(() => {
+    for (const b of BC.values()) {
+      finalizeIfDue(b).catch(() => {});
+      if (b.playing) { let gone = false; for (const [k, x] of b.playing) if (now() - x.at >= PLAY_TTL) { b.playing.delete(k); gone = true; } if (gone) markDirty(b); }
+    }
+  }, 30000).unref?.();
 
   io.on("connection", (socket) => {
     const me = socket.user;
@@ -259,4 +285,4 @@ export function registerClinicBroadcast(io, supabaseAdmin, app, { memberProfile 
   });
 }
 
-export const _bcTest = { BC, computeStats, finalizeIfDue, GRACE_MS };
+export const _bcTest = { BC, computeStats, finalizeIfDue, GRACE_MS, PLAY_TTL };

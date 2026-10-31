@@ -72,6 +72,37 @@ await sleep(50);
 // 모드가 다르면 참여 불가
 ok((await emit(await conn("guest_wrongmode"), "clinic:begin", { mode: "full", device: "pc", bc: BCID })).error === "BC_MODE", "모드 다른 참여 허용");
 
+// 1-2) 지금 검사 중 (몇 라운드 진행 중인지)
+{
+  const pa = await conn("guest_playA1"), pb = await conn("guest_playB1");
+  const ba = await emit(pa, "clinic:begin", { mode: "quick", device: "mobile", bc: BCID, bcNick: "진행중A", bcShowName: true });
+  const bb = await emit(pb, "clinic:begin", { mode: "quick", device: "pc", bc: BCID, bcNick: "숨김B", bcShowName: false });
+  await emit(pa, "clinic:testStart", { sid: ba.sid, idx: 0 }); await emit(pa, "clinic:submit", { sid: ba.sid, idx: 0, log: {} });
+  await emit(pa, "clinic:testStart", { sid: ba.sid, idx: 1 }); await emit(pa, "clinic:submit", { sid: ba.sid, idx: 1, log: {} });
+  await emit(pa, "clinic:testStart", { sid: ba.sid, idx: 2 });
+  await sleep(2300);
+  let w = (await emit(st, "clinic:bc:watch", { id: BCID })).stats;
+  const A = w.playingList.find((x) => x.nick === "진행중A");
+  ok(w.playing === 2 && A && A.round === 3 && A.total === 5 && A.done === 2 && A.device === "mobile", "검사 중 표시 이상: " + JSON.stringify(w.playingList));
+  ok(w.playingList[0].nick === "진행중A" && w.playingList.some((x) => x.anon && x.nick === "익명 시청자" && x.round === 1) && !JSON.stringify(w).includes("숨김B"), "숨긴 닉네임/정렬 이상");
+  ok((await (await fetch(URL + "/clinic/bc/" + BCID)).json()).stats.playing === 2, "오버레이용 응답에 검사 중 수 없음");
+  // 새로고침 이어하기 → 같은 사람 그대로 (중복 아님)
+  await emit(pa, "clinic:resume", { sid: ba.sid });
+  // 끝까지 하면 목록에서 빠짐
+  for (let i = 2; i < ba.plan.length; i++) { if (i > 2) await emit(pa, "clinic:testStart", { sid: ba.sid, idx: i }); await emit(pa, "clinic:submit", { sid: ba.sid, idx: i, log: {} }); }
+  await emit(pa, "clinic:finish", { sid: ba.sid, profile: prof(777), prefs: {}, isPublic: true });
+  // (뒤 시험의 인원 계산이 흔들리지 않게 이 시청자 기록은 지움)
+  _bcTest.BC.get(BCID).entries.delete("g:guest_playA1"); DB.clinic_bc_entries = DB.clinic_bc_entries.filter((e) => e.owner_key !== "g:guest_playA1");
+  await sleep(2300);
+  w = (await emit(st, "clinic:bc:watch", { id: BCID })).stats;
+  ok(w.playing === 1 && !w.playingList.some((x) => x.nick === "진행중A"), "끝낸 사람이 검사 중 목록에 남음: " + JSON.stringify(w.playingList));
+  // 4분 동안 아무 진행 없으면 빠짐
+  const pl = _bcTest.BC.get(BCID).playing; for (const x of pl.values()) x.at -= _bcTest.PLAY_TTL + 1000;
+  ok(_bcTest.computeStats(_bcTest.BC.get(BCID)).playing === 0, "멈춘 사람이 계속 검사 중으로 보임");
+  pl.clear();
+  pa.close(); pb.close();
+}
+
 // 2) 스트리머 본인 기록 (집계엔 안 들어감)
 const sf = await play(st, BCID, prof(0), { rt: 260 });
 ok(sf.ok && sf.bc?.streamer === true && sf.bc.counted === false, "스트리머 기록 처리 이상");
