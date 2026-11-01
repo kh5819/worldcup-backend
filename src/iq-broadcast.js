@@ -186,7 +186,7 @@ export function registerIqBroadcast(io, supabaseAdmin, app, { memberProfile } = 
       const mode = p.mode === "full" ? "full" : "quick";
       const mins = Math.min(MAX_DEADLINE_MIN, Math.max(5, Math.round(Number(p.minutes) || 30)));
       const mp = !me.isGuest && memberProfile ? await memberProfile(SB, me) : null;
-      const nick = String(mp?.nickname || p.streamerNick || "스트리머").replace(/[<>]/g, "").trim().slice(0, 16) || "스트리머";
+      const nick = String(String(p.streamerNick || "").trim() || mp?.nickname || "스트리머")   // 직접 적은 방송 닉네임 우선.replace(/[<>]/g, "").trim().slice(0, 16) || "스트리머";
       const title = String(p.title || `${nick} 방송 IQ 진단소`).replace(/[<>]/g, "").trim().slice(0, 40) || `${nick} 방송 IQ 진단소`;
       const { count } = await SB.from("iq_broadcasts").select("id", { count: "exact", head: true }).eq("owner_key", key).eq("status", "open").gt("closes_at", new Date().toISOString());
       if ((count || 0) >= (me.isGuest ? GUEST_MAX_OPEN : MEMBER_MAX_OPEN)) return reply({ ok: false, error: "TOO_MANY_OPEN", max: me.isGuest ? GUEST_MAX_OPEN : MEMBER_MAX_OPEN });
