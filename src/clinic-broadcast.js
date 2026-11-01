@@ -56,6 +56,8 @@ export function computeStats(b) {
   const streamer = all.find((e) => e.is_streamer) || null;
   const ageDist = {};
   for (const e of valid) if (e.age_group) ageDist[e.age_group] = (ageDist[e.age_group] || 0) + 1;
+  const physDist = {};   // 피지컬 나이(검사 결과) 연령대 — 실제 나이 분포와 헷갈리지 않게 따로
+  for (const e of valid) if (Number.isFinite(e.phys)) { const g = C.ageGroup(e.phys); physDist[g] = (physDist[g] || 0) + 1; }
   const tests = C.MODES[b.row.mode].tests;
   const perTest = {};
   for (const t of tests) { const v = valid.map((e) => e.scores?.[t]).filter(Number.isFinite); perTest[t] = r1(avg(v)); }
@@ -67,7 +69,7 @@ export function computeStats(b) {
     status: b.row.status, closesAt: b.row.closes_at, open: isOpen(b),
     count: valid.length, flaggedCount: all.filter((e) => e.flagged).length, device: dev,
     avgTotal: r1(avg(tot)), avgPhys: r1(avg(phys)), medianPhys: median(phys), medianTotal: median(tot),
-    ageDist, perTest,
+    ageDist, physDist, perTest,
     top10: sorted.slice(0, 10).map(pub),
     best: sorted[0] ? pub(sorted[0], 0) : null, worst: sorted.length ? pub(sorted[sorted.length - 1], sorted.length - 1) : null,
     streamerScore: streamer ? { total: streamer.total, phys: streamer.phys, scores: streamer.scores } : null,

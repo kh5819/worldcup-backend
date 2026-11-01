@@ -7,7 +7,7 @@
 // 외부 import 금지
 // =========================
 
-export const GEN_VERSION = 1;
+export const GEN_VERSION = 2;   // 2: 패턴·공간·언어 난이도 상향 (2026-11-01 사용자 '너무 쉽다')
 
 // ---------- 공통 ----------
 export function rng(seed) {
@@ -74,18 +74,18 @@ const SHAPES_ALL = [0, 1, 2, 3, 4, 5, 6, 7];
 function latinRow(vals, r) { return vals.map((_, c) => vals[(c + r) % vals.length]); }
 function genMatrix(R, d) {
   for (let tries = 0; tries < 60; tries++) {
-    const nVary = [1, 2, 2, 3, 3][d - 1];
+    const nVary = [2, 2, 3, 3, 4][d - 1];
     let attrs = R.shuffle(["s", "n", "f", "o"]).slice(0, nVary);
     if (d >= 5 && !attrs.includes("o")) attrs[attrs.length - 1] = "o";
     const rules = {};
     const base = { s: R.pick(attrs.includes("o") ? ORIENTED : SHAPES_ALL), n: R.int(1, 3), f: R.int(0, 2), o: attrs.includes("o") ? 0 : 0 };
     for (const a of attrs) {
       const opts = a === "s" ? ["row", "latin", "col"] : a === "n" ? ["prog", "latin", "row"] : a === "f" ? ["prog", "latin", "row"] : ["prog", "latin"];
-      rules[a] = d <= 1 ? (opts.includes("prog") ? "prog" : "row") : R.pick(opts);
+      rules[a] = R.pick(opts);
     }
     // 보통 이상: 줄 안에서 바뀌는 규칙(prog·latin)이 꼭 있어야 함 — 줄마다 똑같은 그림이면 너무 쉬움. 어려움 이상은 2개 이상
     const moving = attrs.filter((a) => rules[a] === "prog" || rules[a] === "latin").length;
-    if (d >= 2 && moving < Math.min(attrs.length, d >= 3 ? 2 : 1)) continue;
+    if (moving < Math.min(attrs.length, d >= 4 ? 3 : d >= 2 ? 2 : 1)) continue;
     const pool = {
       s: R.shuffle(attrs.includes("o") ? ORIENTED : SHAPES_ALL).slice(0, 3),
       n: [1, 2, 3], f: R.shuffle([0, 1, 2]), o: R.shuffle([0, 2, 4, 6]).slice(0, 3),
@@ -134,13 +134,13 @@ function genMatrix(R, d) {
 }
 function genFigseq(R, d) {
   for (let tries = 0; tries < 60; tries++) {
-    const nVary = [1, 1, 2, 2, 3][d - 1];
+    const nVary = [1, 2, 2, 3, 3][d - 1];
     const attrs = R.shuffle(["o", "n", "f", "s"]).slice(0, nVary);
     const shapeA = R.pick(attrs.includes("o") ? ORIENTED : SHAPES_ALL);
     let shapeB = R.pick((attrs.includes("o") ? ORIENTED : SHAPES_ALL).filter((x) => x !== shapeA));
     const p = {
-      o: { step: R.pick(d <= 2 ? [2, 6] : [1, 2, 3, 6, 7]), start: R.int(0, 7) },
-      n: { kind: R.pick(d <= 2 ? ["up"] : ["up", "cycle"]), start: R.int(1, 2) },
+      o: { step: R.pick(d <= 1 ? [2, 6] : [1, 3, 5, 7, 3]), start: R.int(0, 7) },
+      n: { kind: R.pick(d <= 1 ? ["up"] : ["up", "cycle", "cycle"]), start: R.int(1, 2) },
       f: { period: R.pick([2, 3]), start: R.int(0, 2) },
       s: { period: R.pick([2, 3]) },
     };
@@ -462,7 +462,7 @@ function growPoly(R, k) {
   return norm(cells);
 }
 function genRotate(R, d) {
-  const k = [5, 6, 6, 7, 8][d - 1];
+  const k = [6, 7, 7, 8, 9][d - 1];
   for (let tries = 0; tries < 200; tries++) {
     const shape = growPoly(R, k);
     const rots = rotations(shape), rk = new Set(rots.map(keyCells));
@@ -473,7 +473,9 @@ function genRotate(R, d) {
     const ans = rots[turn];
     const opts = [ans]; const seen = new Set([keyCells(ans)]);
     const decoys = [];
-    if (d >= 3) for (const m of R.shuffle(mir)) decoys.push(m);
+    const askTurn = d >= 3;
+    if (askTurn) for (const r of R.shuffle(rots)) if (keyCells(r) !== keyCells(ans)) decoys.push(r);   // 다른 각도
+    if (d >= 2) for (const m of R.shuffle(mir)) decoys.push(m);
     for (let j = 0; j < 30; j++) {   // 한 칸 옮긴 모양
       const c = shape.map((x) => x.slice()); const i = R.int(0, k - 1);
       const [r0, c0] = R.pick(c.filter((_, q) => q !== i)); const [dr, dc] = R.pick([[0, 1], [1, 0], [0, -1], [-1, 0]]);
@@ -489,12 +491,12 @@ function genRotate(R, d) {
     for (const dcy of decoys) {
       if (opts.length >= 4) break;
       const kk = keyCells(dcy);
-      if (seen.has(kk) || rk.has(kk)) continue;
+      if (seen.has(kk) || (!askTurn && rk.has(kk))) continue;
       seen.add(kk); opts.push(dcy);
     }
     if (opts.length < 4) continue;
     const order = R.shuffle(range(4));
-    return { view: { shape, opts: order.map((i) => opts[i]), q: d >= 4 ? "turn" : "same", turn: d >= 4 ? turn : null }, key: order.indexOf(0), exp: { turn }, hint: { mirrorTrap: d >= 3 } };
+    return { view: { shape, opts: order.map((i) => opts[i]), q: askTurn ? "turn" : "same", turn: askTurn ? turn : null }, key: order.indexOf(0), exp: { turn }, hint: { mirrorTrap: d >= 2 } };
   }
   throw new Error("rotate gen");
 }
@@ -525,7 +527,7 @@ export function circuitLit(view, rot) {
   return { seen, bulbs, on, solved: bulbs > 0 && on === bulbs };
 }
 function genCircuit(R, d) {
-  const size = [3, 4, 4, 5, 6][d - 1];
+  const size = [4, 4, 5, 5, 6][d - 1];
   for (let tries = 0; tries < 50; tries++) {
     const m = range(size).map(() => Array(size).fill(0));
     const sr = R.int(0, size - 1), sc = R.int(0, size - 1);
@@ -578,7 +580,7 @@ export function traceBeam(view, states) {
 }
 function genMirror(R, d) {
   const [w, h] = [[5, 4], [6, 5], [6, 5], [7, 6], [7, 6]][d - 1];
-  const turns = [1, 2, 3, 3, 4][d - 1];
+  const turns = [2, 2, 3, 4, 4][d - 1];
   for (let tries = 0; tries < 300; tries++) {
     const sr = R.int(0, h - 1);
     let r = sr, c = 0, dir = "E";
@@ -609,7 +611,7 @@ function genMirror(R, d) {
     const free = [];
     for (let rr = 0; rr < h; rr++) for (let cc = 0; cc < w; cc++) if (!used.has(`${rr},${cc}`)) free.push([rr, cc]);
     const fr = R.shuffle(free);
-    const decoyN = [0, 1, 1, 2, 2][d - 1], wallN = [1, 2, 2, 3, 4][d - 1];
+    const decoyN = [1, 1, 2, 3, 3][d - 1], wallN = [1, 2, 3, 3, 4][d - 1];
     const decoys = fr.slice(0, decoyN).map(([a, b]) => ({ r: a, c: b, s: R.pick(["/", "\\"]) }));
     const walls = fr.slice(decoyN, decoyN + wallN);
     const all = R.shuffle([...mirrors.map((m) => ({ ...m, real: true })), ...decoys]);
@@ -647,12 +649,13 @@ export function gearSolve(view) {
   return { jam, dir };
 }
 function genGears(R, d) {
-  const N = [4, 5, 6, 7, 8][d - 1];
+  const N = [5, 6, 7, 8, 9][d - 1];
   const wantJam = d >= 3 && R() < 0.34;
   for (let tries = 0; tries < 400; tries++) {
     const cells = [[0, 0]];
     const has = (q, r) => cells.some((x) => x[0] === q && x[1] === r);
-    while (cells.length < N) {
+    let guard = 0;
+    while (cells.length < N && guard++ < 600) {
       const [q, r] = R.pick(cells); const [dq, dr] = R.pick(HEX);
       const nq = q + dq, nr = r + dr;
       if (Math.abs(nq) > 3 || Math.abs(nr) > 3 || Math.abs(nq + nr) > 3 || has(nq, nr)) continue;
@@ -661,10 +664,11 @@ function genGears(R, d) {
       if (!wantJam && touch > 1) continue;
       cells.push([nq, nr]);
     }
+    if (cells.length < N) continue;   // 자리 못 찾음 → 처음부터
     const gears = cells.map(([q, r]) => ({ q, r }));
     const belts = [];
-    if (d >= 4) {
-      for (let k = 0; k < 6 && belts.length < (d >= 5 ? 2 : 1); k++) {
+    if (d >= 3) {
+      for (let k = 0; k < 6 && belts.length < (d >= 4 ? 2 : 1); k++) {
         const a = R.int(0, N - 1), b = R.int(0, N - 1);
         const A = gears[a], B = gears[b];
         if (a === b || HEX.some(([x, y]) => A.q + x === B.q && A.r + y === B.r)) continue;
@@ -728,7 +732,7 @@ const REL = {
   part: [["wheel", "car"], ["wing", "bird"], ["leaf", "tree"], ["page", "book"], ["key", "piano"], ["finger", "hand"], ["lens", "camera"]],
   material: [["bread", "flour"], ["cheese", "milk"], ["wine", "grape"], ["tofu", "soybean"], ["book", "paper"], ["glass", "sand"], ["jam", "strawberry"], ["desk", "wood"]],
 };
-const REL_BY_D = [["kind", "opposite"], ["kind", "opposite", "young"], ["young", "workplace", "part"], ["workplace", "tool", "part", "material"], ["tool", "material", "part"]];
+const REL_BY_D = [["kind", "opposite", "young"], ["young", "workplace", "part"], ["workplace", "tool", "part", "material"], ["tool", "material", "part"], ["tool", "material"]];
 function genAnalogy(R, d) {
   for (let tries = 0; tries < 100; tries++) {
     const rel = R.pick(REL_BY_D[d - 1]);
@@ -756,8 +760,8 @@ const CAT = {
 const CAT_FAR = [["fruit", "furniture"], ["mammal", "color"], ["flower", "land"], ["vegetable", "air"], ["color", "fruit"], ["furniture", "bird"]];
 const CAT_NEAR = [["fruit", "vegetable"], ["vegetable", "fruit"], ["mammal", "bird"], ["bird", "mammal"], ["bird", "fish"], ["strings", "winds"], ["winds", "strings"], ["land", "air"], ["air", "land"], ["fish", "mammal"]];
 function genOddword(R, d) {
-  const n = d <= 2 ? 4 : 5;
-  const [main, other] = R.pick(d <= 2 ? CAT_FAR.concat(d === 2 ? CAT_NEAR.slice(0, 2) : []) : CAT_NEAR);
+  const n = d <= 1 ? 4 : 5;
+  const [main, other] = R.pick(d <= 1 ? CAT_FAR.concat(CAT_NEAR.slice(0, 2)) : CAT_NEAR);
   const words = R.shuffle(CAT[main]).slice(0, n - 1);
   const odd = R.pick(CAT[other]);
   const all = R.shuffle([...words, odd]);
@@ -790,11 +794,11 @@ export function syllogismVerdict(premises, concl) {
 }
 function genSyllogism(R, d) {
   const want = R.pick(["true", "false", "unknown"]);
-  const forms = d <= 2 ? ["A", "A", "E", "I"] : ["A", "E", "I", "O"];
+  const forms = d <= 1 ? ["A", "E", "I", "O"] : ["A", "E", "I", "O", "O"];
   for (let tries = 0; tries < 500; tries++) {
     const prem = [{ f: R.pick(forms), x: 0, y: 1 }, { f: R.pick(forms), x: 1, y: 2 }];
     if (R() < 0.5) { const t = prem[1].x; prem[1].x = prem[1].y; prem[1].y = t; }
-    if (d >= 4 && R() < 0.5) prem.push({ f: R.pick(forms), x: R.pick([0, 2]), y: 1 });
+    if (d >= 3 && R() < (d >= 4 ? 0.8 : 0.5)) prem.push({ f: R.pick(forms), x: R.pick([0, 2]), y: 1 });
     const concl = { f: R.pick(["A", "E", "I", "O"]), x: R.pick([0, 2]), y: 0 }; concl.y = concl.x === 0 ? 2 : 0;
     const v = syllogismVerdict(prem, concl);
     if (v !== want) continue;

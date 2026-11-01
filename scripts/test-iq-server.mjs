@@ -70,6 +70,7 @@ async function run(s, mode, { quality = 1, hintAt = -1, bc, bcNick, isPublic = t
   ok(a.ok && a.res.ok && a.reveal && a.pts > 0, "정답인데 틀림 처리 / 해설 없음");
   const a2 = await emit(m, "iq:answer", { sid: b.sid, idx: 0, answer: 99 });
   ok(a2.dup && a2.res.ok, "같은 문항 두 번 제출로 결과가 바뀜");
+  ok(typeof a2.pts === "number" && a2.pts === a.pts && a2.reveal, "중복 제출 응답에 점수·해설 없음");
   // 새로고침: 같은 문항 다시 받으면 경과 시간 유지
   const g1 = await emit(m, "iq:item", { sid: b.sid, idx: 1 });
   await new Promise((r) => setTimeout(r, 120));
@@ -131,8 +132,14 @@ let marinResult;
 // 4) 오늘의 챌린지: 모두 같은 문제, 두 번째는 순위 제외
 {
   const a = await conn("u_aa"), b = await conn("guest_bb1");
-  const ba = await emit(a, "iq:begin", { mode: "daily", device: "pc" }), bb = await emit(b, "iq:begin", { mode: "daily", device: "pc" });
-  ok(JSON.stringify(sessOf(ba.sid).plan) === JSON.stringify(sessOf(bb.sid).plan), "오늘의 챌린지 문제가 사람마다 다름");
+  { const c1 = await conn("guest_cc1"), c2 = await conn("guest_cc2");
+    const x1 = await emit(c1, "iq:begin", { mode: "daily", device: "pc" }), x2 = await emit(c2, "iq:begin", { mode: "daily", device: "pc" });
+    ok(JSON.stringify(sessOf(x1.sid).plan) === JSON.stringify(sessOf(x2.sid).plan), "오늘의 챌린지 문제가 사람마다 다름");
+    // 미리 보기 악용: 시작해서 문제만 보고 그만둔 뒤 다시 시작 → 그 기록은 순위 제외
+    await emit(c1, "iq:item", { sid: x1.sid, idx: 0 });
+    const again = await run(c1, "daily", { quality: 1, nick: "미리보기" });
+    ok(again.ok && again.repeat === true && DB.iq_results.find((r) => r.id === again.id).flagged, "챌린지 미리 보고 다시 시작한 기록이 순위에 들어감");
+    c1.disconnect(); c2.disconnect(); }
   const f1 = await run(a, "daily", { quality: 0.7, nick: "에이" });
   const f2 = await run(a, "daily", { quality: 1, nick: "에이" });
   ok(!DB.iq_results.find((r) => r.id === f1.id).flagged && DB.iq_results.find((r) => r.id === f2.id).flagged && f2.repeat, "챌린지 두 번째 기록이 순위에 들어감");

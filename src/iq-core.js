@@ -4,10 +4,10 @@
 // 서버 사본: worldcup-backend/src/iq-core.js ↔ 홈페이지 제작/js/iq/core.js (시험이 같은지 검사)
 // ※ 공인 IQ 검사가 아님. 인구 백분위·연령 표준치·성별 보정 없음. 같은 검사를 한 사람끼리만 비교.
 // =========================
-import { TYPES, AREAS, hashSeed, rng, GEN_VERSION } from "./iq-gen.js";
+import { TYPES, AREAS, hashSeed, rng, GEN_VERSION } from "./iq-gen.js?v=g2";
 export { TYPES, AREAS, hashSeed, rng };
 
-export const CORE_VERSION = 1;          // 채점식·구성 버전 (바뀌면 랭킹·방송 비교 분리)
+export const CORE_VERSION = 2;          // 채점식·구성 버전 (바뀌면 랭킹·방송 비교 분리) — 2: 점수 환산 엄격·배분 조정(11-01)
 export const SET_VERSION = `${CORE_VERSION}.${GEN_VERSION}`;
 export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
@@ -16,13 +16,13 @@ const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
 // [유형, 난이도 1~5] — 정밀 30문항: 8개 영역 모두 (논리4·패턴4·공간4·수리4·언어4·기억3·문제해결4·창의3), 뒤로 갈수록 어려움
 export const PLANS = {
   full: [
-    ["matrix", 1], ["series", 1], ["analogy", 1], ["rotate", 1], ["liar", 1], ["span", 2], ["oddword", 2], ["circuit", 2], ["symbols", 2], ["figseq", 2],
-    ["order", 2], ["bells", 2], ["slide", 2], ["gears", 3], ["syllogism", 3], ["match", 2], ["clock", 3], ["lock", 3], ["mirror", 3], ["matrix", 3],
-    ["gridmem", 3], ["scale", 3], ["path", 3], ["analogy", 4], ["series", 4], ["make", 4], ["rings", 4], ["figseq", 5], ["match", 4], ["slide", 5],
+    ["series", 1], ["liar", 2], ["matrix", 2], ["rotate", 2], ["span", 2], ["order", 2], ["circuit", 2], ["symbols", 2], ["analogy", 3], ["slide", 2],
+    ["bells", 2], ["lock", 3], ["gears", 3], ["match", 2], ["clock", 3], ["path", 3], ["figseq", 3], ["scale", 3], ["mirror", 3], ["syllogism", 4],
+    ["gridmem", 3], ["liar", 4], ["path", 5], ["series", 4], ["rings", 4], ["make", 4], ["matrix", 5], ["oddword", 4], ["match", 4], ["slide", 5],
   ],
-  quick: [["matrix", 2], ["series", 2], ["liar", 2], ["rotate", 2], ["analogy", 2], ["span", 2], ["symbols", 3], ["slide", 2], ["match", 2], ["oddword", 3]],
+  quick: [["matrix", 3], ["series", 2], ["liar", 3], ["rotate", 3], ["lock", 3], ["span", 3], ["symbols", 3], ["slide", 3], ["match", 3], ["analogy", 3]],
   // 오늘의 챌린지: 날짜마다 모두 같은 10문항 / 주간 특별검사: 주마다 모두 같은 20문항(어려움)
-  daily: [["figseq", 3], ["series", 3], ["order", 3], ["gears", 3], ["syllogism", 3], ["gridmem", 3], ["symbols", 3], ["path", 3], ["make", 3], ["matrix", 3]],
+  daily: [["figseq", 3], ["series", 3], ["order", 3], ["gears", 4], ["syllogism", 4], ["gridmem", 3], ["symbols", 3], ["path", 4], ["make", 3], ["matrix", 4]],
   weekly: [
     ["matrix", 4], ["series", 4], ["liar", 4], ["circuit", 4], ["analogy", 4], ["bells", 4], ["symbols", 4], ["slide", 4], ["match", 4], ["oddword", 4],
     ["rotate", 5], ["lock", 4], ["mirror", 4], ["syllogism", 5], ["clock", 4], ["rings", 5], ["scale", 4], ["figseq", 5], ["make", 5], ["liar", 5],
@@ -72,13 +72,13 @@ export function areaKing(a, lang) { return AREA_TX[a]?.[lg(lang)]?.[2] || a; }
 // 채점 (공개 규칙 — 결과 화면 "점수 계산 방식"에 그대로 보여 줌)
 //  문항 점수 = 난이도 가중치 × 정답(기억 문항은 부분 점수 ×0.8) × 시간 계수 × 힌트 계수
 //  난이도 가중치: 쉬움1 · 보통1.4 · 어려움1.8 · 전문가2.3 · 최고난도2.8
-//  시간 계수: 제한시간의 35% 안에 풀면 1.0, 그 뒤로 천천히 줄어 제한시간 끝에 0.75
+//  시간 계수: 제한시간의 25% 안에 풀면 1.0, 그 뒤로 줄어 제한시간 끝에 0.6
 //  힌트 계수: 힌트를 보면 0.6
 //  종합 점수 = 받은 점수 합 ÷ 가중치 합 × 100 (0~100)
-//  플듀 게임 IQ 지수 = 60 + 종합 점수 × 0.9  (60~150, 이 게임 안에서만 쓰는 점수)
+//  플듀 게임 IQ 지수 = 종합 점수를 꺾은선 표로 바꿈 (0→60 · 30→80 · 55→100 · 70→110 · 85→124 · 95→137 · 100→145), 이 게임 안에서만 쓰는 점수
 // =========================================================
 export const WEIGHT = [1, 1.4, 1.8, 2.3, 2.8];
-export function speedFactor(ms, lim) { const x = ms / lim; return x <= 0.35 ? 1 : clamp(1 - 0.25 * ((x - 0.35) / 0.65), 0.75, 1); }
+export function speedFactor(ms, lim) { const x = ms / lim; return x <= 0.25 ? 1 : clamp(1 - 0.4 * ((x - 0.25) / 0.75), 0.6, 1); }
 export function itemPoints(d, res) {
   if (!res) return 0;
   const w = WEIGHT[d - 1];
@@ -101,10 +101,15 @@ export function scoreAll(results) {
   const correct = results.filter((r) => r.ok).length;
   return { total, iq: gameIQ(total), areas, correct, n: results.length, hints: results.filter((r) => r.hint).length, ms: results.reduce((s, r) => s + (r.ms || 0), 0) };
 }
-export function gameIQ(total) { return Math.round(60 + clamp(total, 0, 100) * 0.9); }
+export const IQ_CURVE = [[0, 60], [30, 80], [55, 100], [70, 110], [85, 124], [95, 137], [100, 145]];
+export function gameIQ(total) {
+  const t = clamp(total, 0, 100);
+  for (let i = 1; i < IQ_CURVE.length; i++) { const [x0, y0] = IQ_CURVE[i - 1], [x1, y1] = IQ_CURVE[i]; if (t <= x1) return Math.round(y0 + ((y1 - y0) * (t - x0)) / (x1 - x0)); }
+  return 145;
+}
 // IQ 지수 구간 (게임 내 등급 — 인구 분포 아님)
 export const TIERS = [
-  [140, "legend", "#f2c230"], [125, "genius", "#b07cff"], [112, "sharp", "#3ec8e8"], [98, "good", "#2fae58"], [85, "warm", "#e8a23c"], [0, "sleep", "#e8463c"],
+  [138, "legend", "#f2c230"], [128, "genius", "#b07cff"], [118, "sharp", "#3ec8e8"], [102, "good", "#2fae58"], [88, "warm", "#e8a23c"], [0, "sleep", "#e8463c"],
 ];
 const TIER_TX = {
   legend: { ko: ["전설의 두뇌", "전설"], ja: ["伝説の頭脳", "伝説"], en: ["Legendary Brain", "LEGEND"] },
@@ -238,7 +243,7 @@ const RETEST = { ko: ["푹 자고 내일 다시 오면 다른 결과가 나올�
 export const TITLES = {
   perfect: { ko: ["만점의 신", "모든 문항 정답"], ja: ["満点の神", "全問正解"], en: ["God of Perfection", "All items correct"] },
   nohint: { ko: ["힌트 없는 탐구자", "힌트 없이 정답률 80% 이상"], ja: ["ヒントなし探究者", "ヒントなしで正答率80%以上"], en: ["Hintless Explorer", "80%+ correct without hints"] },
-  speed: { ko: ["번개 두뇌", "정답의 절반 이상을 제한시간 35% 안에"], ja: ["稲妻頭脳", "正解の半分以上を制限時間35%以内に"], en: ["Lightning Brain", "Half of correct answers within 35% of the limit"] },
+  speed: { ko: ["번개 두뇌", "정답의 절반 이상을 제한시간 25% 안에"], ja: ["稲妻頭脳", "正解の半分以上を制限時間25%以内に"], en: ["Lightning Brain", "Half of correct answers within 25% of the limit"] },
   allround: { ko: ["육각형 두뇌", "모든 영역 60점 이상"], ja: ["六角形の頭脳", "全領域60点以上"], en: ["Hexagon Brain", "Every area 60+"] },
   master: { ko: ["{area} 마스터", "한 영역 100점"], ja: ["{area}マスター", "ある領域で100点"], en: ["{area} Master", "100 in one area"] },
   comeback: { ko: ["역전의 두뇌", "후반 10문항 정답률이 전반보다 30%p 이상 높음"], ja: ["逆転の頭脳", "後半10問の正答率が前半より30pt以上高い"], en: ["Comeback Brain", "Last 10 items 30pp better than first 10"] },
@@ -250,7 +255,7 @@ export function earnTitles(results, sc) {
   const out = [];
   if (sc.correct === sc.n && sc.n >= 10) out.push({ k: "perfect" });
   const noH = results.filter((r) => !r.hint); if (sc.hints === 0 && sc.correct / sc.n >= 0.8) out.push({ k: "nohint" });
-  const ok = results.filter((r) => r.ok); if (ok.length >= 5 && ok.filter((r) => r.ms <= r.lim * 0.35).length >= ok.length / 2) out.push({ k: "speed" });
+  const ok = results.filter((r) => r.ok); if (ok.length >= 5 && ok.filter((r) => r.ms <= r.lim * 0.25).length >= ok.length / 2) out.push({ k: "speed" });
   const av = Object.values(sc.areas).filter((v) => v !== null); if (av.length >= 6 && av.every((v) => v >= 60)) out.push({ k: "allround" });
   for (const [a, v] of Object.entries(sc.areas)) if (v === 100) out.push({ k: "master", a });
   if (results.length >= 20) { const f = results.slice(0, 10).filter((r) => r.ok).length, b = results.slice(-10).filter((r) => r.ok).length; if (b - f >= 3) out.push({ k: "comeback" }); }
@@ -277,7 +282,7 @@ export function diagnose(o) {
   const ctx = {
     total: sc.total, correct: sc.correct, n: sc.n, hints: sc.hints,
     spread: ids.length ? sc.areas[best] - sc.areas[worst] : 0,
-    fast: okRes.length >= 3 && okRes.filter((r) => r.ms <= r.lim * 0.35).length >= okRes.length * 0.6,
+    fast: okRes.length >= 3 && okRes.filter((r) => r.ms <= r.lim * 0.25).length >= okRes.length * 0.6,
     timeouts: res.filter((r) => r.timeout).length,
   };
   const tier = tierOf(sc.iq, lang);

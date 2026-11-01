@@ -6,7 +6,7 @@
 // - 평균 IQ 예측 이벤트: 마감 전까지 한 사람 한 번, 확정 때 가장 가까운 사람 공개
 // DB: iq_broadcasts / iq_bc_entries / iq_bc_predictions (sql/iq_tables.sql)
 // =========================
-import * as C from "./iq-core.js";
+import * as C from "./iq-core.js?v=c2";
 
 const BC = new Map();
 const REST_CACHE = new Map();

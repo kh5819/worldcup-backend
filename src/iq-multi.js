@@ -4,8 +4,8 @@
 // 진행 중에는 정답·정오답을 아무에게도 안 보냄(제출 여부만) → 라운드 결과 때 정답·해설·순위 변동 공개
 // 흐름: lobby → [intro → play → result] × 문항 수 → final (8위→1위 공개는 화면에서)
 // =========================
-import * as C from "./iq-core.js";
-import * as G from "./iq-gen.js";
+import * as C from "./iq-core.js?v=c2";
+import * as G from "./iq-gen.js?v=g2";
 import { makeItem, judgeItem, pointsOf, resultId, publicRow, memberProfile, sanitizeProfile, sanitizePrefs, buildRow, insertResults, hintFor } from "./iq.js";
 
 const ROOMS = new Map(), CODES = new Map(), USER_ROOM = new Map();

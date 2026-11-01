@@ -3,8 +3,8 @@
 // 문제는 한 문항씩 서버가 내줌(정답 없는 화면 정보만) → 답을 받으면 서버가 채점·시간 측정 → 해설 공개
 // DB: iq_results / iq_profiles / iq_groups (sql/iq_tables.sql, RLS 켬·정책 0 = 서버 전용)
 // =========================
-import * as C from "./iq-core.js";
-import * as G from "./iq-gen.js";
+import * as C from "./iq-core.js?v=c2";
+import * as G from "./iq-gen.js?v=g2";
 import { SLIDE_BANK } from "./iq-bank.js";
 import { bcOnBegin, bcOnFinish, bcPlay, bcPlayEnd } from "./iq-broadcast.js";
 
@@ -15,6 +15,7 @@ const SESS_TTL = 2 * 60 * 60 * 1000;
 const MAX_SESS_PER_USER = 4;
 const NET_SLACK = 2500;           // 제한시간 + 네트워크 여유
 const ITEM_CACHE = new Map();     // seed:type:d → 생성된 문항 (같은 오늘의 챌린지 등 재사용)
+const SET_STARTS = new Map();     // 사람|모드|세트 → 처음 시작한 시각 (챌린지 미리 보고 다시 시작해 순위 올리기 방지)
 
 export const device = (d) => (d === "mobile" ? "mobile" : "pc");
 export function resultId() { const a = "abcdefghijkmnpqrstuvwxyz23456789"; let s = ""; for (let i = 0; i < 10; i++) s += a[Math.floor(Math.random() * a.length)]; return s; }
@@ -150,7 +151,14 @@ export function registerIq(io, supabaseAdmin, app, { getOptionalUser } = {}) {
       const mine = [...SESS.entries()].filter(([, s]) => s.key === key).sort((a, b) => a[1].createdAt - b[1].createdAt);
       while (mine.length >= MAX_SESS_PER_USER) SESS.delete(mine.shift()[0]);
       const id = "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-      const s = { key, mode, setKey, device: device(p.device), createdAt: Date.now(), plan, st: {}, results: [], finished: null, bcId };
+      // 오늘의 챌린지·주간: 같은 세트를 두 번째로 시작하면 처음부터 순위 제외 (문제를 미리 본 상태)
+      let preview = false;
+      if (setKey) {
+        const k = `${key}|${mode}|${setKey}`;
+        if (SET_STARTS.has(k)) preview = true; else SET_STARTS.set(k, Date.now());
+        if (SET_STARTS.size > 50000) SET_STARTS.clear();
+      }
+      const s = { key, mode, setKey, device: device(p.device), createdAt: Date.now(), plan, st: {}, results: [], finished: null, bcId, preview };
       SESS.set(id, s);
       if (bcId) { s.bcNick = String(p.bcNick || "").slice(0, 12); s.bcShow = p.bcShowName !== false; bcPlay(bcId, key, { nick: s.bcNick, showName: s.bcShow, total: plan.length, round: 1, done: 0, device: s.device }); }
       reply({ ok: true, sid: id, mode, setKey, plan: plan.map((x) => ({ type: x.type, d: x.d, area: C.TYPES[x.type].area, lim: C.TYPES[x.type].lim[x.d - 1] * 1000 })), coreVersion: C.CORE_VERSION });
@@ -198,7 +206,7 @@ export function registerIq(io, supabaseAdmin, app, { getOptionalUser } = {}) {
     on("iq:answer", (p, reply) => {
       const s = mySess(p.sid); if (!s) return reply({ ok: false, error: "NO_SESSION" });
       const i = p.idx | 0;
-      if (s.results[i]) return reply({ ok: true, dup: true, res: s.results[i], reveal: G.revealOf(makeItem(s.plan[i])) });
+      if (s.results[i]) return reply({ ok: true, dup: true, res: s.results[i], pts: pointsOf(s.results[i]), reveal: G.revealOf(makeItem(s.plan[i])) });
       const st = s.st[i];
       if (!st || i !== s.results.length) return reply({ ok: false, error: "BAD_IDX" });
       const it = makeItem(s.plan[i]);
@@ -225,7 +233,7 @@ export function registerIq(io, supabaseAdmin, app, { getOptionalUser } = {}) {
       }
       const prev = await prevResult(sb, key, s.mode);
       // 오늘의 챌린지·주간 특별검사는 같은 세트 첫 기록만 순위 → 이미 있으면 비공개 연습으로
-      let isPublic = p.isPublic !== false, repeat = false;
+      let isPublic = p.isPublic !== false, repeat = !!s.preview;
       if ((s.mode === "daily" || s.mode === "weekly") && sb) {
         try { const { count } = await sb.from("iq_results").select("id", { count: "exact", head: true }).eq("owner_key", key).eq("mode", s.mode).eq("set_key", s.setKey); if (count) repeat = true; } catch {}
       }
