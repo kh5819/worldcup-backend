@@ -266,6 +266,25 @@ export function registerIqBroadcast(io, supabaseAdmin, app, { memberProfile } = 
       res.json(body);
     } catch (e) { console.error("[iq bc/get]", e); res.status(500).json({ ok: false, error: "INTERNAL" }); }
   });
+  // 시청자 순위 더보기 (TOP 10 다음부터 50명씩, 최대 1000위)
+  app.get("/iq/bc/:id/rank", async (req, res) => {
+    try {
+      const id = String(req.params.id || "").slice(0, 16);
+      const from = Math.max(0, Math.min(1000, parseInt(req.query.from, 10) || 0));
+      const n = Math.max(1, Math.min(50, parseInt(req.query.n, 10) || 50));
+      const b = await loadBc(id);
+      if (!b) return res.status(404).json({ ok: false, error: "BC_NOT_FOUND" });
+      if (!b.rankCache || b.rankCache.at < b.at || now() - b.rankCache.at > 3000) {
+        const valid = [...b.entries.values()].filter((e) => !e.flagged && !e.is_streamer)
+          .sort((x, y) => y.total - x.total || new Date(x.created_at) - new Date(y.created_at));
+        b.rankCache = { at: now(), list: valid };
+      }
+      const list = b.rankCache.list, end = Math.min(list.length, from + n, 1000);
+      const rows = [];
+      for (let i = from; i < end; i++) { const e = list[i]; rows.push({ rank: i + 1, nick: e.show_name ? e.nickname : "익명 시청자", anon: !e.show_name, total: e.total, iq: e.iq, device: e.device, member: !!e.is_member }); }
+      res.json({ ok: true, total: list.length, from, rows, more: end < Math.min(list.length, 1000) });
+    } catch (e) { console.error("[iq bc/rank]", e); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+  });
   // 방송 대항전: 같은 모드·같은 세트 버전만 순위, 참여자 10명 미만은 순위 밖
   app.get("/iq/bc-battle", async (req, res) => {
     try {
