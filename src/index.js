@@ -13,7 +13,6 @@ import WebSocket from "ws";
 // DUO GAME ZONE — 인생게임 멀티 (별도 모듈, 기존 시스템 무관)
 import { registerLifegame } from "./lifegame.js";
 // DUO GAME ZONE — 라이어 키워드 (별도 모듈)
-import { registerLiar } from "./liar.js";
 // DUO GAME ZONE — 우리방 OX (별도 모듈)
 import { registerOxGame } from "./oxgame.js";
 // DUO GAME ZONE — 멀티 오목 (별도 모듈)
@@ -31,11 +30,9 @@ import { registerClinicMulti } from "./clinic-multi.js";
 import { registerClinicBroadcast } from "./clinic-broadcast.js";
 import { memberProfile as clinicMemberProfile } from "./clinic.js";
 import { registerDodge } from "./dodge.js";
-import { registerGachatd } from "./gachatd.js";
 import { registerGolf } from "./golf.js";
 import { registerDodogo } from "./dodogo.js";
 import { registerAppleMulti } from "./apple-multi.js";
-import { registerMemoryMulti } from "./memory-multi.js";
 import { registerBlockBlastMulti } from "./blockblast-multi.js";
 import { registerYachtMulti } from "./yacht-multi.js";
 import { registerRaisingPvp } from "./raising-pvp.js";
@@ -1060,7 +1057,6 @@ function generateSeoHtml({ title, description, image, canonical, jsonLd, bodyHtm
       <a href="${SITE_URL}/gamezone.html">🎮 게임천국</a>
       <a href="${SITE_URL}/omok.html">⚫⚪ 멀티 오목</a>
       <a href="${SITE_URL}/cardgame-multi.html">🃏 난장 카드게임</a>
-      <a href="${SITE_URL}/liar-multi.html">🕵️ 라이어 키워드</a>
       <a href="${SITE_URL}/lifegame.html">🎲 인생게임</a>
       <a href="${SITE_URL}/oxgame-multi.html">⭕ 우리방 OX</a>
       <a href="${SITE_URL}/merge.html">🍱 수라상 (한식 합성)</a>
@@ -10427,11 +10423,6 @@ async function finishTierGame(room) {
 registerLifegame(io, supabaseAdmin);
 
 // =========================
-// 라이어 키워드 — 독립 모듈 등록 (liar:* 이벤트 prefix)
-// =========================
-registerLiar(io, supabaseAdmin);
-
-// =========================
 // 우리방 OX — 독립 모듈 등록 (ox:* 이벤트 prefix)
 // =========================
 registerOxGame(io, supabaseAdmin);
@@ -10456,11 +10447,9 @@ registerMerge(io, supabaseAdmin);
 registerDraw(io, supabaseAdmin);
 registerSuspect(io, supabaseAdmin);
 registerDodge(io, supabaseAdmin);
-registerGachatd(io, supabaseAdmin);
 registerGolf(io, supabaseAdmin);
 registerDodogo(io, supabaseAdmin);
 registerAppleMulti(io, supabaseAdmin);
-registerMemoryMulti(io, supabaseAdmin);
 registerBlockBlastMulti(io, supabaseAdmin);
 registerYachtMulti(io, supabaseAdmin);
 // 플듀 키우기 친구 대전(1대1) — rpvp:* 이벤트, 서버는 시계·지시 중계만
@@ -14680,191 +14669,6 @@ app.get("/dodge/leaderboard/me", async (req, res) => {
 });
 
 // ============================================================
-// 지켜라 (가챠 TD) — 솔로 랭킹 (피해피해 패턴 차용)
-// 2026-05-16
-// ============================================================
-async function fetchGachatdLeaderboard(supabase, { limit, dailyOnly = false }) {
-  const base = supabase
-    .from("gachatd_scores")
-    .select("user_id, nickname, score, wave_max, kills, leader_key, endless, created_at")
-    .eq("flagged", false)
-    .not("user_id", "is", null);
-
-  if (dailyOnly) {
-    const today = new Date().toISOString().slice(0, 10);
-    base.gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
-  }
-
-  const overFetch = Math.min(limit * 8, 200);
-  const { data, error } = await base
-    .order("score", { ascending: false })
-    .order("created_at", { ascending: true })
-    .limit(overFetch);
-  if (error) return { error };
-
-  // user_id 기준 best 1개만 (이미 score DESC sorted)
-  const seen = new Set();
-  const rows = [];
-  for (const r of data || []) {
-    if (!r.user_id) continue;
-    if (seen.has(r.user_id)) continue;
-    seen.add(r.user_id);
-    rows.push(r);
-    if (rows.length >= limit) break;
-  }
-
-  // profiles batch join
-  if (rows.length > 0) {
-    const userIds = rows.map(r => r.user_id);
-    const { data: profiles } = await supabase
-      .from("profiles").select("id, nickname, avatar_url").in("id", userIds);
-    const profMap = new Map((profiles || []).map(p => [p.id, p]));
-    for (const r of rows) {
-      const p = profMap.get(r.user_id);
-      if (p) {
-        if (p.nickname) r.nickname = p.nickname;
-        r.avatar_url = p.avatar_url || null;
-      }
-    }
-  }
-
-  return { rows };
-}
-
-app.post("/gachatd/score", async (req, res) => {
-  try {
-    const body = req.body || {};
-    const score = Number(body.score);
-    const waveMax = Number(body.waveMax ?? 0);
-    const kills = Number(body.kills ?? 0);
-    const pulls = Number(body.pulls ?? 0);
-    const durationSec = Number(body.durationSec ?? 0);
-    const leaderKey = body.leaderKey ? String(body.leaderKey).slice(0, 20) : null;
-    const endless = !!body.endless;
-    const guestId = body.guestId ? String(body.guestId).slice(0, 64) : null;
-    const nickname = String(body.nickname || "익명").slice(0, 14);
-    const clientRunId = body.clientRunId ? String(body.clientRunId).slice(0, 64) : null;
-
-    if (!Number.isFinite(score) || score < 0) return res.status(400).json({ ok: false, error: "INVALID_SCORE" });
-    if (!Number.isFinite(waveMax) || waveMax < 0) return res.status(400).json({ ok: false, error: "INVALID_WAVE" });
-
-    const user = await getOptionalUser(req);
-    const userId = user?.id || null;
-
-    // sanity 검증
-    let flagged = false;
-    if (durationSec > 0 && durationSec < 5) flagged = true;
-    if (score > waveMax * 2000 + 10000) flagged = true;
-    if (kills > waveMax * 50 + 100) flagged = true;
-    if (waveMax > 100) flagged = true;
-
-    const insertPayload = {
-      user_id: userId,
-      guest_id: userId ? null : guestId,
-      nickname,
-      score: Math.round(score),
-      wave_max: Math.max(0, Math.round(waveMax)),
-      kills: Math.max(0, Math.round(kills)),
-      pulls: Math.max(0, Math.round(pulls)),
-      leader_key: leaderKey,
-      endless,
-      duration_sec: Math.max(0, Math.round(durationSec)),
-      flagged,
-      client_run_id: clientRunId,
-    };
-
-    const { data, error } = await supabaseAdmin
-      .from("gachatd_scores")
-      .insert(insertPayload)
-      .select()
-      .single();
-
-    if (error) {
-      if (String(error.code) === "23505") return res.status(409).json({ ok: false, error: "DUPLICATE_RUN" });
-      console.error("[gachatd/score] insert error:", error);
-      return res.status(500).json({ ok: false, error: "INSERT_FAIL" });
-    }
-
-    // 랭크 계산 (로그인 유저 only)
-    let globalRank = null, dailyRank = null, official = false;
-    if (!flagged && userId) {
-      official = true;
-      const { data: myBestRow } = await supabaseAdmin
-        .from("gachatd_scores")
-        .select("score")
-        .eq("user_id", userId).eq("flagged", false)
-        .order("score", { ascending: false }).limit(1).maybeSingle();
-      const myBest = myBestRow?.score ?? Math.round(score);
-
-      const { data: higher } = await supabaseAdmin
-        .from("gachatd_scores")
-        .select("user_id, score")
-        .eq("flagged", false).not("user_id", "is", null).gt("score", myBest);
-      const higherUsers = new Set();
-      for (const r of higher || []) higherUsers.add(r.user_id);
-      globalRank = higherUsers.size + 1;
-
-      const today = new Date().toISOString().slice(0, 10);
-      const { data: higherDaily } = await supabaseAdmin
-        .from("gachatd_scores")
-        .select("user_id, score")
-        .eq("flagged", false).not("user_id", "is", null).gt("score", myBest)
-        .gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
-      const higherUsersDaily = new Set();
-      for (const r of higherDaily || []) higherUsersDaily.add(r.user_id);
-      dailyRank = higherUsersDaily.size + 1;
-    }
-
-    res.json({ ok: true, id: data.id, flagged, official, globalRank, dailyRank });
-  } catch (err) {
-    console.error("[gachatd/score]", err);
-    res.status(500).json({ ok: false, error: "INTERNAL" });
-  }
-});
-
-app.get("/gachatd/leaderboard/global", async (req, res) => {
-  try {
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
-    const result = await fetchGachatdLeaderboard(supabaseAdmin, { limit, dailyOnly: false });
-    if (result.error) { console.error("[gachatd/leaderboard/global]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
-    res.json({ ok: true, rows: result.rows });
-  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
-});
-
-app.get("/gachatd/leaderboard/daily", async (req, res) => {
-  try {
-    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
-    const result = await fetchGachatdLeaderboard(supabaseAdmin, { limit, dailyOnly: true });
-    if (result.error) { console.error("[gachatd/leaderboard/daily]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
-    res.json({ ok: true, rows: result.rows });
-  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
-});
-
-app.get("/gachatd/leaderboard/me", async (req, res) => {
-  try {
-    const user = await getOptionalUser(req);
-    const userId = user?.id || null;
-    if (!userId) return res.json({ ok: true, row: null });
-    const { data, error } = await supabaseAdmin
-      .from("gachatd_scores")
-      .select("nickname, score, wave_max, kills, leader_key, endless, created_at")
-      .eq("flagged", false).eq("user_id", userId)
-      .order("score", { ascending: false }).limit(1);
-    if (error) { console.error("[gachatd/leaderboard/me]", error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
-    let row = data?.[0] || null;
-    if (row) {
-      const { data: prof } = await supabaseAdmin
-        .from("profiles").select("nickname, avatar_url").eq("id", userId).maybeSingle();
-      if (prof) {
-        if (prof.nickname) row.nickname = prof.nickname;
-        row.avatar_url = prof.avatar_url || null;
-      }
-    }
-    res.json({ ok: true, row });
-  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
-});
-
-// ============================================================
 // 사과게임 (DUO Apple / Fruit Box) — 솔로 2분 점수 / 랭킹
 // 2026-05-21
 // 로그인 유저만 공식 랭킹. 유저당 1 row UPSERT (최고점만 갱신).
@@ -15072,238 +14876,6 @@ app.get("/apple/leaderboard/me", async (req, res) => {
         .eq("flagged", false).not("user_id", "is", null).gt("score", row.score);
       let myRank = (higher?.length || 0) + 1;
       row.global_rank = myRank > APPLE_TOP_LIMIT ? null : myRank;
-    }
-    res.json({ ok: true, row });
-  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
-});
-
-// ============================================================
-// 메모리 카드 (DUO Memory) — 솔로 난이도별 점수 / 랭킹
-// 2026-05-21
-// 로그인 유저만 공식 랭킹. 유저당 난이도별 1 row UPSERT (최고점만 갱신).
-// 난이도: 4(4x4) / 6(6x6) / 8(8x8) — 별도 랭킹.
-// 점수 공식: 1000 - (시간*2) - (오답시도*5) + (최대콤보*20)
-// 랭킹은 TOP 10만 노출.
-// ============================================================
-const MEMORY_TOP_LIMIT = 10;
-const MEMORY_ALLOWED_DIFFICULTIES = [4, 6, 8];
-
-async function fetchMemoryLeaderboard(supabase, { difficulty, dailyOnly = false }) {
-  const base = supabase
-    .from("memory_scores")
-    .select("user_id, nickname, score, attempts, max_combo, duration_sec, difficulty, created_at")
-    .eq("flagged", false)
-    .eq("difficulty", difficulty)
-    .not("user_id", "is", null);
-
-  if (dailyOnly) {
-    const today = new Date().toISOString().slice(0, 10);
-    base.gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
-  }
-
-  const { data, error } = await base
-    .order("duration_sec", { ascending: true })
-    .order("attempts", { ascending: true })
-    .order("created_at", { ascending: true })
-    .limit(MEMORY_TOP_LIMIT);
-  if (error) return { error };
-
-  const rows = data || [];
-
-  if (rows.length > 0) {
-    const userIds = rows.map(r => r.user_id);
-    const { data: profiles } = await supabase
-      .from("profiles").select("id, nickname, avatar_url").in("id", userIds);
-    const profMap = new Map((profiles || []).map(p => [p.id, p]));
-    for (const r of rows) {
-      const p = profMap.get(r.user_id);
-      if (p) {
-        if (p.nickname) r.nickname = p.nickname;
-        r.avatar_url = p.avatar_url || null;
-      }
-    }
-  }
-
-  return { rows };
-}
-
-app.post("/memory/score", async (req, res) => {
-  try {
-    const body = req.body || {};
-    const difficulty = Number(body.difficulty);
-    const score = Number(body.score);
-    const attempts = Number(body.attempts);
-    const matches = Number(body.matches || 0);
-    const maxCombo = Number(body.maxCombo || 0);
-    const durationSec = Number(body.durationSec);
-    const seed = body.seed != null ? Number(body.seed) : null;
-    const clientRunId = body.clientRunId ? String(body.clientRunId).slice(0, 64) : null;
-
-    if (!MEMORY_ALLOWED_DIFFICULTIES.includes(difficulty)) return res.status(400).json({ ok: false, error: "INVALID_DIFFICULTY" });
-    if (!Number.isFinite(score) || score < 0) return res.status(400).json({ ok: false, error: "INVALID_SCORE" });
-    if (!Number.isFinite(attempts) || attempts < 0) return res.status(400).json({ ok: false, error: "INVALID_ATTEMPTS" });
-    if (!Number.isFinite(durationSec) || durationSec < 0) return res.status(400).json({ ok: false, error: "INVALID_DURATION" });
-
-    // 로그인 필수
-    const user = await getOptionalUser(req);
-    const userId = user?.id || null;
-    if (!userId) return res.status(401).json({ ok: false, error: "LOGIN_REQUIRED" });
-
-    // 랭킹 = 클리어 시간(빠른 순). 끝까지 맞춘 판만 등록
-    const pairs = (difficulty * difficulty) / 2;
-    if (matches < pairs) return res.json({ ok: true, official: false, notComplete: true });
-
-    // 닉네임 스냅샷
-    const { data: prof } = await supabaseAdmin
-      .from("profiles").select("nickname").eq("id", userId).maybeSingle();
-    const nickname = String(prof?.nickname || "익명").slice(0, 14);
-
-    // sanity 검증
-    let flagged = false;
-    if (durationSec < 3) flagged = true; // 너무 빠름
-    if (durationSec > 600) flagged = true; // 너무 느림 (10분 초과)
-    if (attempts < matches) flagged = true; // 시도가 매칭 수보다 적을 수 X
-    if (matches > pairs) flagged = true; // 매칭이 총 쌍 수 초과 X
-    if (score > 2000) flagged = true; // 이론상 최대 ~ 1500 정도
-
-    // 기존 row 조회 (난이도별 유저당 1 row)
-    const { data: existing } = await supabaseAdmin
-      .from("memory_scores")
-      .select("id, score, duration_sec, attempts")
-      .eq("user_id", userId)
-      .eq("difficulty", difficulty)
-      .maybeSingle();
-
-    const newScore = Math.round(score);
-    const newDur = Math.max(0, Math.min(999, Math.round(durationSec)));
-    const newAtt = Math.max(0, Math.min(999, Math.round(attempts)));
-    const prevBest = existing?.score ?? -1;
-    const isNewBest = !existing || newDur < existing.duration_sec || (newDur === existing.duration_sec && newAtt < existing.attempts);
-
-    const payload = {
-      user_id: userId,
-      nickname,
-      difficulty,
-      score: newScore,
-      attempts: Math.max(0, Math.min(999, Math.round(attempts))),
-      matches: Math.max(0, Math.min(50, Math.round(matches))),
-      max_combo: Math.max(0, Math.min(50, Math.round(maxCombo))),
-      duration_sec: Math.max(0, Math.min(999, Math.round(durationSec))),
-      seed: seed,
-      flagged,
-      client_run_id: clientRunId,
-      created_at: new Date().toISOString(),
-    };
-
-    if (!existing) {
-      const { error } = await supabaseAdmin.from("memory_scores").insert(payload);
-      if (error) {
-        if (String(error.code) === "23505") {
-          return res.json({ ok: true, isNewBest: false, bestScore: prevBest });
-        }
-        console.error("[memory/score] insert error:", error);
-        return res.status(500).json({ ok: false, error: "INSERT_FAIL" });
-      }
-    } else if (isNewBest) {
-      const { error } = await supabaseAdmin
-        .from("memory_scores")
-        .update(payload)
-        .eq("user_id", userId)
-        .eq("difficulty", difficulty);
-      if (error) {
-        console.error("[memory/score] update error:", error);
-        return res.status(500).json({ ok: false, error: "UPDATE_FAIL" });
-      }
-    }
-
-    // 랭크 계산 (TOP 10 안에만)
-    let globalRank = null, dailyRank = null, official = false;
-    if (!flagged) {
-      official = true;
-      const myDur = isNewBest ? newDur : existing.duration_sec;
-      const myAtt = isNewBest ? newAtt : existing.attempts;
-      const betterOr = `duration_sec.lt.${myDur},and(duration_sec.eq.${myDur},attempts.lt.${myAtt})`;
-
-      const { data: higher } = await supabaseAdmin
-        .from("memory_scores")
-        .select("user_id")
-        .eq("flagged", false).eq("difficulty", difficulty).not("user_id", "is", null).or(betterOr);
-      globalRank = (higher?.length || 0) + 1;
-      if (globalRank > MEMORY_TOP_LIMIT) globalRank = null;
-
-      const today = new Date().toISOString().slice(0, 10);
-      const { data: higherDaily } = await supabaseAdmin
-        .from("memory_scores")
-        .select("user_id")
-        .eq("flagged", false).eq("difficulty", difficulty).not("user_id", "is", null).or(betterOr)
-        .gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
-      dailyRank = (higherDaily?.length || 0) + 1;
-      if (dailyRank > MEMORY_TOP_LIMIT) dailyRank = null;
-    }
-
-    res.json({
-      ok: true,
-      isNewBest,
-      bestScore: isNewBest ? newScore : prevBest,
-      flagged,
-      official,
-      globalRank,
-      dailyRank,
-    });
-  } catch (err) {
-    console.error("[memory/score]", err);
-    res.status(500).json({ ok: false, error: "INTERNAL" });
-  }
-});
-
-app.get("/memory/leaderboard/:difficulty/global", async (req, res) => {
-  try {
-    const difficulty = Number(req.params.difficulty);
-    if (!MEMORY_ALLOWED_DIFFICULTIES.includes(difficulty)) return res.status(400).json({ ok: false, error: "INVALID_DIFFICULTY" });
-    const result = await fetchMemoryLeaderboard(supabaseAdmin, { difficulty, dailyOnly: false });
-    if (result.error) { console.error("[memory/leaderboard/global]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
-    res.json({ ok: true, rows: result.rows });
-  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
-});
-
-app.get("/memory/leaderboard/:difficulty/daily", async (req, res) => {
-  try {
-    const difficulty = Number(req.params.difficulty);
-    if (!MEMORY_ALLOWED_DIFFICULTIES.includes(difficulty)) return res.status(400).json({ ok: false, error: "INVALID_DIFFICULTY" });
-    const result = await fetchMemoryLeaderboard(supabaseAdmin, { difficulty, dailyOnly: true });
-    if (result.error) { console.error("[memory/leaderboard/daily]", result.error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
-    res.json({ ok: true, rows: result.rows });
-  } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
-});
-
-app.get("/memory/leaderboard/:difficulty/me", async (req, res) => {
-  try {
-    const difficulty = Number(req.params.difficulty);
-    if (!MEMORY_ALLOWED_DIFFICULTIES.includes(difficulty)) return res.status(400).json({ ok: false, error: "INVALID_DIFFICULTY" });
-    const user = await getOptionalUser(req);
-    const userId = user?.id || null;
-    if (!userId) return res.json({ ok: true, row: null });
-    const { data, error } = await supabaseAdmin
-      .from("memory_scores")
-      .select("nickname, score, attempts, max_combo, duration_sec, difficulty, created_at")
-      .eq("flagged", false).eq("user_id", userId).eq("difficulty", difficulty)
-      .maybeSingle();
-    if (error) { console.error("[memory/leaderboard/me]", error); return res.status(500).json({ ok: false, error: "QUERY_FAIL" }); }
-    let row = data || null;
-    if (row) {
-      const { data: prof } = await supabaseAdmin
-        .from("profiles").select("nickname, avatar_url").eq("id", userId).maybeSingle();
-      if (prof) {
-        if (prof.nickname) row.nickname = prof.nickname;
-        row.avatar_url = prof.avatar_url || null;
-      }
-      const { data: higher } = await supabaseAdmin
-        .from("memory_scores")
-        .select("user_id")
-        .eq("flagged", false).eq("difficulty", difficulty).not("user_id", "is", null)
-        .or(`duration_sec.lt.${row.duration_sec},and(duration_sec.eq.${row.duration_sec},attempts.lt.${row.attempts})`);
-      let myRank = (higher?.length || 0) + 1;
-      row.global_rank = myRank > MEMORY_TOP_LIMIT ? null : myRank;
     }
     res.json({ ok: true, row });
   } catch (err) { console.error(err); res.status(500).json({ ok: false, error: "INTERNAL" }); }
