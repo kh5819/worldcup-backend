@@ -9,7 +9,8 @@ const dgRooms = new Map();
 const dgInvites = new Map();
 const dgUserRoom = new Map();
 
-const ALLOWED_MAX_PLAYERS = [2, 4, 6, 8];
+import { isBig, markSnapshot, startBoard, stopBoard, setWatch, BIG_ALLOWED_MAX_PLAYERS } from "./big-room.js";
+const ALLOWED_MAX_PLAYERS = BIG_ALLOWED_MAX_PLAYERS;   // 9명 이상은 대규모 방(big-room.js)
 const ALLOWED_TIME_LIMIT_SEC = [0, 180, 300, 600]; // 0 = 무제한, 3/5/10분
 const EMPTY_ROOM_TTL_MS = 30_000;
 const PEER_UPDATE_THROTTLE_MS = 700;
@@ -35,7 +36,21 @@ function clearEmptyRoomTimer(room) {
 }
 function clearGameTimer(room) {
   if (room?.gameTimer) { clearTimeout(room.gameTimer); room.gameTimer = null; }
+  stopBoard(room);
 }
+// 대규모 방: 미니보드(snapshot)는 빼고 보냄
+const slim = (room, o) => { if (o && isBig(room)) delete o.snapshot; return o; };
+const BIG_OPTS = {
+  boardEvent: "dodge:board", snapEvent: "dodge:peerUpdate",
+  order: (room) => [...room.playerOrder].sort((a, b) => {
+    const pa = room.players.get(a) || {}, pb = room.players.get(b) || {};
+    if (!!pa.alive !== !!pb.alive) return pa.alive ? -1 : 1;
+    return ((pb.score || 0) - (pa.score || 0)) || ((pb.kills || 0) - (pa.kills || 0));
+  }),
+  entry: (uid, p) => ({ playerId: uid, nickname: p.name, score: p.score, hp: p.hp, maxHp: p.maxHp, kills: p.kills, level: p.level,
+    alive: p.alive, elapsedMs: p.elapsedMs, connected: p.connected }),
+  snapPayload: (uid, p) => ({ playerId: uid, snapshot: p.snapshot }),
+};
 function safeNumber(v, dflt = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : dflt;
@@ -97,7 +112,7 @@ function publicRoom(room) {
     teams: room.teams || null,
     startedAt: room.startedAt || null,
     endedAt: room.endedAt || null,
-    players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
+    players: room.playerOrder.map(uid => slim(room, publicPlayer(uid, room.players.get(uid)))),
   };
 }
 
@@ -261,7 +276,7 @@ function finishGame(io, room, reason) {
   const ignoreAlive = (reason === "TIME_UP");
   const ranking = room.playerOrder.map(uid => {
     const p = room.players.get(uid);
-    return p ? { playerId: uid, ...publicPlayer(uid, p) } : null;
+    return p ? slim(room, { playerId: uid, ...publicPlayer(uid, p) }) : null;
   }).filter(Boolean);
   const cmp = (a, b) => {
     if (!ignoreAlive && !!a.alive !== !!b.alive) return a.alive ? -1 : 1;
@@ -536,11 +551,13 @@ export function registerDodge(io, supabaseAdmin) {
         timeLimitSec: room.timeLimitSec || 0,
         teamMode: !!room.teamMode,
         teams: room.teams,
-        players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
+        players: room.playerOrder.map(uid => slim(room, publicPlayer(uid, room.players.get(uid)))),
+        big: isBig(room),
       });
       broadcastRoomState(io, room);
 
       clearGameTimer(room);
+      startBoard(io, room, socketRoomName(room.id), BIG_OPTS);
       if (room.timeLimitSec > 0) {
         room.gameTimer = setTimeout(() => {
           const r = dgRooms.get(room.id);
@@ -565,6 +582,7 @@ export function registerDodge(io, supabaseAdmin) {
       p.kills = safeNumber(payload?.kills, p.kills);
       p.level = Math.max(1, safeNumber(payload?.level, p.level));
       p.elapsedMs = safeNumber(payload?.elapsedMs, p.elapsedMs);
+      if (isBig(room)) return;   // 대규모 방: 1초마다 순위표로 모아서 보냄
       socket.to(socketRoomName(room.id)).emit("dodge:peerUpdate", {
         playerId: me.id, nickname: p.name,
         score: p.score, hp: p.hp, maxHp: p.maxHp,
@@ -593,6 +611,7 @@ export function registerDodge(io, supabaseAdmin) {
         safe.push({ x: +x.toFixed(3), y: +y.toFixed(3), t });
       }
       p.snapshot = safe;
+      if (markSnapshot(room, p)) return;   // 대규모 방: 상위 3명·관전자에게만
       socket.to(socketRoomName(room.id)).emit("dodge:peerUpdate", { playerId: me.id, snapshot: safe });
     });
 
@@ -631,6 +650,12 @@ export function registerDodge(io, supabaseAdmin) {
     });
 
     // ----- 자발 퇴장 -----
+    socket.on("dodge:watch", (payload) => {
+      const roomId = dgUserRoom.get(me.id);
+      const room = roomId ? dgRooms.get(roomId) : null;
+      if (room) setWatch(socket, room, me.id, payload, BIG_OPTS);
+    });
+
     socket.on("dodge:leaveRoom", (_payload, cb) => {
       const roomId = dgUserRoom.get(me.id);
       const room = roomId ? dgRooms.get(roomId) : null;

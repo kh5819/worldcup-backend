@@ -31,7 +31,6 @@ import { registerClinicBroadcast } from "./clinic-broadcast.js";
 import { memberProfile as clinicMemberProfile } from "./clinic.js";
 import { registerDodge } from "./dodge.js";
 import { registerGolf } from "./golf.js";
-import { registerDodogo } from "./dodogo.js";
 import { registerAppleMulti } from "./apple-multi.js";
 import { registerBlockBlastMulti } from "./blockblast-multi.js";
 import { registerYachtMulti } from "./yacht-multi.js";
@@ -10448,7 +10447,6 @@ registerDraw(io, supabaseAdmin);
 registerSuspect(io, supabaseAdmin);
 registerDodge(io, supabaseAdmin);
 registerGolf(io, supabaseAdmin);
-registerDodogo(io, supabaseAdmin);
 registerAppleMulti(io, supabaseAdmin);
 registerBlockBlastMulti(io, supabaseAdmin);
 registerYachtMulti(io, supabaseAdmin);
@@ -13747,7 +13745,9 @@ class CimeChatBridge extends ChatBridge {
 const chatBridges = new Map();
 
 // 스트리머 채팅연동 사용 로그 (운영자 admin 탭에서 확인) — 실패해도 게임 흐름엔 영향 없음
-async function _logStreamerChat({ platform, channelId, nickname, contentId, roomCode, hostUserId, hostNick }) {
+// 콘텐츠(DB) 없이 쓰는 스트리머 모드(예: 그려봐)는 종류만 프론트가 알려 줌 — 허용 목록만 저장
+const STREAMER_LOG_MODES = { draw: "그려봐 스트리머 모드" };
+async function _logStreamerChat({ platform, channelId, nickname, contentId, roomCode, hostUserId, hostNick, contentMode }) {
   try {
     if (!platform || !channelId) return; // 식별자 없으면 기록 안 함
     let content_title = null, content_mode = null;
@@ -13763,7 +13763,10 @@ async function _logStreamerChat({ platform, channelId, nickname, contentId, room
         }
       } catch (_) { /* contentId 형식 오류 등 — 무시 */ }
     }
-    let host_nick = hostNick || null;
+    if (!contentId && contentMode && STREAMER_LOG_MODES[contentMode]) {
+      content_mode = contentMode; content_title = STREAMER_LOG_MODES[contentMode];
+    }
+    let host_nick = hostNick ? String(hostNick).slice(0, 20) : null;
     if (!host_nick && hostUserId) {
       try {
         const { data: p } = await supabaseAdmin
@@ -13913,6 +13916,7 @@ app.post("/chat-audience/start", optionalAuth, async (req, res) => {
       roomCode,
       hostUserId: userId,
       hostNick: req.body.hostNick,
+      contentMode: req.body.contentMode,
     });
 
     return res.json({
@@ -13995,6 +13999,7 @@ app.post("/chat-audience/soop-start", optionalAuth, async (req, res) => {
       roomCode,
       hostUserId: req.user?.id,
       hostNick: req.body.hostNick,
+      contentMode: req.body.contentMode,
     });
 
     return res.json({ ok: true, status: bridge.status, subscribed: bridge.subscribed });
@@ -14074,6 +14079,7 @@ app.post("/chat-audience/cime-start", optionalAuth, async (req, res) => {
       roomCode,
       hostUserId: userId,
       hostNick: req.body.hostNick,
+      contentMode: req.body.contentMode,
     });
 
     return res.json({

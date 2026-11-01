@@ -11,7 +11,8 @@ const mergeRooms = new Map();      // roomId → room
 const mergeInvites = new Map();    // inviteCode → roomId
 const mergeUserRoom = new Map();   // userId → roomId
 
-const ALLOWED_MAX_PLAYERS = [2, 4, 6, 8];
+import { isBig, markSnapshot, startBoard, stopBoard, setWatch, BIG_ALLOWED_MAX_PLAYERS } from "./big-room.js";
+const ALLOWED_MAX_PLAYERS = BIG_ALLOWED_MAX_PLAYERS;   // 9명 이상은 대규모 방(big-room.js)
 const ALLOWED_TIME_LIMIT_SEC = [0, 180, 300, 600]; // 0 = 무제한, 3/5/10분
 const ALLOWED_INTERFERENCE_TYPES = new Set(["shake", "random_next", "deadline_down", "oil", "cloud"]);
 const DEBUFF_TARGET_COOLDOWN_MS = 5000; // 같은 대상에게 연속 방해 방지
@@ -97,7 +98,7 @@ function publicRoom(room) {
     timeLimitSec: room.timeLimitSec || 0,
     startedAt: room.startedAt || null,
     endedAt: room.endedAt || null,
-    players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
+    players: room.playerOrder.map(uid => slim(room, publicPlayer(uid, room.players.get(uid)))),
   };
 }
 
@@ -110,7 +111,21 @@ function clearGameTimer(room) {
     clearTimeout(room.gameTimer);
     room.gameTimer = null;
   }
+  stopBoard(room);
 }
+// 대규모 방: 미니보드(snapshot)는 빼고 보냄
+const slim = (room, o) => { if (o && isBig(room)) delete o.snapshot; return o; };
+const BIG_OPTS = {
+  boardEvent: "merge:board", snapEvent: "merge:peerUpdate",
+  order: (room) => [...room.playerOrder].sort((a, b) => {
+    const pa = room.players.get(a) || {}, pb = room.players.get(b) || {};
+    if (!!pa.alive !== !!pb.alive) return pa.alive ? -1 : 1;
+    return ((pb.score || 0) - (pa.score || 0)) || ((pb.maxStage || 1) - (pa.maxStage || 1));
+  }),
+  entry: (uid, p) => ({ playerId: uid, nickname: p.name, score: p.score, maxStage: p.maxStage, combo: p.combo, comboMax: p.comboMax,
+    alive: p.alive, danger: p.danger, elapsedMs: p.elapsedMs, connected: p.connected }),
+  snapPayload: (uid, p) => ({ playerId: uid, snapshot: p.snapshot }),
+};
 
 function deleteRoom(io, room, reason) {
   clearEmptyRoomTimer(room);
@@ -177,7 +192,7 @@ function finishGame(io, room, reason) {
   const ignoreAlive = (reason === "TIME_UP");
   const ranking = room.playerOrder.map(uid => {
     const p = room.players.get(uid);
-    return p ? { playerId: uid, ...publicPlayer(uid, p) } : null;
+    return p ? slim(room, { playerId: uid, ...publicPlayer(uid, p) }) : null;
   }).filter(Boolean);
   ranking.sort((a, b) => {
     if (!ignoreAlive && !!a.alive !== !!b.alive) return a.alive ? -1 : 1;
@@ -383,12 +398,14 @@ export function registerMerge(io, supabaseAdmin) {
         startedAt: room.startedAt,
         interferenceMode: !!room.interferenceMode,
         timeLimitSec: room.timeLimitSec || 0,
-        players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
+        players: room.playerOrder.map(uid => slim(room, publicPlayer(uid, room.players.get(uid)))),
+        big: isBig(room),
       });
       broadcastRoomState(io, room);
 
       // 서버 타이머 — 제한시간 도달 시 finishGame
       clearGameTimer(room);
+      startBoard(io, room, socketRoomName(room.id), BIG_OPTS);
       if (room.timeLimitSec > 0) {
         room.gameTimer = setTimeout(() => {
           const r = mergeRooms.get(room.id);
@@ -418,6 +435,7 @@ export function registerMerge(io, supabaseAdmin) {
       p.comboMax = Math.max(p.comboMax, safeNumber(payload?.comboMax, p.comboMax));
       p.danger = Math.max(0, Math.min(1, safeNumber(payload?.danger, p.danger)));
       p.elapsedMs = safeNumber(payload?.elapsedMs, p.elapsedMs);
+      if (isBig(room)) return;   // 대규모 방: 1초마다 순위표로 모아서 보냄
 
       // 자신 제외 broadcast
       socket.to(socketRoomName(room.id)).emit("merge:peerUpdate", {
@@ -459,6 +477,7 @@ export function registerMerge(io, supabaseAdmin) {
         safe.push({ s: Math.floor(s), x: +x.toFixed(3), y: +y.toFixed(3), r: +r.toFixed(3) });
       }
       p.snapshot = safe;
+      if (markSnapshot(room, p)) return;   // 대규모 방: 상위 3명·관전자에게만
 
       socket.to(socketRoomName(room.id)).emit("merge:peerUpdate", {
         playerId: me.id,
@@ -552,6 +571,12 @@ export function registerMerge(io, supabaseAdmin) {
     });
 
     // ----- 자발 퇴장 -----
+    socket.on("merge:watch", (payload) => {
+      const roomId = mergeUserRoom.get(me.id);
+      const room = roomId ? mergeRooms.get(roomId) : null;
+      if (room) setWatch(socket, room, me.id, payload, BIG_OPTS);
+    });
+
     socket.on("merge:leaveRoom", (_payload, cb) => {
       const roomId = mergeUserRoom.get(me.id);
       const room = roomId ? mergeRooms.get(roomId) : null;

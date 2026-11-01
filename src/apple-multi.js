@@ -11,7 +11,13 @@ const appleRooms = new Map();
 const appleInvites = new Map();
 const appleUserRoom = new Map();
 
-const ALLOWED_MAX_PLAYERS = [2, 4, 6, 8];
+const ALLOWED_MAX_PLAYERS = [2, 4, 6, 8, 12, 16, 20, 30, 40, 50];
+// 대규모 방(9명 이상): 점수·미니보드를 전원에게 그대로 전달하지 않고(인원² 증가),
+// 서버가 1초마다 순위표 1장 + 상위 3명 미니보드만 뿌림. 각자 고른 1명(관전)은 그 사람에게만.
+const BIG_ROOM_MIN = 9;
+const BOARD_TICK_MS = 1000;
+const BIG_SNAP_TOP = 3;
+const isBig = (room) => (room?.maxPlayers || 0) >= BIG_ROOM_MIN;
 const ALLOWED_TIME_LIMIT_SEC = [60, 120, 180]; // 1분/2분/3분
 const EMPTY_ROOM_TTL_MS = 30_000;
 const PROGRESS_THROTTLE_MS = 600; // 진척 emit 최소 간격
@@ -34,6 +40,7 @@ function clearEmptyRoomTimer(room) {
 }
 function clearGameTimer(room) {
   if (room?.gameTimer) { clearTimeout(room.gameTimer); room.gameTimer = null; }
+  if (room?.boardTimer) { clearInterval(room.boardTimer); room.boardTimer = null; }
 }
 function safeNumber(v, dflt = 0) {
   const n = Number(v);
@@ -64,11 +71,20 @@ function newPlayerState(name, isGuest, avatarUrl, socketId) {
     lastActionMs: 0,
     lastProgressEmit: 0,
     lastSnapshotEmit: 0,
+    // 대규모 방 전용
+    snapVer: 0,          // 미니보드가 바뀔 때마다 +1
+    watch: null,         // 내가 관전 중인 사람
+    watchSentVer: -1,    // 관전 대상 미니보드를 마지막으로 보낸 버전
   };
 }
 
-function publicPlayer(userId, p) {
+function publicPlayer(userId, p, lite = false) {
   if (!p) return null;
+  if (lite) return {
+    playerId: userId, nickname: p.name, isGuest: p.isGuest, avatar_url: p.avatar_url || null,
+    connected: p.connected, score: p.score, applesCleared: p.applesCleared, combo: p.combo,
+    maxCombo: p.maxCombo, status: p.status, finishedAt: p.finishedAt, lastActionMs: p.lastActionMs,
+  };
   return {
     playerId: userId,
     nickname: p.name,
@@ -97,8 +113,44 @@ function publicRoom(room) {
     seed: room.seed || null,
     startedAt: room.startedAt || null,
     endedAt: room.endedAt || null,
-    players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
+    players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid), isBig(room))),
   };
+}
+
+// 대규모 방: 1초마다 순위표 1장 + 상위 3명 미니보드(바뀐 것만) + 각자 관전 대상(바뀐 것만, 그 사람에게만)
+function rankedIds(room) {
+  return [...room.playerOrder].sort((a, b) => {
+    const pa = room.players.get(a), pb = room.players.get(b);
+    if ((pb?.score || 0) !== (pa?.score || 0)) return (pb?.score || 0) - (pa?.score || 0);
+    return (pb?.applesCleared || 0) - (pa?.applesCleared || 0);
+  });
+}
+function boardTick(io, room) {
+  if (room.status !== "playing") return;
+  const sr = socketRoomName(room.id);
+  const order = rankedIds(room);
+  io.to(sr).emit("apple:board", {
+    players: order.map(uid => {
+      const p = room.players.get(uid);
+      return p && { playerId: uid, score: p.score, applesCleared: p.applesCleared, combo: p.combo,
+        maxCombo: p.maxCombo, connected: p.connected, status: p.status };
+    }).filter(Boolean),
+  });
+  room.topSent = room.topSent || new Map();
+  const top = order.slice(0, BIG_SNAP_TOP);
+  for (const uid of top) {
+    const p = room.players.get(uid);
+    if (!p || room.topSent.get(uid) === p.snapVer) continue;
+    room.topSent.set(uid, p.snapVer);
+    io.to(sr).emit("apple:peerSnapshot", { playerId: uid, removedMask: p.removedMask });
+  }
+  for (const [, w] of room.players) {
+    if (!w.connected || !w.socketId || !w.watch || top.includes(w.watch)) continue;
+    const t = room.players.get(w.watch);
+    if (!t || w.watchSentVer === t.snapVer) continue;
+    w.watchSentVer = t.snapVer;
+    io.to(w.socketId).emit("apple:peerSnapshot", { playerId: w.watch, removedMask: t.removedMask });
+  }
 }
 
 function broadcastRoomState(io, room) {
@@ -165,7 +217,7 @@ function finishGame(io, room, reason) {
   // 순위: score 내림차순 > applesCleared 내림차순 > lastActionMs 오름차순
   const ranking = room.playerOrder.map(uid => {
     const p = room.players.get(uid);
-    return p ? { playerId: uid, ...publicPlayer(uid, p) } : null;
+    return p ? { playerId: uid, ...publicPlayer(uid, p, isBig(room)) } : null;
   }).filter(Boolean);
 
   ranking.sort((a, b) => {
@@ -334,7 +386,10 @@ export function registerAppleMulti(io, supabaseAdmin) {
         p.lastActionMs = Date.now();
         p.lastProgressEmit = 0;
         p.lastSnapshotEmit = 0;
+        p.snapVer = 0;
+        p.watchSentVer = -1;
       }
+      room.topSent = new Map();
 
       io.to(socketRoomName(room.id)).emit("apple:gameStart", {
         startedAt: room.startedAt,
@@ -342,11 +397,13 @@ export function registerAppleMulti(io, supabaseAdmin) {
         seed: room.seed,
         cols: COLS,
         rows: ROWS,
-        players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
+        players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid), isBig(room))),
+        big: isBig(room),
       });
       broadcastRoomState(io, room);
 
       clearGameTimer(room);
+      if (isBig(room)) room.boardTimer = setInterval(() => boardTick(io, room), BOARD_TICK_MS);
       room.gameTimer = setTimeout(() => {
         const r = appleRooms.get(room.id);
         if (r && r.status === "playing") finishGame(io, r, "TIME_UP");
@@ -373,6 +430,7 @@ export function registerAppleMulti(io, supabaseAdmin) {
       const newMaxCombo = Math.max(p.maxCombo, safeNumber(payload?.maxCombo, p.maxCombo));
       p.maxCombo = Math.max(0, Math.min(50, newMaxCombo));
       p.lastActionMs = now;
+      if (isBig(room)) return;   // 대규모 방: 1초마다 순위표로 모아서 보냄
 
       socket.to(socketRoomName(room.id)).emit("apple:peerUpdate", {
         playerId: me.id,
@@ -400,12 +458,31 @@ export function registerAppleMulti(io, supabaseAdmin) {
       if (mask && mask.length === COLS * ROWS) {
         // boolean[170]만 허용
         p.removedMask = mask.map(v => !!v);
+        p.snapVer++;
       }
+      if (isBig(room)) return;   // 대규모 방: 상위 3명·관전자에게만 (boardTick)
 
       socket.to(socketRoomName(room.id)).emit("apple:peerSnapshot", {
         playerId: me.id,
         removedMask: p.removedMask,
       });
+    });
+
+    // ----- 관전 대상 고르기 (대규모 방) -----
+    socket.on("apple:watch", (payload) => {
+      const roomId = appleUserRoom.get(me.id);
+      const room = roomId ? appleRooms.get(roomId) : null;
+      if (!room) return;
+      const p = room.players.get(me.id);
+      if (!p) return;
+      const target = String(payload?.playerId || "");
+      p.watch = target && target !== me.id && room.players.has(target) ? target : null;
+      p.watchSentVer = -1;
+      if (p.watch && isBig(room) && room.status === "playing") {
+        const t = room.players.get(p.watch);
+        p.watchSentVer = t.snapVer;
+        socket.emit("apple:peerSnapshot", { playerId: p.watch, removedMask: t.removedMask });
+      }
     });
 
     // ----- 자발 종료 (포기) -----

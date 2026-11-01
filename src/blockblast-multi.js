@@ -10,7 +10,8 @@ const bbRooms = new Map();
 const bbInvites = new Map();
 const bbUserRoom = new Map();
 
-const ALLOWED_MAX_PLAYERS = [2, 4, 6, 8];
+import { isBig, markSnapshot, startBoard, stopBoard, setWatch, BIG_ALLOWED_MAX_PLAYERS } from "./big-room.js";
+const ALLOWED_MAX_PLAYERS = BIG_ALLOWED_MAX_PLAYERS;   // 9명 이상은 대규모 방(big-room.js)
 const ALLOWED_GAME_TIME = [300, 600, 0]; // 5분/10분/무제한
 const ALLOWED_BLOCK_TIME = [0, 15, 30, 60]; // 자유/15/30/60초 — 한 세트(3블록)
 const EMPTY_ROOM_TTL_MS = 30_000;
@@ -33,7 +34,21 @@ function clearEmptyRoomTimer(room) {
 }
 function clearGameTimer(room) {
   if (room?.gameTimer) { clearTimeout(room.gameTimer); room.gameTimer = null; }
+  stopBoard(room);
 }
+// 대규모 방: 판 그림(boardMask)은 빼고 보냄
+const slim = (room, o) => { if (o && isBig(room)) delete o.boardMask; return o; };
+const BB_ORDER = { active: 0, eliminated: 1, left: 2 };
+const BIG_OPTS = {
+  boardEvent: "blockblast:board", snapEvent: "blockblast:peerSnapshot",
+  order: (room) => [...room.playerOrder].sort((a, b) => {
+    const pa = room.players.get(a) || {}, pb = room.players.get(b) || {};
+    return ((BB_ORDER[pa.status] ?? 9) - (BB_ORDER[pb.status] ?? 9)) || ((pb.score || 0) - (pa.score || 0)) || ((pb.linesCleared || 0) - (pa.linesCleared || 0));
+  }),
+  entry: (uid, p) => ({ playerId: uid, score: p.score, linesCleared: p.linesCleared, blocksPlaced: p.blocksPlaced, combo: p.combo,
+    maxCombo: p.maxCombo, connected: p.connected, status: p.status, eliminatedRank: p.eliminatedRank }),
+  snapPayload: (uid, p) => ({ playerId: uid, boardMask: p.boardMask }),
+};
 function safeNumber(v, dflt = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : dflt;
@@ -100,7 +115,7 @@ function publicRoom(room) {
     gameDeadline: room.gameDeadline || null,
     startedAt: room.startedAt || null,
     endedAt: room.endedAt || null,
-    players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
+    players: room.playerOrder.map(uid => slim(room, publicPlayer(uid, room.players.get(uid)))),
   };
 }
 
@@ -192,7 +207,7 @@ function finishGame(io, room, reason) {
   // 탈락 사람들은 점수 기반으로 그 다음 순위
   const ranking = room.playerOrder.map(uid => {
     const p = room.players.get(uid);
-    return p ? { playerId: uid, ...publicPlayer(uid, p) } : null;
+    return p ? slim(room, { playerId: uid, ...publicPlayer(uid, p) }) : null;
   }).filter(Boolean);
   ranking.sort((a, b) => {
     // 1순위: status active > eliminated > left
@@ -392,11 +407,13 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
         gameTimeSec: room.gameTimeSec,
         gameDeadline: room.gameDeadline,
         blockTimeSec: room.blockTimeSec ?? 30,
-        players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
+        players: room.playerOrder.map(uid => slim(room, publicPlayer(uid, room.players.get(uid)))),
+        big: isBig(room),
       });
       broadcastRoomState(io, room);
 
       clearGameTimer(room);
+      startBoard(io, room, socketRoomName(room.id), BIG_OPTS);
       if (room.gameTimeSec > 0) {
         room.gameTimer = setTimeout(() => {
           const r = bbRooms.get(room.id);
@@ -424,6 +441,7 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
       p.combo = Math.max(1, Math.min(50, safeNumber(payload?.combo, p.combo)));
       p.maxCombo = Math.max(p.maxCombo, Math.min(50, safeNumber(payload?.maxCombo, p.maxCombo)));
       p.lastActionMs = now;
+      if (isBig(room)) return;   // 대규모 방: 1초마다 순위표로 모아서 보냄
 
       socket.to(socketRoomName(room.id)).emit("blockblast:peerUpdate", {
         playerId: me.id,
@@ -450,6 +468,7 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
       const mask = Array.isArray(payload?.boardMask) ? payload.boardMask : null;
       if (mask && mask.length === 100) {
         p.boardMask = mask.map(v => Math.max(0, Math.min(7, Number(v) | 0)));
+        if (markSnapshot(room, p)) return;   // 대규모 방: 상위 3명·관전자에게만
       }
 
       socket.to(socketRoomName(room.id)).emit("blockblast:peerSnapshot", {
@@ -485,6 +504,12 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
 
       checkAndMaybeFinish(io, room);
       cb?.({ ok: true });
+    });
+
+    socket.on("blockblast:watch", (payload) => {
+      const roomId = bbUserRoom.get(me.id);
+      const room = roomId ? bbRooms.get(roomId) : null;
+      if (room) setWatch(socket, room, me.id, payload, BIG_OPTS);
     });
 
     socket.on("blockblast:leaveRoom", (_payload, cb) => {

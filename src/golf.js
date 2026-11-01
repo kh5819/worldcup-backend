@@ -444,12 +444,14 @@ export function registerGolf(io, supabaseAdmin) {
       const now = Date.now();
       if (now - p.lastPosEmit < POS_THROTTLE_MS) return;
       p.lastPosEmit = now;
+      // 위치는 소수 1자리, 속도는 2자리로 줄여서 전달 (화면 차이 없음, 전송량 약 30% 감소)
+      const r = (v, k) => Math.round(safeNumber(v, 0) * k) / k;
       socket.to(socketRoomName(room.id)).emit("golf:peerPos", {
         playerId: me.id,
-        x: safeNumber(payload?.x, 0),
-        y: safeNumber(payload?.y, 0),
-        vx: safeNumber(payload?.vx, 0),
-        vy: safeNumber(payload?.vy, 0),
+        x: r(payload?.x, 10),
+        y: r(payload?.y, 10),
+        vx: r(payload?.vx, 100),
+        vy: r(payload?.vy, 100),
         ts: now,
       });
     });
