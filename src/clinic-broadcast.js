@@ -77,7 +77,7 @@ export function computeStats(b) {
   // 지금 검사 중인 시청자 (메모리에만 — 저장 안 함). 닉네임 숨김 선택이면 익명
   const play = [...(b.playing?.values() || [])].filter((x) => now() - x.at < PLAY_TTL).sort((x, y) => y.round - x.round || x.since - y.since);
   s.playing = b.row.status === "final" ? 0 : play.length;
-  s.playingList = b.row.status === "final" ? [] : play.slice(0, 30).map((x) => ({ nick: x.streamer ? x.nick : x.showName ? x.nick : "익명 시청자", anon: !x.streamer && !x.showName, round: x.round, total: x.total, done: x.done, device: x.device, streamer: !!x.streamer }));
+  s.playingList = b.row.status === "final" ? [] : play.slice(0, 60).map((x) => ({ nick: x.streamer ? x.nick : x.showName ? x.nick : "익명 시청자", anon: !x.streamer && !x.showName, round: x.round, total: x.total, done: x.done, device: x.device, streamer: !!x.streamer }));
   return s;
 }
 function markDirty(b) {

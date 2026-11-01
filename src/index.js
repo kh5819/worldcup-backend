@@ -29,6 +29,9 @@ import { registerClinic } from "./clinic.js";
 import { registerClinicMulti } from "./clinic-multi.js";
 import { registerClinicBroadcast } from "./clinic-broadcast.js";
 import { memberProfile as clinicMemberProfile } from "./clinic.js";
+import { registerIq, memberProfile as iqMemberProfile } from "./iq.js";
+import { registerIqMulti } from "./iq-multi.js";
+import { registerIqBroadcast } from "./iq-broadcast.js";
 import { registerDodge } from "./dodge.js";
 import { registerGolf } from "./golf.js";
 import { registerAppleMulti } from "./apple-multi.js";
@@ -10459,6 +10462,10 @@ registerMysteryMulti(io, supabaseAdmin);
 registerClinic(io, supabaseAdmin, app, { getOptionalUser });
 registerClinicMulti(io, supabaseAdmin);
 registerClinicBroadcast(io, supabaseAdmin, app, { memberProfile: clinicMemberProfile });
+// 플듀 IQ 테스트 진단소 — iq:* / iqm:* / iq:bc:* 이벤트 + /iq/* REST, 정답·채점은 서버만
+registerIq(io, supabaseAdmin, app, { getOptionalUser });
+registerIqMulti(io, supabaseAdmin);
+registerIqBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {
