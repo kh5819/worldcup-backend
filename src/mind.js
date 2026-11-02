@@ -173,7 +173,7 @@ export function registerMind(io, supabaseAdmin, app, { getOptionalUser } = {}) {
 
     // ---------- 플듀 종합 능력 프로필: 세 진단소 결과를 내 것만 모아서 ----------
     on("ability:overview", async (_p, reply) => {
-      const out = { ok: true, isGuest: !!me.isGuest, clinic: null, iq: null, mind: null, rep: null, titles: [] };
+      const out = { ok: true, isGuest: !!me.isGuest, clinic: null, iq: null, mind: null, sense: null, rep: null, titles: [] };
       if (!sb) return reply(out);
       const mp = await memberProfile(sb, me); out.member = mp;
       try { const { data } = await sb.from("clinic_results").select("id, mode, total, phys, diag, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(50);
@@ -182,6 +182,10 @@ export function registerMind(io, supabaseAdmin, app, { getOptionalUser } = {}) {
         if (data?.length) { const best = [...data].sort((a, b) => b.iq - a.iq)[0]; out.iq = { count: data.length, latest: { id: data[0].id, mode: data[0].mode, iq: data[0].iq, total: data[0].total, title: data[0].diag?.title || null, at: data[0].created_at }, best: { id: best.id, iq: best.iq, total: best.total, mode: best.mode, title: best.diag?.title || null, at: best.created_at } }; for (const r of data) for (const t of r.diag?.titles || []) if (t?.name && !out.titles.some((x) => x.name === t.name)) out.titles.push({ name: t.name, from: "iq" }); } } catch (e) { console.warn("[ability] iq", e?.message); }
       try { const { data } = await sb.from("mind_results").select("id, mode, lv, total, areas, diag, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(50);
         if (data?.length) { const best = [...data].sort((a, b) => b.total - a.total)[0]; const pub = (r) => ({ id: r.id, mode: r.mode, lv: r.lv, total: r.total, areas: r.areas, type: r.diag?.type?.name || null, typeId: r.diag?.type?.id || null, at: r.created_at }); out.mind = { count: data.length, latest: pub(data[0]), best: pub(best) }; for (const r of data) for (const t of r.diag?.titles || []) if (t?.name && !out.titles.some((x) => x.name === t.name)) out.titles.push({ name: t.name, from: "mind" }); } } catch (e) { console.warn("[ability] mind", e?.message); }
+      // 게임 센스: 공식 최고는 의심 기록 제외. 빠른·정밀 점수 척도는 같지만 정밀이 더 정확하다는 표시를 붙임
+      try { const { data } = await sb.from("sense_results").select("id, mode, total, tier, style, areas, flagged, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(50);
+        if (data?.length) { const ok = data.filter((r) => !r.flagged), best = [...(ok.length ? ok : data)].sort((a, b) => b.total - a.total)[0]; const pub = (r) => ({ id: r.id, mode: r.mode, total: r.total, tier: r.tier, style: r.style, areas: r.areas, flagged: !!r.flagged, at: r.created_at }); out.sense = { count: data.length, latest: pub(data[0]), best: pub(best) };
+          const TN = { iron: "아이언", bronze: "브론즈", silver: "실버", gold: "골드", platinum: "플래티넘", emerald: "에메랄드", diamond: "다이아몬드", master: "마스터", grandmaster: "그랜드마스터", challenger: "챌린저" }; if (ok.length && TN[best.tier]) out.titles.push({ name: `게임 센스 ${TN[best.tier]}`, from: "sense" }); } } catch (e) { console.warn("[ability] sense", e?.message); }
       try { const { data } = await sb.from("ability_profiles").select("rep_kind, rep_id, rep_title").eq("owner_key", key).maybeSingle(); out.rep = data || null; } catch {}
       out.titles = out.titles.slice(0, 40);
       reply(out);
@@ -189,7 +193,7 @@ export function registerMind(io, supabaseAdmin, app, { getOptionalUser } = {}) {
     // 대표 진단서·대표 칭호: 내 기록만 지정 가능
     on("ability:setRep", async (p, reply) => {
       if (!sb) return reply({ ok: false, error: "NO_DB" });
-      const kind = ["clinic", "iq", "mind"].includes(p.kind) ? p.kind : null, id = kind ? String(p.id || "").slice(0, 16) : null;
+      const kind = ["clinic", "iq", "mind", "sense"].includes(p.kind) ? p.kind : null, id = kind ? String(p.id || "").slice(0, 16) : null;
       if (kind) { const { data } = await sb.from(`${kind}_results`).select("id").eq("id", id).eq("owner_key", key).maybeSingle(); if (!data) return reply({ ok: false, error: "NOT_MINE" }); }
       const row = { owner_key: key, user_id: me.isGuest ? null : me.id, rep_kind: kind, rep_id: id, rep_title: p.title ? String(p.title).replace(/[<>]/g, "").slice(0, 30) : null, updated_at: new Date().toISOString() };
       const { error } = await sb.from("ability_profiles").upsert(row, { onConflict: "owner_key" });
