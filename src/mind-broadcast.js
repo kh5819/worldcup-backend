@@ -189,7 +189,7 @@ export function registerMindBroadcast(io, supabaseAdmin, app, { memberProfile } 
       const { error } = await SB.from("mind_broadcasts").insert(row);
       if (error) { console.error("[mind bc] create", error.message); return reply({ ok: false, error: "SAVE_FAIL" }); }
       if (me.isGuest) { const ip = sockIp(socket); ipMakes.set(ip, [...(ipMakes.get(ip) || []), now()]); if (ipMakes.size > 5000) ipMakes.clear(); }
-      SB.from("streamer_chat_log").insert({ platform: "mind", channel_id: row.id, nickname: nick, content_id: null, content_title: title, content_mode: null, room_code: row.id }).then(({ error: le }) => { if (le) console.error("[mind bc] streamer log", le.message); }, () => {});
+      SB.from("streamer_chat_log").insert({ platform: "mind", channel_id: row.id, nickname: nick, content_id: null, content_title: title, content_mode: null, room_code: row.id, host_user_id: me.isGuest ? null : me.id, host_nick: me.isGuest ? null : (mp?.nickname || null) }).then(({ error: le }) => { if (le) console.error("[mind bc] streamer log", le.message); }, () => {});
       BC.set(row.id, mkState(row));
       reply({ ok: true, bc: row });
     });
