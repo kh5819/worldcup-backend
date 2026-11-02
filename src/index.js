@@ -33,6 +33,9 @@ import { registerIqBroadcast } from "./iq-broadcast.js";
 import { registerMind } from "./mind.js";
 import { registerMindMulti } from "./mind-multi.js";
 import { registerMindBroadcast } from "./mind-broadcast.js";
+import { registerSense } from "./sense.js";
+import { registerSenseMulti } from "./sense-multi.js";
+import { registerSenseBroadcast } from "./sense-broadcast.js";
 import { registerDodge } from "./dodge.js";
 import { registerGolf } from "./golf.js";
 import { registerAppleMulti } from "./apple-multi.js";
@@ -10465,6 +10468,10 @@ registerIqBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
 registerMind(io, supabaseAdmin, app, { getOptionalUser });
 registerMindMulti(io, supabaseAdmin);
 registerMindBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
+// 플듀 게임 센스 진단소 — sense:* 이벤트 + /sense/* REST, 채점은 서버가 기록을 다시 계산
+registerSense(io, supabaseAdmin, app, { getOptionalUser });
+registerSenseMulti(io, supabaseAdmin);
+registerSenseBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {
