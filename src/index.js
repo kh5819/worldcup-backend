@@ -10,8 +10,6 @@ import { v4 as uuidv4 } from "uuid";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 // socket.io-client 제거 — 치지직 CHAT 이벤트 미수신 문제로 raw ws로 교체 (2026-03-14)
 import WebSocket from "ws";
-// DUO GAME ZONE — 인생게임 멀티 (별도 모듈, 기존 시스템 무관)
-import { registerLifegame } from "./lifegame.js";
 // DUO GAME ZONE — 라이어 키워드 (별도 모듈)
 // DUO GAME ZONE — 우리방 OX (별도 모듈)
 import { registerOxGame } from "./oxgame.js";
@@ -1059,7 +1057,6 @@ function generateSeoHtml({ title, description, image, canonical, jsonLd, bodyHtm
       <a href="${SITE_URL}/gamezone.html">🎮 게임천국</a>
       <a href="${SITE_URL}/omok.html">⚫⚪ 멀티 오목</a>
       <a href="${SITE_URL}/cardgame-multi.html">🃏 난장 카드게임</a>
-      <a href="${SITE_URL}/lifegame.html">🎲 인생게임</a>
       <a href="${SITE_URL}/oxgame-multi.html">⭕ 우리방 OX</a>
       <a href="${SITE_URL}/merge.html">🍱 수라상 (한식 합성)</a>
     </div>
@@ -10418,11 +10415,6 @@ async function finishTierGame(room) {
   io.to(room.id).emit("room:state", publicRoom(room));
   console.log(`[tier:finished] roomId=${room.id} cards=${t.cardOrder.length} duration=${durationMs}ms`);
 }
-
-// =========================
-// 인생게임 멀티 — 독립 모듈 등록 (lifegame:* 이벤트 prefix)
-// =========================
-registerLifegame(io, supabaseAdmin);
 
 // =========================
 // 우리방 OX — 독립 모듈 등록 (ox:* 이벤트 prefix)
