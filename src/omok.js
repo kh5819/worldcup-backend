@@ -713,13 +713,15 @@ export function registerOmok(io, supabaseAdmin) {
     // ===== createRoom =====
     socket.on("omok:createRoom", async (payload, cb) => {
       try {
-        if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
+        // 게스트는 혼자 AI 대결용 방만 — 1대1 고정, 다른 사람 입장·설정 변경 불가
+        const guestAiOnly = !!me.isGuest;
+        if (guestAiOnly && payload?.soloAi !== true) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
         if (omokUserRoom.has(me.id)) {
           const old = omokRooms.get(omokUserRoom.get(me.id));
           if (old) leavePlayer(io, old, me.id, true);
         }
 
-        const mode = ALLOWED_MODES.includes(payload?.mode) ? payload.mode : "1v1";
+        const mode = (!guestAiOnly && ALLOWED_MODES.includes(payload?.mode)) ? payload.mode : "1v1";
         const boardSize = ALLOWED_BOARD_SIZES.includes(Number(payload?.boardSize))
           ? Number(payload.boardSize) : 15;
         const turnTimeSec = ALLOWED_TURN_SECS.includes(Number(payload?.turnTimeSec))
@@ -728,7 +730,7 @@ export function registerOmok(io, supabaseAdmin) {
           ? Number(payload.winLength) : 5;
         const ffaSize = Math.min(MAX_PLAYERS_HARD_CAP, Math.max(2, Number(payload?.ffaSize) || 8));
         const maxPlayers = modeMaxPlayers(mode, ffaSize);
-        const specialMode = (payload?.specialMode === "kid") ? "kid" : "off";
+        const specialMode = (!guestAiOnly && payload?.specialMode === "kid") ? "kid" : "off";
 
         const roomId = `om_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const inviteCode = genInviteCode();
@@ -737,6 +739,7 @@ export function registerOmok(io, supabaseAdmin) {
           id: roomId,
           inviteCode,
           hostUserId: me.id,
+          guestAiOnly,
           status: "lobby",      // lobby | playing | ended
           mode,
           specialMode,          // 'off' | 'kid'
@@ -773,14 +776,16 @@ export function registerOmok(io, supabaseAdmin) {
 
         // 호스트 등록
         let avatar = null;
-        try {
-          const { data } = await supabaseAdmin.from("profiles").select("nickname, avatar_url").eq("id", me.id).single();
-          if (data?.avatar_url) avatar = data.avatar_url;
-          if (data?.nickname && !payload?.nickname) payload = { ...(payload || {}), nickname: data.nickname };
-        } catch {}
+        if (!guestAiOnly) {
+          try {
+            const { data } = await supabaseAdmin.from("profiles").select("nickname, avatar_url").eq("id", me.id).single();
+            if (data?.avatar_url) avatar = data.avatar_url;
+            if (data?.nickname && !payload?.nickname) payload = { ...(payload || {}), nickname: data.nickname };
+          } catch {}
+        }
 
-        const hostName = String(payload?.nickname || "방장").slice(0, 20);
-        room.players.set(me.id, newPlayerState(hostName, false, avatar));
+        const hostName = String(payload?.nickname || (guestAiOnly ? "게스트" : "방장")).slice(0, 20);
+        room.players.set(me.id, newPlayerState(hostName, guestAiOnly, avatar));
         room.playerOrder.push(me.id);
         omokUserRoom.set(me.id, roomId);
         reassignColorsAndTeams(room);
@@ -802,6 +807,7 @@ export function registerOmok(io, supabaseAdmin) {
         const roomId = omokInvites.get(code);
         const room = roomId ? omokRooms.get(roomId) : null;
         if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
+        if (room.guestAiOnly && !room.players.has(me.id)) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
         if (room.status !== "lobby") {
           // 재접속: 이미 방에 있던 유저면 재참가 허용
           if (room.players.has(me.id)) {
@@ -865,6 +871,7 @@ export function registerOmok(io, supabaseAdmin) {
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
       if (room.status !== "lobby") return cb?.({ ok: false, error: "GAME_ALREADY_STARTED" });
+      if (room.guestAiOnly) return cb?.({ ok: false, error: "NOT_ALLOWED" });
 
       let changed = false;
 
