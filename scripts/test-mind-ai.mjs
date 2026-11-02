@@ -1,0 +1,31 @@
+// AI 라이벌 전략 차이·기억·정보 접근 시험: node scripts/test-mind-ai.mjs
+import * as C from "../src/mind-core.js"; import * as G from "../src/mind-games.js";
+let pass = 0, fail = 0; const ok = (c, m) => { if (c) pass++; else { fail++; console.log("  ✗", m); } };
+const N = 400;
+// 1) 블러핑: 약한 패로 베팅 비율, 콜 비율 (플레이어는 항상 체크/작게)
+function poker(rival, lv = 2) { let weakBet = 0, weak = 0, big = 0, bets = 0, call = 0, face = 0; for (let i = 0; i < N; i++) { const s = G.createGame("bluff", { seed: i * 31 + 7, lv, rival }); let guard = 0; while (!s.done && guard++ < 80) { const v = G.viewOf(s); const before = s.hand; if (s.aiBet && !s.counted) { s.counted = true; bets++; if (s.aiBet === 5) big++; if ((s.aiC - 1) / 8 < 0.45) weakBet++; } if (!s.bet && s.first === "ai" && !s.seenW) { s.seenW = true; if ((s.aiC - 1) / 8 < 0.45) weak++; } const act = s.bet ? { op: "fold" } : v.options.includes("small") && i % 2 ? { op: "small" } : { op: "check" }; if (act.op === "small") face++; const r = G.applyAction(s, act); if (act.op === "small" && r.fb?.hand?.show) call++; if (s.hand !== before) { s.counted = false; s.seenW = false; } } } return { bluff: weakBet / Math.max(1, weak + weakBet), bigRate: big / Math.max(1, bets), callRate: call / Math.max(1, face) }; }
+const pk = Object.fromEntries(["kain", "black", "crow", "zero"].map((r) => [r, poker(r)])); console.log("포커", JSON.stringify(pk, (k, v) => (typeof v === "number" ? Math.round(v * 100) / 100 : v)));
+ok(pk.kain.bluff > pk.crow.bluff, "카인이 크로우보다 허세 많음"); ok(pk.kain.bigRate > pk.black.bigRate, "카인이 크게 지름"); ok(Object.values(pk).map((x) => x.callRate.toFixed(2)).some((x, _, a) => x !== a[0]), "콜 성향 다름");
+// 2) 가위바위보: 같은 손만 내는 플레이어에 대한 AI 손 분포
+function rps(rival) { const hit = { same: 0, counter: 0, n: 0 }; for (let i = 0; i < N; i++) { const s = G.createGame("rps", { seed: i * 17 + 3, lv: 2, rival }); for (let k = 0; k < 15 && !s.done; k++) { const prev = s.h.me[s.h.me.length - 1]; if (prev != null) { hit.n++; if (s.aiNext === prev) hit.same++; if (s.aiNext === (prev + 1) % 3) hit.counter++; } G.applyAction(s, { hand: i % 3 === 0 ? 0 : k % 3 }); } } return { same: hit.same / hit.n, counter: hit.counter / hit.n }; }
+const rs = Object.fromEntries(["echo", "raven", "zero", "crow"].map((r) => [r, rps(r)])); console.log("가위바위보", JSON.stringify(rs, (k, v) => (typeof v === "number" ? Math.round(v * 100) / 100 : v)));
+ok(rs.echo.same > 0.55, "에코는 내 손을 따라 함"); ok(rs.raven.counter > 0.55, "레이븐은 내 손을 카운터"); ok(Math.abs(rs.zero.same - 1 / 3) < 0.15, "제로는 분산됨");
+// 3) 계약: 전부 협력하는 플레이어에게 배신 비율 / 한 번 배신 후 반응
+function pact(rival, plan) { let d = 0, n = 0; for (let i = 0; i < N / 2; i++) { const s = G.createGame("contract", { seed: i * 13 + 1, lv: 2, rival }); let k = 0; while (s.stage === "play") { const r = G.applyAction(s, { act: plan(k), promise: true }); if (k >= 3) { n++; if (r.fb.aiA === "D") d++; } k++; } } return d / Math.max(1, n); }
+const allC = Object.fromEntries(["mira", "black", "echo", "sera"].map((r) => [r, pact(r, () => "C")])), once = Object.fromEntries(["mira", "black", "echo", "sera"].map((r) => [r, pact(r, (k) => (k === 2 ? "D" : "C"))])); console.log("계약 협력 상대에 배신률", JSON.stringify(allC), "한 번 배신 뒤", JSON.stringify(once));
+ok(allC.black > allC.mira + 0.2, "블랙은 믿음을 이용"); ok(once.mira > 0.9, "미라는 배신에 민감(끝까지 응징)"); ok(once.sera < once.mira, "세라는 용서함"); ok(allC.echo === 0, "에코는 따라 협력");
+// 4) 경매·협상·분석 차이
+const au = (rival) => { let sum = 0, n = 0; for (let i = 0; i < 300; i++) { const s = G.createGame("auction", { seed: i + 5, lv: 2, rival }); while (!s.done) { const r = G.applyAction(s, { bid: 0, guess: 0 }); sum += r.fb.bids[0].bid; n++; } } return sum / n; }; const av = { neon: au("neon"), sera: au("sera"), iris: au("iris") }; console.log("경매 평균 입찰", JSON.stringify(av)); ok(av.neon > av.iris + 3, "네온이 아이리스보다 비싸게 입찰");
+const nego = (rival) => { let acc = 0; for (let i = 0; i < 300; i++) { const s = G.createGame("nego", { seed: i * 3 + 1, lv: 2, rival }); const r = G.applyAction(s, { op: "offer", mine: s.cnt.map((c) => Math.floor(c * 0.35)) }); if (r.fb.result === "deal") acc++; } return acc; }; const nv = { sera: nego("sera"), crow: nego("crow") }; console.log("협상 첫 제안 수락", JSON.stringify(nv)); ok(nv.sera > nv.crow, "세라가 크로우보다 잘 받아 줌");
+const pr = {}; for (const r of ["raven", "luna", "echo", "zero"]) pr[r] = G.createGame("predict", { seed: 5, lv: 2, rival: r }).st1.name; ok(pr.raven === "anti" && pr.luna === "markov" && pr.echo === "mirror", "예측 라이벌별 규칙 " + JSON.stringify(pr));
+// 5) 적응: 포커에서 허세를 들키면 콜을 늘리고, 안 들키면 줄임 (루나·레이븐 기억은 공개된 쇼다운만)
+{ const q = 0.42; const mk = (showBluff) => { const m = { foldAgainst: 0, facedBet: 0, showBet: 6, showBluff, betN: 3, acts: 6 }; let c = 0; for (let i = 0; i < 400; i++) { const s = G.createGame("final", { seed: i, lv: 2 }); void s; c += G.aiPokerRespond(q, 2, 2, m, Math.random) === "call" ? 1 : 0; } return c; }; ok(mk(5) > mk(0), "허세 많이 들킨 상대에겐 더 콜함(적응)"); }
+{ // 계약 적응: 플레이어가 협력→배신으로 바꾸면 조이스·그러저도 바뀜
+  const a = pact("echo", (k) => (k < 4 ? "C" : "D")); ok(a > 0.3, "에코는 바뀐 패턴을 따라 감"); }
+// 6) 전문가 난이도: 점수 계수·범위·정보 접근
+ok(C.LEVELS.length === 3 && C.levelOf(3).name === "전문가" && C.levelOf(0).name === "보통", "난이도 3단계"); ok(C.gameScore("liar", { analyze: 1, risk: 1 }, true, 3) <= 100, "점수 상한");
+for (const g of C.PLANS.full) { const s = G.createGame(g, { seed: 9, lv: 3 }); ok(s.level === 3 && s.lv === 2, "전문가 상태"); const v = G.viewOf(s); ok(!!v.rivalId, `${g} 라이벌 표시`); ok(!/"aiNext"|"aiC"|"aiVal"|"nextA"/.test(JSON.stringify(v)), `${g} 비밀 없음`); }
+const used = new Set(Object.values(C.RIVAL_POOL).flat()); ok(used.size === 12 && Object.keys(C.RIVALS).length === 12, `라이벌 12명 ${used.size}`); for (const r of used) ok(G.PERSONA[r], `${r} 전략값`);
+// 정보 접근: 라이벌이 있어도 내 비밀로 결과가 바뀌지 않음
+for (let i = 0; i < 300; i++) { for (const r of ["kain", "black", "crow", "zero"]) { const a = G.createGame("bluff", { seed: i, lv: 3, rival: r }), b = G.createGame("bluff", { seed: i, lv: 3, rival: r }); b.mine = a.mine === 1 ? 9 : 1; ok(JSON.stringify(a.line) === JSON.stringify(b.line), `${r} 포커 선제가 내 패에 의존`); if (!a.bet) { const fa = G.applyAction(a, { op: "small" }), fb = G.applyAction(b, { op: "small" }); ok((a.lastHand?.line || []).slice(-1)[0] === (b.lastHand?.line || []).slice(-1)[0], `${r} 콜/폴드가 내 패에 의존`); void fa; void fb; } } }
+console.log(`\n통과 ${pass} · 실패 ${fail}`); process.exit(fail ? 1 : 0);

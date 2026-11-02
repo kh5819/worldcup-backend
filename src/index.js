@@ -30,6 +30,9 @@ import { memberProfile as clinicMemberProfile } from "./clinic.js";
 import { registerIq, memberProfile as iqMemberProfile } from "./iq.js";
 import { registerIqMulti } from "./iq-multi.js";
 import { registerIqBroadcast } from "./iq-broadcast.js";
+import { registerMind } from "./mind.js";
+import { registerMindMulti } from "./mind-multi.js";
+import { registerMindBroadcast } from "./mind-broadcast.js";
 import { registerDodge } from "./dodge.js";
 import { registerGolf } from "./golf.js";
 import { registerAppleMulti } from "./apple-multi.js";
@@ -10458,6 +10461,10 @@ registerClinicBroadcast(io, supabaseAdmin, app, { memberProfile: clinicMemberPro
 registerIq(io, supabaseAdmin, app, { getOptionalUser });
 registerIqMulti(io, supabaseAdmin);
 registerIqBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
+// 플듀 심리전 능력 진단소 — mind:* / mm:* / mbc:* / ability:* 이벤트 + /mind/* REST, 상태·정답·AI는 서버만
+registerMind(io, supabaseAdmin, app, { getOptionalUser });
+registerMindMulti(io, supabaseAdmin);
+registerMindBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {
