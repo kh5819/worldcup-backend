@@ -846,14 +846,16 @@ export const GROUP = {
     score(st, u) { const max = 5 * st.n; const others = Math.max(...st.ids.map((x) => st.pts[x])); return { perf: { negotiate: c01(st.pts[u] / (3 * st.n)), bluff: c01(pctn(st.gainD[u], st.n) + 0.2), predict: c01(st.pts[u] / max + 0.2), risk: c01(st.pts[u] / max + 0.1) }, win: st.pts[u] === others && others > 0, detail: `${st.pts[u]}점` }; },
   },
   mtrap: {
-    init(st) { st.n = 5; st.i = 0; st.pts = Object.fromEntries(st.ids.map((u) => [u, 0])); st.hit = { ...st.pts }; const s = { r: st.seed }; st.qs = shuffle(s, TRAP_Q).slice(0, 5); },
-    view: (st, u) => ({ kind: "mtrap", step: st.i, of: st.n, lim: 15, q: st.qs[st.i][0], options: st.qs[st.i][1], pts: st.pts[u] }),
+    init(st) { st.n = 5; st.i = 0; st.pts = Object.fromEntries(st.ids.map((u) => [u, 0])); st.hit = { ...st.pts }; const s = { r: st.seed }; st.s = s; st.qs = shuffle(s, TRAP_Q).slice(0, 5); st.bots = Math.max(0, 9 - st.ids.length); }, // 사람이 적으면 AI 참가자로 9표를 채움 (2명이면 항상 전원 정답이 되는 문제 방지, 홀수라 동점도 줄어듦)
+    view: (st, u) => ({ kind: "mtrap", step: st.i, of: st.n, lim: 15, q: st.qs[st.i][0], options: st.qs[st.i][1], pts: st.pts[u], bots: st.bots }),
     lim: () => 15,
     tick(st, acts) {
       const cnt = [0, 0, 0], picks = {}; for (const u of st.ids) { const p = intIn(acts[u]?.pick, 0, 2) ? acts[u].pick : -1; picks[u] = p; if (p >= 0) cnt[p]++; }
+      const w = st.qs[st.i][2], tw = w[0] + w[1] + w[2];
+      for (let b = 0; b < st.bots; b++) { let t = rnd(st.s) * tw, c = 2; for (let i = 0; i < 3; i++) { t -= w[i]; if (t <= 0) { c = i; break; } } cnt[c]++; }
       const top = Math.max(...cnt), winners = top > 0 ? [0, 1, 2].filter((i) => cnt[i] === top) : [], gains = {};
       for (const u of st.ids) { const hit = winners.includes(picks[u]); gains[u] = hit ? 2 : 0; st.pts[u] += gains[u]; if (hit) st.hit[u]++; }
-      const row = { cnt, winners, picks, gains, options: st.qs[st.i][1], q: st.qs[st.i][0] }; st.i++; if (st.i >= st.n) st.done = true; return row;
+      const row = { cnt, winners, picks, gains, options: st.qs[st.i][1], q: st.qs[st.i][0], bots: st.bots }; st.i++; if (st.i >= st.n) st.done = true; return row;
     },
     score(st, u) { const best = Math.max(...st.ids.map((x) => st.pts[x])); return { perf: { predict: c01(st.hit[u] / st.n), analyze: c01(st.hit[u] / st.n), risk: c01(st.hit[u] / st.n + 0.1) }, win: st.pts[u] === best && best > 0, detail: `${st.hit[u]}/${st.n} 적중` }; },
   },

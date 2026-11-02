@@ -71,7 +71,7 @@ export const GAMES = {
   mcontract: { name: "배신의 계약 (대결)", en: "Betrayal Pact", icon: "contract", room: "negotiation", op: "vera", group: true, w: { negotiate: 0.5, bluff: 0.2, predict: 0.15, risk: 0.15 }, min: 2,
     desc: "모두 몰래 협력·배신, 동시 공개", how: ["모두 몰래 협력 또는 배신을 고르고, 다 내면 동시에 공개돼요.", "협력자는 협력 인원만큼 나눠 벌어요. 배신자는 더 벌지만, 절반을 넘으면 배신자 모두 0점이에요.", "다음 라운드에 복수당할 수 있어요."], ctl: "협력/배신을 누르면 잠겨요." },
   mtrap: { name: "다수의 함정 (대결)", en: "Crowd Trap", icon: "crowd", room: "arena", op: "ori", group: true, w: { predict: 0.7, analyze: 0.15, risk: 0.15 }, min: 2,
-    desc: "가장 많이 고를 답을 맞혀요", how: ["가장 많이 선택될 답을 예측해 골라요.", "마감 전에는 누가 무엇을 골랐는지 아무도 몰라요.", "가장 많이 나온 답을 고른 사람이 점수를 얻어요."], ctl: "답을 누르면 잠겨요." },
+    desc: "가장 많이 고를 답을 맞혀요", how: ["가장 많이 선택될 답을 예측해 골라요. 인원이 적으면 AI 참가자가 함께 투표해 9표를 채워요.", "마감 전에는 누가 무엇을 골랐는지 아무도 몰라요.", "가장 많이 나온 답을 고른 사람이 점수를 얻어요."], ctl: "답을 누르면 잠겨요." },
   mduel: { name: "블러핑 대결", en: "Bluff Duel", icon: "cards", room: "arena", op: "fox", group: true, w: { bluff: 0.5, predict: 0.4, risk: 0.1 }, min: 2,
     desc: "비밀 카드로 허세와 간파", how: ["각자 다른 비밀 카드(1~9)를 받아요. 내 카드는 나만 봐요.", "‘높음(6 이상)’ 또는 ‘낮음’이라고 선언해요. 거짓말해도 돼요.", "그다음 지정된 상대의 선언이 진실인지 허세인지 판정해요. 맞히면 +2, 내 허세가 속이면 +2."], ctl: "선언 → 판정 순서로 눌러요." },
   mauction: { name: "비밀 경매 (대결)", en: "Secret Auction", icon: "coin", room: "negotiation", op: "gold", group: true, w: { risk: 0.6, predict: 0.4 }, min: 2,

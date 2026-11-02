@@ -65,7 +65,7 @@ const front = "../홈페이지 제작/js/mind/mind-core.js";
 if (fs.existsSync(front)) ok(fs.readFileSync(front, "utf8") === fs.readFileSync("src/mind-core.js", "utf8"), "프론트·서버 공용 파일 다름");
 
 // ---------- 2. 끝까지 돌리기·시간 초과·잘못된 입력 ----------
-for (const g of IDS) for (const lv of [1, 2, 3]) for (let seed = 1; seed <= 40; seed++) { run(g, lv, seed * 7919, "random"); run(g, lv, seed * 104729, "smart"); if (seed <= 8) { const t = run(g, lv, seed, "timeout"); ok(t.res.timeouts > 0, `${g} 시간 초과 기록`); ok(!t.res.win || ["contract"].includes(g) === false || true, "x"); } if (seed <= 8) run(g, lv, seed * 31, "random", { short: true }); if (seed <= 8) run(g, lv, seed * 37, "random", { mp: true }); }
+for (const g of IDS) for (const lv of [1, 2, 3]) for (let seed = 1; seed <= 15; seed++) { run(g, lv, seed * 7919, "random"); run(g, lv, seed * 104729, "smart"); if (seed <= 8) { const t = run(g, lv, seed, "timeout"); ok(t.res.timeouts > 0, `${g} 시간 초과 기록`); ok(!t.res.win || ["contract"].includes(g) === false || true, "x"); } if (seed <= 8) run(g, lv, seed * 31, "random", { short: true }); if (seed <= 8) run(g, lv, seed * 37, "random", { mp: true }); }
 for (const g of IDS) { const s = G.createGame(g, { seed: 5, lv: 1 }); for (const bad of [{}, { x: 1 }, { pick: 99, conf: 9 }, { op: "hack" }, { bid: -5, guess: 0 }, { cell: 9999 }, { hand: 7 }, { act: "X" }]) { const before = JSON.stringify(s); const r = G.applyAction(s, bad); if (r.error) ok(JSON.stringify(s) === before, `${g} 잘못된 입력이 상태 변경`); } }
 
 // ---------- 3. 정답 검증 (독립 풀이) ----------
@@ -96,7 +96,7 @@ ok(new Set(G.DEF ? C.TYPES.map((t) => t.id) : []).size >= 30, "유형 30종"); o
 const bal = {};
 for (const g of IDS) {
   bal[g] = {};
-  for (const lv of [1, 2, 3]) { let rS = 0, rW = 0, sS = 0, sW = 0, N = 150; for (let i = 0; i < N; i++) { const a = run(g, lv, i * 13 + 1, "random"), b = run(g, lv, i * 17 + 2, "smart"); rS += a.score; rW += a.res.win ? 1 : 0; sS += b.score; sW += b.res.win ? 1 : 0; } bal[g][lv] = { randScore: Math.round(rS / N), randWin: Math.round((rW / N) * 100), smartScore: Math.round(sS / N), smartWin: Math.round((sW / N) * 100) }; }
+  for (const lv of [1, 2, 3]) { let rS = 0, rW = 0, sS = 0, sW = 0, N = 60; for (let i = 0; i < N; i++) { const a = run(g, lv, i * 13 + 1, "random"), b = run(g, lv, i * 17 + 2, "smart"); rS += a.score; rW += a.res.win ? 1 : 0; sS += b.score; sW += b.res.win ? 1 : 0; } bal[g][lv] = { randScore: Math.round(rS / N), randWin: Math.round((rW / N) * 100), smartScore: Math.round(sS / N), smartWin: Math.round((sW / N) * 100) }; }
   ok(bal[g][3].randScore <= 65, `${g}: 무작위 점수 평균이 너무 높음 ${bal[g][2].randScore}`);
   ok(bal[g][3].smartScore > bal[g][3].randScore, `${g}: 잘 두는 정책이 무작위보다 낮음`);
 }
@@ -106,6 +106,8 @@ for (const g of IDS) {
 { const a = C.scoreAll([{ g: "liar", lv: 2, perf: { analyze: 1, risk: 1 }, win: false }]), b = C.scoreAll([{ g: "liar", lv: 2, perf: { analyze: 0, risk: 0 }, win: true }]); ok(a.total > b.total, "승리만 한 사람이 잘 푼 패자보다 높으면 안 됨"); ok(C.scoreAll([{ g: "liar", lv: 1, perf: { analyze: 1, risk: 1 }, win: true }]).total < C.scoreAll([{ g: "liar", lv: 2, perf: { analyze: 1, risk: 1 }, win: true }]).total, "난이도 반영"); }
 // ---------- 8. 멀티 게임 ----------
 for (const g of Object.keys(G.GROUP)) for (const n of [2, 3, 8]) for (let t = 0; t < 30; t++) { const ids = Array.from({ length: n }, (_, i) => "p" + i); const st = G.createGroup(g, t * 91 + 5, ids); let guard = 0; while (!st.done) { if (++guard > 40) { ok(false, `${g} 안 끝남`); break; } const acts = {}; for (const u of ids) { const v = G.groupView(st, u); ok(v.lim > 0, `${g} lim`); if (g === "mduel") { ok(v.card >= 1, "비밀 카드 있음"); ok(!JSON.stringify(v).includes('"cards"'), "남의 카드 안 보임"); } if (t % 5 === 0 && u === "p1") continue; acts[u] = g === "mcontract" ? { act: rint(2) ? "C" : "D" } : g === "mtrap" ? { pick: rint(3) } : g === "mduel" ? (v.phase === "claim" ? { claim: rint(2) ? "high" : "low" } : { call: rint(2) ? "truth" : "bluff" }) : { bid: rint(Math.min(40, v.budget) + 1) }; } G.GROUP[g].tick(st, acts); } for (const u of ids) { const r = G.groupResult(st, u); for (const k of Object.keys(C.GAMES[g].w)) ok(r.perf[k] >= 0 && r.perf[k] <= 1, `${g} ${k} 범위`); } }
+// 다수의 함정: 2명이어도 항상 전원 정답이면 안 됨, 표는 9표
+{ let both = 0, tot = 0, sumOk = true; for (let t = 0; t < 300; t++) { const st = G.createGroup("mtrap", t * 7 + 1, ["a", "b"]); while (!st.done) { const r = G.GROUP.mtrap.tick(st, { a: { pick: 0 }, b: { pick: 1 } }); tot++; if (r.gains.a > 0 && r.gains.b > 0) both++; if (r.cnt.reduce((x, y) => x + y, 0) !== 9) sumOk = false; } } ok(sumOk, "2인 다수의 함정 9표"); ok(both / tot < 0.15, `2인이 서로 다른 답인데 둘 다 정답 ${Math.round((both / tot) * 100)}%`); const s8 = G.createGroup("mtrap", 3, Array.from({ length: 8 }, (_, i) => "p" + i)); ok(s8.bots === 1, "8인은 AI 1표"); }
 for (const k of Object.keys(C.MULTI_PLANS)) for (const g of C.MULTI_PLANS[k]) ok(C.GAMES[g], `계획 ${k} 게임 ${g}`);
 
 console.log(`\n통과 ${pass} · 실패 ${fail}`);

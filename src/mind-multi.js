@@ -88,8 +88,9 @@ function startGame(io, r, i) {
     if (isGroup(g)) { r.groupSt = G.createGroup(g, r.gameSeed, r.order); startTick(io, r); }
     else {
       r.gameEnd = now() + fast(CAP_SEC[g] * 1000);
-      for (const u of r.order) { const p = r.players.get(u); p.g = G.createGame(g, { seed: r.gameSeed, lv: r.lv, mp: true }); p.stepAt = now(); sendYou(io, p, personal(r, u)); }
-      emitRoom(io, r);
+      for (const u of r.order) { const p = r.players.get(u); p.g = G.createGame(g, { seed: r.gameSeed, lv: r.lv, mp: true }); p.stepAt = now(); }
+      emitRoom(io, r);   // 방 상태가 먼저 도착해야 화면이 게임을 시작함
+      for (const u of r.order) sendYou(io, r.players.get(u), personal(r, u));
       schedule(io, r, r.gameEnd + GRACE_MS, () => endParallel(io, r));
     }
   });
@@ -119,7 +120,7 @@ function resolveTick(io, r) {
 function pubTick(g, row, r) {
   const nick = (u) => r.players.get(u)?.profile?.nick || r.players.get(u)?.name || "?";
   if (g === "mcontract") return { g, moves: r.order.map((u) => ({ id: u, nick: nick(u), m: row.moves[u], gain: row.gains[u] })), d: row.d, c: row.c, over: row.over };
-  if (g === "mtrap") return { g, q: row.q, options: row.options, cnt: row.cnt, winners: row.winners, rows: r.order.map((u) => ({ id: u, nick: nick(u), pick: row.picks[u], gain: row.gains[u] })) };
+  if (g === "mtrap") return { g, q: row.q, options: row.options, cnt: row.cnt, winners: row.winners, bots: row.bots, rows: r.order.map((u) => ({ id: u, nick: nick(u), pick: row.picks[u], gain: row.gains[u] })) };
   if (g === "mauction") return { g, lot: row.lot, bids: r.order.map((u) => ({ id: u, nick: nick(u), bid: row.bids[u] })), winner: row.winner ? nick(row.winner) : null, gain: row.gain, tie: row.tie };
   if (g === "mduel") { if (row.phase === "claim") return { g, phase: "claim" }; return { g, phase: "judge", rows: r.order.map((u) => ({ id: u, nick: nick(u), card: row.cards[u], claim: row.claims[u], gain: row.gains[u], lied: (row.cards[u] >= 6 ? "high" : "low") !== row.claims[u], right: row.rows[u].right })) }; }
   return { g };
@@ -303,7 +304,7 @@ export function registerMindMulti(io, supabaseAdmin) {
       if (live.some((u) => !r.players.get(u).profile)) return reply({ ok: false, error: "NEED_PROFILE" });
       if (live.some((u) => u !== r.host && !r.players.get(u).ready)) return reply({ ok: false, error: "NOT_READY" });
       for (const u of [...r.order]) if (!r.players.get(u).connected) { r.players.delete(u); r.order = r.order.filter((x) => x !== u); USER_ROOM.delete(u); }
-      r.plan = [...C.MULTI_PLANS[r.mode]]; r.seed = newSeed(); r.final = null; r.lastGame = null;
+      r.plan = process.env.MIND_TEST_PLAN ? process.env.MIND_TEST_PLAN.split(",") : [...C.MULTI_PLANS[r.mode]]; r.seed = newSeed(); r.final = null; r.lastGame = null;
       for (const p of r.players.values()) { p.games = {}; p.pts = 0; p.streak = 0; p.ready = false; p.lastScore = 0; }
       reply({ ok: true }); startGame(io, r, 0);
     });
