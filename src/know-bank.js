@@ -458,3 +458,16 @@ export const BANK = [
   order("E0401", "econ", "timeline", 3, "IT 회사가 세워진 순서대로 놓으세요.", [["마이크로소프트 설립", 1975], ["애플 설립", 1976], ["아마존 설립", 1994], ["테슬라 설립", 2003]], "마이크로소프트 1975년 → 애플 1976년 → 아마존 1994년 → 테슬라 2003년.", [BRIT("topic/Microsoft-Corporation", "Microsoft"), BRIT("topic/Amazoncom", "Amazon.com")]),
   fake("E0301", "econ", 2, "돈 상식 중 가짜를 고르세요.", [["주식을 사면 그 회사의 일부를 갖게 된다.", true], ["물가가 오르면 같은 돈으로 살 수 있는 물건이 늘어난다.", false], ["신용 점수가 높을수록 대출 조건이 좋아지는 편이다.", true]], "물가가 오르면 같은 돈으로 살 수 있는 물건이 줄어들어요. 돈의 가치가 떨어지는 셈이에요.", SRC.bok),
 ];
+// 6차 신규 미니게임 문항 (분류 공장·탐정단·연결왕·여기는 어디?·캐치)
+import { BANK6 } from "./know-bank-6.js";
+BANK.push(...BANK6);
+import { BANK7 } from "./know-bank-7.js";
+BANK.push(...BANK7);
+import { BANK8 } from "./know-bank-8.js";
+BANK.push(...BANK8);
+import { BANK9 } from "./know-bank-9.js";
+BANK.push(...BANK9);
+import { BANK10 } from "./know-bank-10.js";
+BANK.push(...BANK10);
+import { BANK11 } from "./know-bank-11.js";
+BANK.push(...BANK11);

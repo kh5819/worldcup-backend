@@ -88,6 +88,42 @@ ok((await emit(S[2], "knm:options", { isPublic: false })).error === "NOT_HOST", 
 const keep = STORE.pool; STORE.pool = keep.slice(0, 5);
 for (let k = 1; k < 8; k++) await emit(S[k], "knm:ready", { ready: true });
 const ne = await emit(S[0], "knm:start", {}); ok(ne.error === "NOT_ENOUGH_ITEMS", `문제 부족 안내 ${ne.error}`); STORE.pool = keep;
+// ---- 6차: 신작 5종 대결 (fresh) ----
+{
+  const F = await Promise.all(["guest_fr000001", "u_fr1"].map(conn));
+  const fc = await emit(F[0], "knm:create", { mode: "fresh", profile: prof("신작방장") });
+  ok(fc.ok && fc.room.modeName === "신작 미니게임 10라운드", `신작 모드 방 (${fc.room?.modeName})`);
+  await emit(F[1], "knm:join", { code: fc.room.code, profile: prof("신작참가") }); await emit(F[1], "knm:ready", { ready: true });
+  ok((await emit(F[0], "knm:start", {})).ok, "신작 대결 시작");
+  const FR = _knmTest.ROOMS.get(fc.room.id); const kinds = new Set();
+  for (let i = 0; i < FR.plan.length; i++) {
+    for (let t = 0; t < 400 && !(FR.phase === "play" && FR.round === i); t++) await wait(5);
+    const key = FR.served.key, kind = FR.served.pub.kind; kinds.add(kind);
+    if (LEAK.test(JSON.stringify(FR.served.pub)) || /"place":/.test(JSON.stringify(FR.served.pub))) ok(false, `신작 ${kind} 화면 정보에 정답`);
+    if (kind === "catch") {
+      let peekBlocked = true;
+      for (let k = 0; k < key.length; k++) { const a = await emit(F[0], "knm:catch", { round: i, k, take: key[k] }); if (!a.ok || a.truth !== key[k]) ok(false, "캐치 단계 응답"); }
+      // 한 번 정한 건 못 바꿈 (미리 보고 바꾸기 방지)
+      const again = await emit(F[0], "knm:catch", { round: i, k: 0, take: !key[0] }); if (again.take !== key[0]) peekBlocked = false;
+      ok(peekBlocked, "캐치: 확정 뒤 바꾸기 불가");
+      for (let k = 0; k < key.length; k++) await emit(F[1], "knm:catch", { round: i, k, take: true });
+      await emit(F[0], "knm:answer", { round: i, answer: [] });   // 화면이 보낸 목록은 무시하고 서버 기록으로 채점
+      await emit(F[1], "knm:answer", { round: i, answer: key.map((t, k) => (t ? k : -1)).filter((k) => k >= 0) });
+    } else {
+      if (kind === "case" || kind === "where") { const cl = await emit(F[0], "knm:clue", { round: i }); ok(cl.ok && cl.stage === 2 && cl.clues.length === 2 && cl.tr, `${kind} 대결 단서 2개`); }
+      const wrong = Array.isArray(key) ? (kind === "sort" ? key.map((b) => (b + 1) % FR.served.pub.bins.length) : [...key].reverse()) : (key + 1) % (FR.served.pub.opts || FR.served.pub.codes).length;
+      await emit(F[0], "knm:answer", { round: i, answer: key }); await emit(F[1], "knm:answer", { round: i, answer: wrong });
+    }
+    for (let t = 0; t < 400 && FR.phase === "play" && FR.round === i; t++) await wait(5);
+    const p0 = FR.players.get("guest_fr000001").rounds[i], p1 = FR.players.get("u_fr1").rounds[i];
+    const want0 = kind === "case" || kind === "where" ? 0.85 : 1;
+    ok(p0.part === want0, `신작 ${kind} 정답 채점 ${p0.part} (기대 ${want0})`);
+    ok(p1.part < 1, `신작 ${kind} 오답·다 받기 채점 ${p1.part}`);
+    ok(FR.lastRound?.reveal && (kind !== "where" || FR.lastRound.reveal.place), `신작 ${kind} 결과 공개`);
+  }
+  ok(["sort", "case", "link", "where", "catch"].every((k) => kinds.has(k)), `신작 5종 모두 나옴 (${[...kinds].join(",")})`);
+  F.forEach((s) => s.close());
+}
 [...S, extra, solo].forEach((s) => s.close());
 console.log(`\n상식 8인 대결 시험: 통과 ${pass} · 실패 ${fail}`);
 server.close(); process.exit(fail ? 1 : 0);

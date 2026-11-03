@@ -7,11 +7,11 @@
 // =========================
 import * as C from "./know-core.js";
 import { STORE } from "./know-store.js";
-import { serveAll, revealAll, judgeServed, buildPlan, normLang, poolFor } from "./know.js";
+import { serveAll, revealAll, judgeServed, buildPlan, normLang, poolFor, localize } from "./know.js";
 import { memberProfile, userKey } from "./iq.js";
 
 const BC = new Map();
-const SHOW_KINDS = new Set(["mcq", "ox", "fake", "num", "map"]);   // 방송에서 한눈에 보이는 방식만
+const SHOW_KINDS = new Set(["mcq", "ox", "fake", "num", "map", "case", "where"]);   // 방송에서 한눈에 보이는 방식만 (탐정단·여기는 어디?는 단서 전부 공개 후 투표)
 const MAX_VIEWERS = Number(process.env.KNOW_BC_MAX || 5000);
 const GUEST_OPEN = 1, MEMBER_OPEN = 3, BC_TTL = 6 * 3600e3;
 const ipMakes = new Map();
@@ -24,7 +24,22 @@ const sockIp = (s) => String(s.handshake.headers["x-forwarded-for"] || s.handsha
 // 방송용 출제: 쉬운 문제 위주 + 마지막 2문제는 최후의 상식왕
 export function showPlan(seed, n = 10, lang = "ko") {
   const pool = poolFor(lang).filter((q) => SHOW_KINDS.has(q.kind)); // 스트리머 언어로 낼 수 있는 문항
-  return buildPlan("daily", seed, { pool }).slice(0, n);
+  // 10문제까지는 하루 세트(10), 15문제는 빠른 세트(15), 그 이상은 정밀 세트(40)에서 앞에서부터 — 하루 세트만 쓰면 15문제를 못 채웠음
+  const base = n <= 10 ? "daily" : n <= 15 ? "quick" : "full";
+  const plan = buildPlan(base, seed, { pool }).slice(0, n);
+  // 6차: 10문제 이상이면 지식 탐정단·여기는 어디? 한 문제씩 섞기 (시청자는 단서 전부 보고 투표)
+  if (n >= 10) {
+    const r = C.rng((seed ^ 0x5bd1e995) >>> 0), has = new Set(plan.map((x) => x.id));
+    for (const kind of ["case", "where"]) {
+      if (plan.some((x) => STORE.all.get(x.id)?.kind === kind)) continue;
+      const cands = pool.filter((q) => q.kind === kind && !has.has(q.id) && q.d <= 3); if (!cands.length) continue;
+      const q = cands[Math.floor(r() * cands.length)];
+      const slots = plan.map((_, i) => i).filter((i) => { const g = STORE.all.get(plan[i].id)?.game; return g !== "final" && !["detective", "where"].includes(g); });
+      const i = slots[1 + Math.floor(r() * Math.max(1, slots.length - 2))] ?? slots[0]; if (i == null) continue;
+      has.delete(plan[i].id); has.add(q.id); plan[i] = { id: q.id, seed: C.hashSeed(`${seed}:bc:${q.id}`) >>> 0 };
+    }
+  }
+  return plan;
 }
 function pubState(b, { host = false } = {}) {
   const r = b.cur;
@@ -52,6 +67,8 @@ function boardOf(b) {
 }
 function openRound(io, b, i) {
   const q = STORE.all.get(b.plan[i].id), sv = serveAll(q, b.plan[i].seed);
+  // 탐정단·여기는 어디?: 방송은 단서를 한꺼번에 보여 주고 투표 (단서 단계 점수 없음 = 1단계 만점)
+  if (C.CLUE_KINDS.has(q.kind)) { sv.pub.clues = q.clues; for (const L of Object.keys(sv.pub.tr || {})) { const lq = localize(q, L); if (lq) sv.pub.tr[L].clues = lq.clues; } }
   const lim = sv.pub.lim + (sv.pub.kind === "num" ? 5000 : 3000);   // 방송은 채팅 딜레이 고려해 조금 길게
   b.cur = { i, sv, q, at: now(), deadline: now() + lim, count: 0, ans: new Map(), dist: {} };
   b.phase = "open";
@@ -107,6 +124,9 @@ export function registerKnowBroadcast(io, supabaseAdmin, app) {
     const limited = () => { const n = now(); if (n - win > 10000) { win = n; cnt = 0; } return ++cnt > Number(process.env.KNOW_RL || 60); };
     const on = (ev, fn) => socket.on(ev, async (p, cb) => { const reply = typeof cb === "function" ? cb : () => {}; if (limited()) return reply({ ok: false, error: "RATE_LIMITED" }); try { await fn(p && typeof p === "object" ? p : {}, reply); } catch (e) { console.error(`[${ev}]`, e); reply({ ok: false, error: "INTERNAL" }); } });
     const myBc = (id) => { const b = BC.get(String(id || "")); return b && b.hostKey === key ? b : null; };
+    // 내가 연(아직 안 끝난) 퀴즈쇼 — 창을 닫았다 다시 와도 이어서 진행하거나 끝낼 수 있게
+    const mineOf = () => [...BC.values()].filter((b) => b.hostKey === key && b.phase !== "final").sort((a, b) => b.createdAt - a.createdAt).map((b) => ({ id: b.id, title: b.title, n: b.plan.length, done: b.rounds.length, phase: b.phase, viewers: Math.max(0, b.viewers.size - 1), createdAt: b.createdAt }));
+    on("kbc:mine", (_p, reply) => reply({ ok: true, rows: mineOf() }));
 
     // 방송 만들기: 게스트도 가능(닉네임 필수, 동시 1개·같은 IP 10분 5개), 회원 동시 3개
     on("kbc:create", async (p, reply) => {
@@ -115,7 +135,7 @@ export function registerKnowBroadcast(io, supabaseAdmin, app) {
       if (!nick) return reply({ ok: false, error: "NEED_NICK" });
       if (me.isGuest) { const ip = sockIp(socket), arr = (ipMakes.get(ip) || []).filter((t) => now() - t < 600000); if (arr.length >= 5) return reply({ ok: false, error: "RATE_LIMITED" }); arr.push(now()); ipMakes.set(ip, arr); if (ipMakes.size > 5000) ipMakes.clear(); }
       const open = [...BC.values()].filter((b) => b.hostKey === key && b.phase !== "final").length;
-      if (open >= (me.isGuest ? GUEST_OPEN : MEMBER_OPEN)) return reply({ ok: false, error: "TOO_MANY_OPEN" });
+      if (open >= (me.isGuest ? GUEST_OPEN : MEMBER_OPEN)) return reply({ ok: false, error: "TOO_MANY_OPEN", open: mineOf() });
       const n = [5, 10, 15].includes(Number(p.rounds)) ? Number(p.rounds) : 10;
       let plan; try { plan = showPlan((Math.random() * 2 ** 32) >>> 0, n, normLang(p.lang)); } catch (e) { return reply({ ok: false, error: e.message }); }
       if (plan.length < n) return reply({ ok: false, error: "NOT_ENOUGH_ITEMS", detail: { need: n, have: plan.length } });

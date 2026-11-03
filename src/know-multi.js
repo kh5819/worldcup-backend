@@ -7,7 +7,7 @@
 // =========================
 import * as C from "./know-core.js";
 import { STORE } from "./know-store.js";
-import { buildPlan, serveAll, revealAll, judgeServed, buildRow, publicRow, normLang, poolFor, localize } from "./know.js";
+import { buildPlan, serveAll, revealAll, judgeServed, buildRow, publicRow, normLang, poolFor, localize, caughtOf } from "./know.js";
 // 단서(정체를 밝혀라)도 언어별 글자를 같이 실음 → 화면이 내 언어로 골라 씀
 const cluesTr = (q, n, base = {}) => { const tr = {}; for (const L of ["ja", "en"]) { const lq = localize(q, L); if (lq) tr[L] = { ...(base[L] || {}), clues: lq.clues.slice(0, n) }; } return tr; };
 import { resultId, memberProfile, sanitizeProfile, sanitizePrefs } from "./iq.js";
@@ -20,7 +20,7 @@ const LOBBY_DROP_MS = 20000, EMPTY_TTL_MS = 90000;
 const JOIN_FAIL_MAX = 8, JOIN_FAIL_WIN = 60000, JOIN_BLOCK_MS = 60000;
 const joinFails = new Map(), createdBy = new Map();
 // 대결 길이: 10라운드(오늘의 챌린지 구성, 무작위) · 15라운드(빠른검사 구성)
-export const MULTI = { m10: { ko: "10라운드", base: "daily" }, m15: { ko: "15라운드", base: "quick" } };
+export const MULTI = { m10: { ko: "10라운드", base: "daily" }, m15: { ko: "15라운드", base: "quick" }, fresh: { ko: "신작 미니게임 10라운드", base: "fresh" } };
 const now = () => Date.now();
 const sockRoom = (id) => `knm:${id}`;
 const newSeed = () => (Math.floor(Math.random() * 0xffffffff) >>> 0) || 11;
@@ -39,7 +39,7 @@ function pubRoom(r) {
     plan: r.plan ? r.plan.map((x) => { const q = STORE.all.get(x.id); return { game: q.game, area: q.area, d: q.d }; }) : null,
     phase: r.phase, round: r.round, phaseEnd: r.phaseEnd, startAt: r.startAt, deadline: r.deadline,
     nextGame: r.phase === "intro" && r.served ? r.served.pub.game : null,
-    item: r.phase === "play" && r.served ? (r.served.pub.kind === "reveal" ? { ...r.served.pub, clues: qOf(r, r.round).clues.slice(0, 1), tr: cluesTr(qOf(r, r.round), 1, r.served.pub.tr) } : r.served.pub) : null,
+    item: r.phase === "play" && r.served ? (C.CLUE_KINDS.has(r.served.pub.kind) ? { ...r.served.pub, clues: qOf(r, r.round).clues.slice(0, 1), tr: cluesTr(qOf(r, r.round), 1, r.served.pub.tr) } : r.served.pub) : null,
     roundResult: r.phase === "result" || r.phase === "final" ? r.lastRound : null,
     final: r.phase === "final" && r.final ? { groupId: r.final.groupId, players: r.final.players, saved: r.final.saved } : null,
     players: r.order.map((u) => pubPlayer(r, u)).filter(Boolean), serverNow: now(),
@@ -80,7 +80,7 @@ function startRound(io, r, i) {
   emitRoom(io, r);
   schedule(r, r.startAt, () => {
     r.phase = "play";
-    for (const p of r.players.values()) p.st[i] = { at: r.startAt, clues: q.kind === "reveal" ? 1 : 0 };
+    for (const p of r.players.values()) p.st[i] = { at: r.startAt, clues: C.CLUE_KINDS.has(q.kind) ? 1 : 0 };
     emitRoom(io, r);
     schedule(r, r.deadline, () => endRound(io, r));
   });
@@ -107,7 +107,7 @@ function endRound(io, r) {
   const rows = r.order.map((u) => { const p = r.players.get(u), x = p.rounds[i]; return { id: u, part: x.part, ms: x.ms, timeout: x.timeout, stage: x.stage, bp: x.bp || 0, total: p.pts, rank: after[u], prevRank: before[u], streak: p.streak, choice: p.answers?.[i] ?? null }; })
     .sort((a, b) => b.bp - a.bp || a.ms - b.ms);
   // 보기별 선택 수 (객관식·O/X·지도·가짜 판별): 결과 때만 공개
-  const dist = ["mcq", "reveal", "map", "fake", "ox"].includes(q.kind) ? rows.reduce((o, x) => { if (x.choice != null) { const k = String(x.choice); o[k] = (o[k] || 0) + 1; } return o; }, {}) : null;
+  const dist = ["mcq", "reveal", "map", "fake", "ox", "case", "where"].includes(q.kind) ? rows.reduce((o, x) => { if (x.choice != null) { const k = String(x.choice); o[k] = (o[k] || 0) + 1; } return o; }, {}) : null;
   r.lastRound = { round: i, item: sv.pub, reveal: revealAll(q, sv), rows, dist, fastest: rows.filter((x) => x.part >= 1).sort((a, b) => a.ms - b.ms)[0]?.id || null };
   r.phase = "result"; r.phaseEnd = now() + fast(RESULT_MS);
   emitRoom(io, r);
@@ -184,7 +184,7 @@ export function registerKnowMulti(io, supabaseAdmin) {
       reply({ ok: true, me: me.id, room: pubRoom(r) }); emitRoom(io, r);
     });
     // 재접속 때 내가 이번 라운드에 받은 단서·제출 여부 (정답은 아님)
-    const mineNow = (r, pl) => { const st = pl.st[r.round]; const q = qOf(r, r.round); return { submitted: !!pl.rounds[r.round], clues: q.kind === "reveal" && st ? q.clues.slice(0, st.clues) : null, tr: q.kind === "reveal" && st ? cluesTr(q, st.clues) : undefined }; };
+    const mineNow = (r, pl) => { const st = pl.st[r.round]; const q = qOf(r, r.round); return { submitted: !!pl.rounds[r.round], clues: C.CLUE_KINDS.has(q.kind) && st ? q.clues.slice(0, st.clues) : null, tr: C.CLUE_KINDS.has(q.kind) && st ? cluesTr(q, st.clues) : undefined }; };
     on("knm:rejoin", (p, reply) => {
       const r = myRoom(); if (!r) return reply({ ok: false, error: "NOT_IN_ROOM" });
       const ex = r.players.get(me.id); if (ex.dropTimer) { clearTimeout(ex.dropTimer); ex.dropTimer = null; }
@@ -231,17 +231,25 @@ export function registerKnowMulti(io, supabaseAdmin) {
     const curSt = (r) => r.players.get(me.id)?.st?.[r.round] || null;
     on("knm:clue", (p, reply) => {
       const r = myRoom(); if (!r || r.phase !== "play" || (p.round | 0) !== r.round) return reply({ ok: false, error: "NOT_PLAYING" });
-      const q = qOf(r, r.round), st = curSt(r); if (!st || q.kind !== "reveal" || r.players.get(me.id).rounds[r.round]) return reply({ ok: false, error: "NOT_PLAYING" });
+      const q = qOf(r, r.round), st = curSt(r); if (!st || !C.CLUE_KINDS.has(q.kind) || r.players.get(me.id).rounds[r.round]) return reply({ ok: false, error: "NOT_PLAYING" });
       st.clues = Math.min(q.clues.length, st.clues + 1); reply({ ok: true, clues: q.clues.slice(0, st.clues), stage: st.clues, tr: cluesTr(q, st.clues) });
+    });
+    // 상식 캐치!: 하나씩 받기/놓치기 확정 → 그다음 맞는지 공개
+    on("knm:catch", (p, reply) => {
+      const r = myRoom(); if (!r || r.phase !== "play" || (p.round | 0) !== r.round) return reply({ ok: false, error: "NOT_PLAYING" });
+      const q = qOf(r, r.round), st = curSt(r); if (!st || q.kind !== "catch" || r.players.get(me.id).rounds[r.round]) return reply({ ok: false, error: "NOT_PLAYING" });
+      const key = r.served.key, k = p.k | 0; if (k < 0 || k >= key.length) return reply({ ok: false, error: "BAD_IDX" });
+      st.dec ||= {}; if (st.dec[k] == null) st.dec[k] = !!p.take;
+      reply({ ok: true, k, take: st.dec[k], truth: key[k] });
     });
     on("knm:answer", (p, reply) => {
       const r = myRoom(); if (!r) return reply({ ok: false, error: "NOT_IN_ROOM" });
       if (r.phase !== "play" || (p.round | 0) !== r.round) return reply({ ok: false, error: "NOT_PLAYING" });
       const pl = r.players.get(me.id); if (pl.rounds[r.round]) return reply({ ok: true, dup: true });
       let ans = p.answer ?? null;
-      if (!(ans == null || typeof ans === "number" || typeof ans === "boolean" || (Array.isArray(ans) && ans.length <= 12))) ans = null;
+      if (!(ans == null || typeof ans === "number" || typeof ans === "boolean" || (Array.isArray(ans) && ans.length <= 16))) ans = null;
       if (Array.isArray(ans)) ans = ans.map((v) => Number(v) | 0);
-      const q = qOf(r, r.round), res = judgeServed(q, r.served, ans, curSt(r) || { at: r.startAt });
+      const q = qOf(r, r.round), st0 = curSt(r), res = judgeServed(q, r.served, q.kind === "catch" && st0?.dec ? caughtOf(st0) : ans, st0 || { at: r.startAt });
       res.bp = C.battlePoints(res.part, res.d, res.game, res.ms, res.lim);
       pl.rounds[r.round] = res; (pl.answers ||= {})[r.round] = Array.isArray(ans) ? null : ans;
       reply({ ok: true, submitted: true }); emitRoom(io, r); maybeEndRound(io, r);

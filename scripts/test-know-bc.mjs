@@ -72,6 +72,20 @@ await wait(100);
 ok(DB.know_broadcasts.find((x) => x.id === id)?.status === "final", "최종 요약 저장");
 const pub = await fetch(`${URL}/know/bc/${id}`).then((r) => r.json()); ok(pub.ok && pub.final?.players === N, "방송 결과 링크");
 ok((await emit(vs[3], "kbc:join", { id })).error === "BC_CLOSED", "끝난 방송 참여 막기");
+// 창을 닫았다 다시 와도: 내 퀴즈쇼 목록 · 진행 중이면 만들기 막히며 목록을 돌려줌 · 15문제 퀴즈쇼
+{
+  const h2 = await conn("guest_streamer02");
+  const c1 = await emit(h2, "kbc:create", { nick: "두번째", rounds: 15 });
+  ok(c1.ok && c1.state.n === 15, `15문제 퀴즈쇼 만들기 (${c1.error || c1.state?.n})`);
+  h2.close(); const h3 = await conn("guest_streamer02");   // 같은 사람이 창을 닫고 다시 접속
+  const mine = await emit(h3, "kbc:mine", {}); ok(mine.ok && mine.rows.length === 1 && mine.rows[0].id === c1.id && mine.rows[0].n === 15, "다시 접속해도 내 퀴즈쇼 목록");
+  const again = await emit(h3, "kbc:create", { nick: "두번째", rounds: 5 }); ok(again.error === "TOO_MANY_OPEN" && again.open?.[0]?.id === c1.id, "진행 중이면 막히고 이어갈 퀴즈쇼를 알려 줌");
+  const w = await emit(h3, "kbc:watch", { id: c1.id }); ok(w.ok && w.host === true, "다시 접속해도 진행자");
+  ok((await emit(h3, "kbc:next", { id: c1.id })).ok, "다시 접속한 진행자가 문제 열기");
+  ok((await emit(h3, "kbc:finish", { id: c1.id })).ok && (await emit(h3, "kbc:mine", {})).rows.length === 0, "끝내면 목록에서 빠짐");
+  ok((await emit(h3, "kbc:create", { nick: "두번째", rounds: 15 })).ok, "끝낸 뒤 새로 만들기");
+  h3.close();
+}
 const mem = process.memoryUsage().heapUsed / 1048576;
 console.log(`  힙 ${mem.toFixed(0)}MB · 시청자 ${N}`);
 [host, outsider, ...vs].forEach((s) => s.close());

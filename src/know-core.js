@@ -39,7 +39,12 @@ export const DIFF = { 1: { ko: "쉬움", w: 1 }, 2: { ko: "보통", w: 1.6 }, 3:
 
 // ---------- 10종 미니게임 ----------
 // kind = 조작 방식. 같은 미니게임 안에서도 여러 kind를 쓸 수 있음
-export const KINDS = ["mcq", "ox", "order", "num", "map", "pair", "reveal", "fake"];
+// 단서를 하나씩 서버가 내주는 방식 (받은 단서 수 = 점수 단계)
+export const CLUE_KINDS = new Set(["reveal", "case", "where"]);
+// 공식 검사(빠른·정밀·분야·오늘·연습)에서 빼는 아케이드 미니게임 — 조작 실력이 섞임
+export const isArcade = (q) => !!GAMES_REF.g?.[q?.game]?.arcade;
+const GAMES_REF = {};
+export const KINDS = ["mcq", "ox", "order", "num", "map", "pair", "reveal", "fake", "sort", "case", "link", "where", "catch"];
 export const GAMES = {
   world:    { ko: "세계를 맞혀라",     icon: "🌍", kinds: ["map", "mcq", "pair"], lim: [20, 22, 25, 30], stage: "globe" },
   timeline: { ko: "시간의 순서",       icon: "⏳", kinds: ["order", "mcq"],       lim: [30, 35, 40, 45], mcqLim: [16, 18, 20, 22], stage: "museum", note: "끌어서 순서 맞추기 우선 + 역사 인물·사건 문제(한국사·세계사)" },
@@ -51,22 +56,34 @@ export const GAMES = {
   number:   { ko: "숫자에 강한 사람",  icon: "🔢", kinds: ["num"],                lim: [25, 25, 28, 30], stage: "board" },
   fake:     { ko: "가짜 정보 판별",    icon: "📰", kinds: ["fake"],               lim: [25, 28, 30, 32], stage: "news" },
   final:    { ko: "최후의 상식왕",     icon: "👑", kinds: ["mcq", "order", "num"], lim: [18, 20, 22, 25], stage: "show", boss: true },
+  // ---- 6차: 신규 5종 (2026-11-03) ----
+  sortfac:  { ko: "상식 분류 공장",    icon: "🏭", kinds: ["sort"],               lim: [40, 42, 45, 48], stage: "factory", note: "컨베이어로 오는 물건을 분류함에 넣기" },
+  detective:{ ko: "지식 탐정단",       icon: "🕵️", kinds: ["case"],               lim: [40, 42, 45, 48], stage: "office", note: "단서를 열어 용의자 6명 중 정답 지목 (단서 적게 쓸수록 높음)" },
+  linker:   { ko: "지식 연결왕",       icon: "🔗", kinds: ["link"],               lim: [35, 38, 40, 45], stage: "circuit", note: "관련 개념을 선으로 연결 (4~6쌍)" },
+  where:    { ko: "여기는 어디?",      icon: "🧭", kinds: ["where"],              lim: [30, 32, 35, 38], stage: "travel", note: "여행 엽서 단서로 장소의 나라를 지도에서 찾기" },
+  catch:    { ko: "상식 캐치!",        icon: "🧺", kinds: ["catch"],              lim: [34, 34, 34, 34], stage: "arcade", arcade: true, note: "떨어지는 것 중 주제에 맞는 것만 받기 — 조작 실력이 섞여 공식 검사(빠른·정밀·챌린지)에는 넣지 않음" },
 };
+GAMES_REF.g = GAMES;
 export const GAME_KEYS = Object.keys(GAMES);
 export const limitOf = (game, d, kind) => ((kind === "mcq" && GAMES[game]?.mcqLim?.[(d | 0) - 1]) || GAMES[game]?.lim[(d | 0) - 1] || 20) * 1000;
 
 // ---------- 검사 구성 ----------
 // games: 미니게임별 문항 수, diff: 난이도별 목표 수 (정확히 못 맞추면 가까운 난이도로 채움)
 export const PLANS = {
-  quick: { ko: "빠른 상식 검사", n: 15, games: { world: 2, timeline: 1, science: 2, ox: 2, culture: 2, reveal: 1, life: 2, number: 1, fake: 1, final: 1 }, diff: { 1: 5, 2: 7, 3: 2, 4: 1 }, ranked: true },
-  full:  { ko: "정밀 상식 검사", n: 40, games: { world: 5, timeline: 4, science: 5, ox: 4, culture: 5, reveal: 3, life: 4, number: 3, fake: 3, final: 4 }, diff: { 1: 12, 2: 18, 3: 8, 4: 2 }, ranked: true },
+  quick: { ko: "빠른 상식 검사", n: 15, games: { world: 2, timeline: 1, science: 1, ox: 2, culture: 1, reveal: 1, life: 2, number: 1, fake: 1, final: 1, sortfac: 1, linker: 1 }, diff: { 1: 5, 2: 7, 3: 2, 4: 1 }, ranked: true },
+  full:  { ko: "정밀 상식 검사", n: 40, games: { world: 4, timeline: 4, science: 4, ox: 3, culture: 4, reveal: 2, life: 3, number: 3, fake: 2, final: 4, sortfac: 2, detective: 2, linker: 2, where: 1 }, diff: { 1: 12, 2: 18, 3: 8, 4: 2 }, ranked: true },
   area:  { ko: "분야별 상식 검사", n: 10, games: null, diff: { 1: 3, 2: 4, 3: 2, 4: 1 }, ranked: true },
   daily: { ko: "오늘의 상식 챌린지", n: 10, games: { world: 1, timeline: 1, science: 1, ox: 1, culture: 1, reveal: 1, life: 1, number: 1, fake: 1, final: 1 }, diff: { 1: 3, 2: 4, 3: 2, 4: 1 }, ranked: true },
 };
 // 연습 (기록은 남지만 랭킹 제외): 취약 분야 = 정답률 따라 난이도 조절, 오답 다시 풀기 = 예전에 틀린 문제
 export const PRACTICE = {
+  arcade: { ko: "상식 캐치! 아케이드", n: 5, ranked: false, arcade: true },
   weak:  { ko: "취약 분야 연습", n: 10, adaptive: true, ranked: false },
   retry: { ko: "오답 다시 풀기", n: 10, ranked: false },
+};
+// 대결 전용 구성 (혼자 공식 검사엔 없음): 신규 미니게임만 모은 10라운드
+export const EXTRA_PLANS = {
+  fresh: { ko: "신작 미니게임 대결", n: 10, games: { sortfac: 2, detective: 2, linker: 2, where: 2, catch: 2 }, diff: { 1: 3, 2: 4, 3: 2, 4: 1 }, ranked: false, arcadeOk: true },
 };
 export const MODES = [...Object.keys(PLANS), ...Object.keys(PRACTICE)];
 export const modeName = (m) => PLANS[m]?.ko || PRACTICE[m]?.ko || m;
@@ -81,6 +98,25 @@ export function judge(kind, pub, ans, key, extra = {}) {
     case "mcq": case "map": return Number(ans) === key ? 1 : 0;
     case "ox": return (ans === true || ans === "o") === key ? 1 : 0;
     case "fake": return Number(ans) === key ? 1 : 0;
+    case "case": {     // 지식 탐정단: 용의자 지목 — 단서를 적게 열수록 높음 (단서 단계는 서버 기록)
+      if (Number(ans) !== key) return 0;
+      return [1, 0.85, 0.7, 0.55, 0.45][Math.min(4, Math.max(1, extra.stage | 0) - 1)];
+    }
+    case "where": {    // 여기는 어디?: 지도에서 나라 — 엽서 단서를 더 볼수록 낮음
+      if (Number(ans) !== key) return 0;
+      return [1, 0.85, 0.7, 0.6][Math.min(3, Math.max(1, extra.stage | 0) - 1)];
+    }
+    case "sort": {     // 분류 공장: 맞게 넣은 비율 (찍기 확률 1/분류함 수는 점수 계산에서 보정)
+      if (!Array.isArray(ans) || ans.length !== key.length) return 0;
+      const hit = key.filter((k, i) => Number(ans[i]) === k).length;
+      return Math.round((hit / key.length) * 100) / 100;
+    }
+    case "catch": {    // 캐치: (받은 정답 − 받은 오답) / 정답 수. 놓친 정답은 조작 탓일 수 있어 감점 없이 비율만 줄어듦
+      if (!Array.isArray(ans)) return 0;
+      const got = new Set(ans.map(Number).filter((i) => Number.isInteger(i) && i >= 0 && i < key.length));
+      const T = key.filter(Boolean).length; let R = 0, W = 0; for (const i of got) key[i] ? R++ : W++;
+      return T ? Math.max(0, Math.round(((R - W) / T) * 100) / 100) : 0;
+    }
     case "reveal": {   // 일찍 맞힐수록 높음 (단계는 서버가 기록한 값)
       if (Number(ans) !== key) return 0;
       const st = Math.max(1, extra.stage | 0);
@@ -95,6 +131,7 @@ export function judge(kind, pub, ans, key, extra = {}) {
       if (good === all) return 1;
       return Math.max(0, Math.round((2 * good / all - 1) * 0.8 * 100) / 100);   // 다 맞춤이 아니면 최대 0.8
     }
+    case "link":       // 지식 연결왕: 짝 맞추기와 같은 채점 (연결선으로 고름)
     case "pair": {     // key[i] = i번째 왼쪽과 짝인 오른쪽 번호. 무작위 기대값(1/n) 빼기
       if (!Array.isArray(ans) || ans.length !== key.length) return 0;
       const n = key.length, hit = key.filter((k, i) => Number(ans[i]) === k).length;
@@ -117,7 +154,7 @@ export const itemWeight = (d, game) => (DIFF[d]?.w || 1) * (game === "final" ? 1
 // 찍어서 맞힐 확률 (보기 수 기준). 순서·연결·숫자는 judge가 이미 찍기 = 0점이 되게 보정함
 export function chanceOf(kind, nOpts) {
   if (kind === "ox") return 0.5;
-  if (kind === "mcq" || kind === "map" || kind === "reveal" || kind === "fake") return nOpts > 1 ? 1 / nOpts : 0;
+  if (kind === "mcq" || kind === "map" || kind === "reveal" || kind === "fake" || kind === "case" || kind === "where" || kind === "sort") return nOpts > 1 ? 1 / nOpts : 0;
   return 0;
 }
 // 찍기 보정 점수: (맞힌 몫 − k×찍기 확률) / (1 − k×찍기 확률), k = 0.6
@@ -226,6 +263,11 @@ export const TITLES = [
   { id: "hawkeye", ko: "🔍 첫 단서 정답", t: (c, rs) => rs.some((r) => r.game === "reveal" && r.part >= 1) },
   { id: "calculator", ko: "🔢 인간 계산기", t: (c, rs) => rs.filter((r) => r.game === "number").length >= 2 && rs.filter((r) => r.game === "number").every((r) => r.part >= 1) },
   { id: "finalking", ko: "👑 최후의 라운드 완승", t: (c, rs) => rs.filter((r) => r.game === "final").length >= 2 && rs.filter((r) => r.game === "final").every((r) => r.part >= 1) },
+  // 6차 신규 미니게임
+  { id: "sorter", ko: "🏭 분류 장인", t: (c, rs) => rs.filter((r) => r.game === "sortfac").length >= 2 && rs.filter((r) => r.game === "sortfac").every((r) => r.part >= 1) },
+  { id: "sherlock", ko: "🕵️ 명탐정 (첫 단서 해결)", t: (c, rs) => rs.some((r) => r.game === "detective" && r.part >= 1) },
+  { id: "wiring", ko: "🔗 회로 마스터", t: (c, rs) => rs.filter((r) => r.game === "linker").length >= 2 && rs.filter((r) => r.game === "linker").every((r) => r.part >= 1) },
+  { id: "traveler", ko: "✈️ 세계 여행가", t: (c, rs) => rs.some((r) => r.game === "where" && r.part >= 1) },
   { id: "perfect", ko: "💯 만점", t: (c) => c.n >= 10 && c.correct === c.n },
   { id: "sixarea", ko: "🌈 6분야 70점 이상", t: (c) => AREAS.every((a) => c.areas[a] != null && c.areas[a] >= 70) },
 ];

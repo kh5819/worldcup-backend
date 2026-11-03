@@ -34,7 +34,8 @@ const gramsOf = (q) => { let g = gramCache.get(q); if (!g) { g = gramSet(textOf(
 const textOf = (q) => { let t = textCache.get(q); if (!t) { t = contentText(q); textCache.set(q, t); } return t; };
 // 점수가 낮을수록 먼저: 난이도 목표 · 분야 균형 · 최근 본 문제 · 비슷한 문제(같은 소분류·글자 유사) · 시간의 순서는 끌어 놓기 먼저
 export function buildPlan(mode, seed, { area = null, recent = null, pool = STORE.pool, ids = null } = {}) {
-  const P = C.PLANS[mode]; if (!P) throw new PlanError("BAD_MODE");
+  const P = C.PLANS[mode] || C.EXTRA_PLANS[mode]; if (!P) throw new PlanError("BAD_MODE");
+  if (!P.arcadeOk) pool = pool.filter((q) => !C.isArcade(q));   // 상식 캐치!는 공식 검사에 안 넣음
   const r = C.rng(seed);
   const n = P.n, need = { ...P.diff }, used = new Set(), out = [], areaN = {};
   const seen = recent || new Set();
@@ -84,7 +85,7 @@ export function adaptivePick(pool, { area, results, used, seed }) {
   const acc = results.length ? results.reduce((s, x) => s + x.part, 0) / results.length : 0.5;
   const want = Math.max(1, Math.min(4, Math.round(1 + acc * 3.2)));
   const r = C.rng(seed);
-  const cands = pool.filter((q) => (!area || q.area === area) && !used.has(q.id) && q.game !== "final");
+  const cands = pool.filter((q) => (!area || q.area === area) && !used.has(q.id) && q.game !== "final" && !C.isArcade(q));
   if (!cands.length) return null;
   cands.sort((a, b) => Math.abs(a.d - want) - Math.abs(b.d - want) || r() - 0.5);
   return cands[0];
@@ -103,6 +104,12 @@ export function serve(q, seed) {
     case "pair": { const L = C.shuffle(q.pairs.map((_, i) => i), r), R = C.shuffle(q.pairs.map((_, i) => i), r); pub.left = L.map((i) => q.pairs[i][0]); pub.right = R.map((i) => q.pairs[i][1]); key = L.map((i) => R.indexOf(i)); break; }
     case "num": pub.num = { unit: q.n.unit, min: q.n.min, max: q.n.max, step: q.n.step }; key = { v: q.n.v, tol: q.n.tol, far: q.n.far, abs: !!q.n.abs }; break;
     case "fake": { const idx = C.shuffle(q.stmts.map((_, i) => i), r); pub.stmts = idx.map((i) => q.stmts[i][0]); key = pub.stmts.findIndex((_, k) => q.stmts[idx[k]][1] === false); break; }
+    // ---- 6차 ----
+    case "case": { const idx = C.shuffle(q.opts.map((_, i) => i), r); pub.opts = idx.map((i) => q.opts[i]); key = idx.indexOf(0); pub.clueN = q.clues.length; break; }
+    case "where": { const idx = C.shuffle(q.codes.map((_, i) => i), r); pub.codes = idx.map((i) => q.codes[i]); key = idx.indexOf(0); pub.clueN = q.clues.length; break; }
+    case "link": { const L = C.shuffle(q.pairs.map((_, i) => i), r), R = C.shuffle(q.pairs.map((_, i) => i), r); pub.left = L.map((i) => q.pairs[i][0]); pub.right = R.map((i) => q.pairs[i][1]); key = L.map((i) => R.indexOf(i)); break; }
+    case "sort": { const idx = C.shuffle(q.items.map((_, i) => i), r); pub.bins = q.bins.slice(); pub.items = idx.map((i) => q.items[i][0]); key = idx.map((i) => q.items[i][1]); break; }
+    case "catch": { const idx = C.shuffle(q.items.map((_, i) => i), r); pub.topic = q.topic; pub.items = idx.map((i) => q.items[i][0]); key = idx.map((i) => q.items[i][1]); break; }
   }
   return { pub, key, idx: null };
 }
@@ -127,7 +134,9 @@ export function localize(q, L) {
     opts: t.opts ?? q.opts, clues: t.clues ?? q.clues, pairs: t.pairs ?? q.pairs,
     stmts: q.stmts && t.stmts ? q.stmts.map((s, i) => [t.stmts[i], s[1]]) : q.stmts,
     events: q.events && t.events ? q.events.map((e, i) => (t.yl?.[i] ? [t.events[i], e[1], t.yl[i]] : [t.events[i], e[1]])) : q.events,
-    n: q.n && t.unit != null ? { ...q.n, unit: t.unit } : q.n };
+    n: q.n && t.unit != null ? { ...q.n, unit: t.unit } : q.n,
+    bins: t.bins ?? q.bins, topic: t.topic ?? q.topic, place: t.place ?? q.place,
+    items: q.items && t.items ? q.items.map((x, i) => [t.items[i], x[1]]) : q.items };
   locCache[L].set(q, c); return c;
 }
 const poolCache = new Map();
@@ -138,7 +147,7 @@ export function poolFor(L, pool = STORE.pool) {
   if (!p || p.src !== pool) { p = pool.filter((q) => hasLang(q, L)); p.src = pool; poolCache.set(k, p); if (poolCache.size > 12) poolCache.delete(poolCache.keys().next().value); }
   return p;
 }
-const TXT = (p) => ({ q: p.q, opts: p.opts, events: p.events, stmts: p.stmts, left: p.left, right: p.right, unit: p.num?.unit });
+const TXT = (p) => ({ q: p.q, opts: p.opts, events: p.events, stmts: p.stmts, left: p.left, right: p.right, unit: p.num?.unit, bins: p.bins, items: p.items, topic: p.topic });
 /** 대결·퀴즈쇼: 같은 문제를 여러 언어 글자로 (pub.tr[언어]) — 정답 정보는 안 넣음 */
 export function serveAll(q, seed) {
   const sv = serve(q, seed), tr = {};
@@ -147,7 +156,7 @@ export function serveAll(q, seed) {
 }
 export function revealAll(q, sv) {
   const rv = revealOf(q, sv), tr = {};
-  for (const L of ["ja", "en"]) { const lq = localize(q, L); if (!lq) continue; const r2 = revealOf(lq, serve(lq, sv.seed)); tr[L] = { exp: r2.exp, clues: r2.clues, yearLabels: r2.yearLabels }; }
+  for (const L of ["ja", "en"]) { const lq = localize(q, L); if (!lq) continue; const r2 = revealOf(lq, serve(lq, sv.seed)); tr[L] = { exp: r2.exp, clues: r2.clues, yearLabels: r2.yearLabels, place: r2.place }; }
   rv.tr = tr; return rv;
 }
 // 답한 뒤 공개: 정답·해설·근거
@@ -156,21 +165,24 @@ export function revealOf(q, served) {
   if (q.kind === "order") { const ev = served.pub.events.map((t) => q.events.find((e) => e[0] === t)); out.years = ev.map((e) => e[1]); out.yearLabels = ev.map((e) => e[2] || null); }
   if (q.kind === "fake") out.truth = served.pub.stmts.map((t) => q.stmts.find((s) => s[0] === t)[1]);
   if (q.kind === "num") out.value = q.n.v;
-  if (q.kind === "reveal") out.clues = q.clues;
+  if (C.CLUE_KINDS.has(q.kind)) out.clues = q.clues;
+  if (q.kind === "where") out.place = q.place;
   return out;
 }
 export function judgeServed(q, served, ans, st, at = Date.now()) {
   const lim = served.pub.lim, ms = Math.max(0, at - st.at);
   const timeout = ms > lim + NET_SLACK;
   const part = timeout || ans == null ? 0 : C.judge(q.kind, served.pub, ans, served.key, { stage: st.clues || 1 });
-  const pub = served.pub, nOpts = (pub.opts || pub.codes || pub.stmts || []).length;
-  return { id: q.id, game: q.game, kind: q.kind, area: q.area, d: q.d, part, c: Math.round(C.chanceOf(q.kind, nOpts) * 1000) / 1000, ms: Math.min(ms, lim), lim, timeout: timeout || ans == null, stage: q.kind === "reveal" ? st.clues || 1 : undefined };
+  const pub = served.pub, nOpts = (pub.bins || pub.opts || pub.codes || pub.stmts || []).length;
+  return { id: q.id, game: q.game, kind: q.kind, area: q.area, d: q.d, part, c: Math.round(C.chanceOf(q.kind, nOpts) * 1000) / 1000, ms: Math.min(ms, lim), lim, timeout: timeout || ans == null, stage: C.CLUE_KINDS.has(q.kind) ? st.clues || 1 : undefined };
 }
+// 캐치: 서버가 기록한 「받기」 확정만 답으로 씀 (화면이 보낸 목록은 무시)
+export const caughtOf = (st) => Object.entries(st.dec || {}).filter(([, v]) => v).map(([k]) => Number(k));
 const sanitizeAns = (ans) => {
   if (ans == null) return null;
   if (typeof ans === "number" || typeof ans === "boolean") return ans;
   if (typeof ans === "string") return ans.slice(0, 20);
-  if (Array.isArray(ans) && ans.length <= 12) return ans.map((v) => Number(v) | 0);
+  if (Array.isArray(ans) && ans.length <= 16) return ans.map((v) => Number(v) | 0);
   return null;
 };
 
@@ -242,8 +254,11 @@ export function registerKnow(io, supabaseAdmin, app, { getOptionalUser, requireA
         const k = `${key}|${setKey}`; if (DAILY_DONE.has(k)) repeat = true; else DAILY_DONE.set(k, Date.now());
       }
       try {
-        if (mode === "weak") { adaptive = true; n = C.PRACTICE.weak.n; const have = pool.filter((q) => (!area || q.area === area) && q.game !== "final").length; if (have < n) throw new PlanError("NOT_ENOUGH_ITEMS", { need: n, have, area }); }
-        else if (mode === "retry") {
+        if (mode === "weak") { adaptive = true; n = C.PRACTICE.weak.n; const have = pool.filter((q) => (!area || q.area === area) && q.game !== "final" && !C.isArcade(q)).length; if (have < n) throw new PlanError("NOT_ENOUGH_ITEMS", { need: n, have, area }); }
+        else if (mode === "arcade") {   // 상식 캐치! 아케이드: 캐치 문항만 (상식 점수와 따로 — 저장 안 함)
+          const cs = pool.filter((q) => C.isArcade(q)); if (cs.length < C.PRACTICE.arcade.n) throw new PlanError("NOT_ENOUGH_ITEMS", { need: C.PRACTICE.arcade.n, have: cs.length });
+          plan = C.shuffle(cs, C.rng(seed)).slice(0, C.PRACTICE.arcade.n).map((q, i) => ({ id: q.id, seed: C.hashSeed(`${seed}:${i}:${q.id}`) }));
+        } else if (mode === "retry") {
           const wrong = await wrongIds(sb, key), live = new Set(pool.map((q) => q.id));
           plan = C.shuffle(wrong.filter((id) => live.has(id)), C.rng(seed)).slice(0, C.PRACTICE.retry.n).map((id, i) => ({ id, seed: C.hashSeed(`${seed}:${i}`) }));
           if (!plan.length) throw new PlanError("NO_WRONG", { need: 1, have: 0 });
@@ -274,18 +289,28 @@ export function registerKnow(io, supabaseAdmin, app, { getOptionalUser, requireA
       }
       if (!s.plan[i]) return reply({ ok: false, error: "BAD_IDX" });
       const sv = servedOf(s, i), q = QS(s, i);
-      const st = s.st[i] ||= { at: Date.now(), clues: q.kind === "reveal" ? 1 : 0 };
-      const item = { ...sv.pub }; if (q.kind === "reveal") item.clues = q.clues.slice(0, st.clues);
+      const st = s.st[i] ||= { at: Date.now(), clues: C.CLUE_KINDS.has(q.kind) ? 1 : 0 };
+      const item = { ...sv.pub }; if (C.CLUE_KINDS.has(q.kind)) item.clues = q.clues.slice(0, st.clues);
       reply({ ok: true, idx: i, item, elapsed: Date.now() - st.at });
     });
     // 정체를 밝혀라: 다음 단서 (받을수록 점수 단계 내려감)
     on("know:clue", (p, reply) => {
       const s = mySess(p.sid); if (!s) return reply({ ok: false, error: "NO_SESSION" });
       const i = p.idx | 0, st = s.st[i], q = s.plan[i] && QS(s, i);
-      if (!st || i !== s.results.length || q.kind !== "reveal") return reply({ ok: false, error: "BAD_IDX" });
+      if (!st || i !== s.results.length || !C.CLUE_KINDS.has(q.kind)) return reply({ ok: false, error: "BAD_IDX" });
       if (Date.now() - st.at > s.served[i].pub.lim + NET_SLACK) return reply({ ok: false, error: "TIME_UP" });
       st.clues = Math.min(q.clues.length, st.clues + 1);
       reply({ ok: true, clues: q.clues.slice(0, st.clues), stage: st.clues });
+    });
+    // 상식 캐치!: 떨어지는 것 하나마다 받기/놓치기를 먼저 확정 → 그다음에만 맞는지 알려 줌 (되돌릴 수 없음 = 미리 보기 불가)
+    on("know:catch", (p, reply) => {
+      const s = mySess(p.sid); if (!s) return reply({ ok: false, error: "NO_SESSION" });
+      const i = p.idx | 0, st = s.st[i], q = s.plan[i] && QS(s, i);
+      if (!st || i !== s.results.length || q.kind !== "catch") return reply({ ok: false, error: "BAD_IDX" });
+      if (Date.now() - st.at > s.served[i].pub.lim + NET_SLACK) return reply({ ok: false, error: "TIME_UP" });
+      const k = p.k | 0, key = s.served[i].key; if (k < 0 || k >= key.length) return reply({ ok: false, error: "BAD_IDX" });
+      st.dec ||= {}; if (st.dec[k] == null) st.dec[k] = !!p.take;
+      reply({ ok: true, k, take: st.dec[k], truth: key[k] });
     });
     // 답 제출 — 한 문항에 한 번만 (두 번째는 처음 결과를 그대로 돌려줌)
     on("know:answer", (p, reply) => {
@@ -294,7 +319,7 @@ export function registerKnow(io, supabaseAdmin, app, { getOptionalUser, requireA
       if (s.results[i]) { const q = QS(s, i); return reply({ ok: true, dup: true, res: s.results[i], reveal: revealOf(q, s.served[i]) }); }
       const st = s.st[i]; if (!st || i !== s.results.length) return reply({ ok: false, error: "BAD_IDX" });
       const q = QS(s, i), sv = s.served[i];
-      const res = judgeServed(q, sv, sanitizeAns(p.answer), st);
+      const res = judgeServed(q, sv, q.kind === "catch" && st.dec ? caughtOf(st) : sanitizeAns(p.answer), st);
       s.results[i] = res; countUse(res);
       reply({ ok: true, res, reveal: revealOf(q, sv), streak: (() => { let c = 0; for (let k = s.results.length - 1; k >= 0 && s.results[k].part >= 1; k--) c++; return c; })() });
     });
@@ -302,6 +327,11 @@ export function registerKnow(io, supabaseAdmin, app, { getOptionalUser, requireA
       const s = mySess(p.sid); if (!s) return reply({ ok: false, error: "NO_SESSION" });
       if (s.finished) return reply({ ok: true, ...s.finished });
       if (s.results.length < s.n) return reply({ ok: false, error: "NOT_COMPLETE" });
+      if (s.mode === "arcade") {   // 아케이드 점수: 상식 레벨·랭킹·기록과 완전히 분리 (DB 저장 없음)
+        const pts = s.results.reduce((a, r) => a + C.battlePoints(r.part, r.d, r.game, r.ms, r.lim), 0);
+        s.finished = { id: null, arcade: { score: pts, perfect: s.results.filter((r) => r.part >= 1).length, n: s.n, items: s.results.map((r) => ({ id: r.id, part: r.part })) } };
+        return reply({ ok: true, ...s.finished });
+      }
       const prof = sanitizeProfile(p.profile); if (!prof) return reply({ ok: false, error: "BAD_PROFILE" });
       const mp = await memberProfile(sb, me); if (mp?.nickname) prof.nick = String(mp.nickname).slice(0, 12);
       const prefs = sanitizePrefs(p.prefs);
@@ -327,12 +357,12 @@ export function registerKnow(io, supabaseAdmin, app, { getOptionalUser, requireA
     });
     // 상식 도감: 내가 푼 문항 id·정답 여부 모음 (분야별 성취도)
     on("know:dex", async (_p, reply) => {
-      if (!sb) return reply({ ok: true, seen: {}, total: STORE.pool.length, byArea: countByArea() });
+      if (!sb) return reply({ ok: true, seen: {}, total: dexPool().length, byArea: countByArea() });
       const { data } = await sb.from("know_results").select("items").eq("owner_key", key).order("created_at", { ascending: false }).limit(200);
       const seen = {};
       for (const r of data || []) for (const it of r.items || []) if (it?.id && BY_ID.has(it.id)) seen[it.id] = Math.max(seen[it.id] ?? 0, it.part >= 1 ? 2 : 1);
       const mine = {}; for (const [id, v] of Object.entries(seen)) { const a = BY_ID.get(id).area; const m = (mine[a] ||= { seen: 0, got: 0 }); m.seen++; if (v === 2) m.got++; }
-      reply({ ok: true, seen, mine, total: STORE.pool.length, byArea: countByArea() });
+      reply({ ok: true, seen, mine, total: dexPool().length, byArea: countByArea() });
     });
     // 오류 신고: 이 사람이 실제로 받은 문항만 (아무 id나 신고 못 하게), 10분 8회
     on("know:report", async (p, reply) => {
@@ -413,5 +443,7 @@ export function registerKnow(io, supabaseAdmin, app, { getOptionalUser, requireA
     } catch (e) { console.error("[know/ranking]", e); res.status(500).json({ ok: false, error: "INTERNAL" }); }
   });
 }
-function countByArea() { const o = {}; for (const q of STORE.pool) o[q.area] = (o[q.area] || 0) + 1; return o; }
+// 도감: 아케이드(상식 캐치!) 문항은 기록이 안 남으므로 도감 총수에서 뺌
+const dexPool = () => STORE.pool.filter((q) => !C.isArcade(q));
+function countByArea() { const o = {}; for (const q of dexPool()) o[q.area] = (o[q.area] || 0) + 1; return o; }
 export const _knowTest = { SESS, BY_ID, RECENT };

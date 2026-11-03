@@ -31,10 +31,10 @@ const prof = (nick) => ({ nick, age: 25, avatar: { skin: 1, hc: 1, hs: 2, shirt:
 const LEAK = /"(exp|src|ans|years|truth|key|value|clues_all)":/;
 
 // 서버 세션에서 정답 키를 꺼내 정답 만들기 (시험 전용)
-const rightOf = (sid, i) => { const sv = _knowTest.SESS.get(sid).served[i]; return sv.pub.kind === "num" ? sv.key.v : sv.key; };
+const rightOf = (sid, i) => { const sv = _knowTest.SESS.get(sid).served[i]; return sv.pub.kind === "num" ? sv.key.v : sv.pub.kind === "catch" ? sv.key.map((t, k) => (t ? k : -1)).filter((k) => k >= 0) : sv.key; };
 const wrongOf = (sid, i) => {
   const sv = _knowTest.SESS.get(sid).served[i], k = sv.key;
-  switch (sv.pub.kind) { case "ox": return !k; case "num": return k.abs ? k.v + k.far + 5 : k.v * (1 + k.far) * 2; case "order": case "pair": return [...k].reverse(); default: return (k + 1) % (sv.pub.opts || sv.pub.codes || sv.pub.stmts).length; }
+  switch (sv.pub.kind) { case "ox": return !k; case "num": return k.abs ? k.v + k.far + 5 : k.v * (1 + k.far) * 2; case "order": case "pair": case "link": return [...k].reverse(); case "sort": return k.map((b) => (b + 1) % sv.pub.bins.length); case "catch": return k.map((t, j) => (t ? -1 : j)).filter((j) => j >= 0); default: return (k + 1) % (sv.pub.opts || sv.pub.codes || sv.pub.stmts).length; }
 };
 async function run(s, mode, { quality = 1, area, isPublic = true, nick = "테스터", guess = false } = {}) {
   const b = await emit(s, "know:begin", { mode, area, device: "pc" });
@@ -45,7 +45,7 @@ async function run(s, mode, { quality = 1, area, isPublic = true, nick = "테스
     if (!it.ok) return it;
     if (LEAK.test(JSON.stringify(it))) ok(false, `정답 재료 노출 ${it.item.id}`);
     let ans;
-    if (guess) { const p = it.item; ans = p.kind === "ox" ? r0() < 0.5 : p.kind === "num" ? p.num.min + r0() * (p.num.max - p.num.min) : p.kind === "order" ? C.shuffle(p.events.map((_, k) => k), r0) : p.kind === "pair" ? C.shuffle(p.left.map((_, k) => k), r0) : Math.floor(r0() * (p.opts || p.codes || p.stmts).length); }
+    if (guess) { const p = it.item; ans = p.kind === "ox" ? r0() < 0.5 : p.kind === "num" ? p.num.min + r0() * (p.num.max - p.num.min) : p.kind === "order" ? C.shuffle(p.events.map((_, k) => k), r0) : p.kind === "pair" || p.kind === "link" ? C.shuffle(p.left.map((_, k) => k), r0) : p.kind === "sort" ? p.items.map(() => Math.floor(r0() * p.bins.length)) : p.kind === "catch" ? p.items.map((_, k) => k).filter(() => r0() < 0.5) : Math.floor(r0() * (p.opts || p.codes || p.stmts).length); }
     else ans = (i / b.plan.length) < quality ? rightOf(b.sid, i) : wrongOf(b.sid, i);
     const a = await emit(s, "know:answer", { sid: b.sid, idx: i, answer: ans });
     if (!a.ok) return a;
@@ -209,6 +209,54 @@ const g1 = await conn("guest_aaaa1111");
   const s = await conn("guest_ffff6666"); let lim = false;
   for (let k = 0; k < 70; k++) { const r = await emit(s, "know:resume", { sid: "x" }); if (r.error === "RATE_LIMITED") { lim = true; break; } }
   ok(lim, "요청 제한"); s.close();
+}
+// ---- 6차: 신규 미니게임 5종 ----
+{
+  process.env.KNOW_RL = "100000";
+  const POOL6 = STORE.pool, gameOf = (id) => POOL6.find((q) => q.id === id)?.game;
+  let quickNew = 0, fullNew = 0, catchIn = 0;
+  for (let k = 1; k <= 60; k++) {
+    const qp = buildPlan("quick", k).map((x) => gameOf(x.id)), fp = buildPlan("full", k).map((x) => gameOf(x.id));
+    if (qp.includes("sortfac") && qp.includes("linker")) quickNew++;
+    if (["sortfac", "detective", "linker", "where"].every((g) => fp.includes(g))) fullNew++;
+    if ([...qp, ...fp].includes("catch")) catchIn++;
+    for (const a of C.AREAS) if (k <= 5 && buildPlan("area", k, { area: a }).some((x) => gameOf(x.id) === "catch")) catchIn++;
+  }
+  ok(quickNew === 60, `빠른 검사에 분류 공장·연결왕 (${quickNew}/60)`);
+  ok(fullNew === 60, `정밀 검사에 신규 4종 (${fullNew}/60)`);
+  ok(catchIn === 0, `공식 검사에 상식 캐치! 안 들어감 (${catchIn})`);
+  const fr = buildPlan("fresh", 7).map((x) => gameOf(x.id)); ok(fr.length === 10 && fr.includes("catch") && fr.includes("where"), `대결 신작 구성 ${fr.join(",")}`);
+  for (const kind of ["sort", "case", "link", "where", "catch"]) {
+    const q = POOL6.find((x) => x.kind === kind), sv = serve(q, 99), pj = JSON.stringify(sv.pub);
+    const right = kind === "catch" ? sv.key.map((t, i) => (t ? i : -1)).filter((i) => i >= 0) : sv.key;
+    ok(C.judge(kind, sv.pub, right, sv.key, { stage: 1 }) === 1, `${kind} 정답 = 1점`);
+    const wrong = kind === "sort" ? sv.key.map((b) => (b + 1) % sv.pub.bins.length) : kind === "catch" ? sv.key.map((t, i) => (t ? -1 : i)).filter((i) => i >= 0) : kind === "link" ? [...sv.key].reverse() : (sv.key + 1) % (sv.pub.opts || sv.pub.codes).length;
+    ok(C.judge(kind, sv.pub, wrong, sv.key, { stage: 1 }) < 1, `${kind} 오답 < 1점`);
+    ok(!/"(exp|src|key|truth|place)":/.test(pj) && !(q.clues && pj.includes(q.clues[1])), `${kind} 화면 정보에 정답 재료 없음`);
+  }
+  { const q = POOL6.find((x) => x.kind === "catch"), sv = serve(q, 5); const all = sv.key.map((_, i) => i);
+    ok(C.judge("catch", sv.pub, all, sv.key) === 0, "캐치: 전부 받으면 0점 (찍기 방지)"); }
+  const s = await conn("guest_case6666");
+  const b = await emit(s, "know:begin", { mode: "full", device: "pc" });
+  const S6 = _knowTest.SESS.get(b.sid); const ci = S6.plan.findIndex((x) => gameOf(x.id) === "detective");
+  S6.plan.splice(0, 0, S6.plan.splice(ci, 1)[0]);
+  const it = await emit(s, "know:item", { sid: b.sid, idx: 0 });
+  ok(it.ok && it.item.kind === "case" && it.item.clues.length === 1 && it.item.opts.length === 6, "탐정단: 단서 1개 + 용의자 6명");
+  await emit(s, "know:clue", { sid: b.sid, idx: 0 }); const c2 = await emit(s, "know:clue", { sid: b.sid, idx: 0 });
+  ok(c2.ok && c2.stage === 3, "탐정단 단서 3개째");
+  const a = await emit(s, "know:answer", { sid: b.sid, idx: 0, answer: rightOf(b.sid, 0) });
+  ok(a.res.part === 0.7 && a.res.stage === 3 && a.reveal.clues.length >= 3, `탐정단 3단서 정답 = 0.7 (${a.res.part})`);
+  const before = DB.know_results.length;
+  const ar = await emit(s, "know:begin", { mode: "arcade", device: "pc" });
+  ok(ar.ok && ar.plan.length === 5, "아케이드 5판");
+  for (let i = 0; i < 5; i++) { const x = await emit(s, "know:item", { sid: ar.sid, idx: i }); ok(x.item.kind === "catch" && x.item.items.length >= 10 && x.item.topic, "아케이드 문항 = 캐치"); await emit(s, "know:answer", { sid: ar.sid, idx: i, answer: rightOf(ar.sid, i) }); }
+  const af = await emit(s, "know:finish", { sid: ar.sid });
+  ok(af.ok && af.arcade && af.arcade.perfect === 5 && af.arcade.score > 0 && !af.result, `아케이드 점수 따로 (${af.arcade?.score})`);
+  ok(DB.know_results.length === before, "아케이드는 상식 기록·랭킹에 저장 안 함");
+  const bj = await emit(s, "know:begin", { mode: "full", device: "pc", lang: "ja" });
+  let jaNew = 0, han = 0; for (let i = 0; i < 40; i++) { const x = await emit(s, "know:item", { sid: bj.sid, idx: i }); if (["sort", "case", "link", "where"].includes(x.item.kind)) { jaNew++; if (/[가-힣]/.test(JSON.stringify(x.item))) han++; } await emit(s, "know:answer", { sid: bj.sid, idx: i, answer: rightOf(bj.sid, i) }); }
+  ok(jaNew >= 6 && han === 0, `일본어 정밀 검사 신규 문항 ${jaNew}개 · 한글 남음 ${han}`);
+  s.close();
 }
 g1.close();
 console.log(`\n상식 진단소 서버 시험: 통과 ${pass} · 실패 ${fail}`);

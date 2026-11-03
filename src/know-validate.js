@@ -12,11 +12,14 @@ export const norm = (s) => String(s ?? "").normalize("NFC").toLowerCase().replac
 // 문항이 가진 정답 텍스트 (중복·유사도 비교용)
 export function answerText(q) {
   switch (q.kind) {
-    case "mcq": case "reveal": return q.opts?.[0] ?? "";
+    case "mcq": case "reveal": case "case": return q.opts?.[0] ?? "";
     case "map": return q.codes?.[0] ?? "";
+    case "where": return `${q.place || ""}@${q.codes?.[0] ?? ""}`;
+    case "sort": return (q.items || []).map((x) => `${x[0]}>${q.bins?.[x[1]]}`).join("|");
+    case "catch": return (q.items || []).filter((x) => x[1]).map((x) => x[0]).join("|");
     case "ox": return String(q.ans);
     case "order": return (q.events || []).map((e) => e[0]).join("|");
-    case "pair": return (q.pairs || []).map((p) => p.join("=")).join("|");
+    case "pair": case "link": return (q.pairs || []).map((p) => p.join("=")).join("|");
     case "num": return String(q.n?.v);
     case "fake": return (q.stmts || []).find((s) => s[1] === false)?.[0] ?? "";
   }
@@ -24,24 +27,28 @@ export function answerText(q) {
 }
 // 내용 비교용 글: 틀 문장("단서를 보고…", "순서대로 놓으세요")보다 실제 내용(단서·사건·문장·정답)이 중심
 export function contentText(q) {
-  const body = q.kind === "reveal" ? (q.clues || []).join(" ") : q.kind === "order" ? (q.events || []).map((e) => e[0]).join(" ") : q.kind === "fake" ? (q.stmts || []).map((x) => x[0]).join(" ") : q.kind === "pair" ? (q.pairs || []).flat().join(" ") : q.q;
+  const body = q.kind === "reveal" || q.kind === "case" || q.kind === "where" ? `${(q.clues || []).join(" ")} ${q.place || ""}` : q.kind === "sort" ? `${(q.bins || []).join(" ")} ${(q.items || []).map((x) => x[0]).join(" ")}` : q.kind === "catch" ? `${q.topic || ""} ${(q.items || []).map((x) => x[0]).join(" ")}` : q.kind === "link" ? (q.pairs || []).flat().join(" ") : q.kind === "reveal" ? (q.clues || []).join(" ") : q.kind === "order" ? (q.events || []).map((e) => e[0]).join(" ") : q.kind === "fake" ? (q.stmts || []).map((x) => x[0]).join(" ") : q.kind === "pair" ? (q.pairs || []).flat().join(" ") : q.q;
   return `${body} ${answerText(q)}`;
 }
 // 예상 풀이 시간(초): 글자 수·보기 수 기반 추정 (제한시간과 별개, 관리용)
 export function estimateTime(q) {
   const len = String(q.q || "").length + (q.opts || q.stmts?.map((s) => s[0]) || q.events?.map((e) => e[0]) || []).join("").length;
-  const base = { mcq: 6, map: 8, ox: 4, order: 14, pair: 12, num: 9, reveal: 12, fake: 12 }[q.kind] || 8;
+  const base = { mcq: 6, map: 8, ox: 4, order: 14, pair: 12, num: 9, reveal: 12, fake: 12, sort: 18, case: 20, link: 16, where: 14, catch: 30 }[q.kind] || 8;
   return Math.round(base + len / 18 + (q.d - 1) * 2);
 }
 // 요청한 표준 필드 이름으로 내보내기 (관리자·보고서용)
 export function toSchema(q, stats = null) {
-  const opts = q.opts || q.codes || q.stmts?.map((s) => s[0]) || q.events?.map((e) => e[0]) || q.pairs?.map((p) => `${p[0]} = ${p[1]}`) || null;
+  const opts = q.kind === "sort" ? q.items.map((x) => x[0]) : q.kind === "catch" ? q.items.map((x) => x[0]) : q.opts || q.codes || q.stmts?.map((s) => s[0]) || q.events?.map((e) => e[0]) || q.pairs?.map((p) => `${p[0]} = ${p[1]}`) || null;
   let correct;
   switch (q.kind) {
     case "mcq": case "reveal": case "map": correct = { index: 0, text: answerText(q) }; break;
     case "ox": correct = { value: q.ans }; break;
     case "order": correct = { order: [...q.events].sort((a, b) => a[1] - b[1]).map((e) => e[0]), years: [...q.events].map((e) => e[1]).sort((a, b) => a - b) }; break;
-    case "pair": correct = { pairs: q.pairs }; break;
+    case "pair": case "link": correct = { pairs: q.pairs }; break;
+    case "case": correct = { index: 0, text: q.opts[0] }; break;
+    case "where": correct = { country: q.codes[0], place: q.place }; break;
+    case "sort": correct = { bins: q.bins, binOf: q.items.map((x) => q.bins[x[1]]) }; break;
+    case "catch": correct = { topic: q.topic, catchThese: q.items.filter((x) => x[1]).map((x) => x[0]) }; break;
     case "num": correct = { value: q.n.v, tolerance: q.n.tol, zeroAt: q.n.far, absolute: !!q.n.abs, unit: q.n.unit }; break;
     case "fake": correct = { falseIndex: q.stmts.findIndex((s) => s[1] === false), truth: q.stmts.map((s) => s[1]) }; break;
   }
@@ -124,6 +131,48 @@ export function validateItem(q, { worldCodes = null } = {}) {
       if (f !== 1) E(`거짓 문장이 ${f}개 (정확히 1개여야 정답이 유일)`);
       if (q.stmts.some((s) => typeof s[1] !== "boolean")) E("참/거짓 표시");
       if (!uniq(q.stmts.map((s) => s[0]))) E("문장 중복");
+      break;
+    }
+    // ---- 6차 신규 ----
+    case "case": {   // 지식 탐정단: 용의자 6명(0번 정답) + 단서 3~5개
+      if (!Array.isArray(q.opts) || q.opts.length !== 6) E("용의자 6명 필요");
+      else { if (!uniq(q.opts)) E("용의자 중복"); if (q.opts.some((o) => !String(o).trim())) E("빈 용의자"); }
+      if (!Array.isArray(q.clues) || q.clues.length < 3 || q.clues.length > 5) E("단서 3~5개");
+      else if (q.opts && q.clues.some((c) => q.opts.some((o) => norm(o).length >= 2 && norm(c).includes(norm(o))))) E("단서에 용의자 이름이 그대로 들어 있음 (정답 노출)");
+      break;
+    }
+    case "where": {  // 여기는 어디?: 엽서 단서 2~4개 + 지도 보기 4~6개(0번 정답 나라) + 장소 이름
+      if (!q.place || String(q.place).length < 2) E("장소 이름(place) 없음");
+      if (!Array.isArray(q.clues) || q.clues.length < 2 || q.clues.length > 4) E("엽서 단서 2~4개");
+      if (!Array.isArray(q.codes) || q.codes.length < 4 || q.codes.length > 6) E("지도 보기 4~6개");
+      else {
+        for (const c of q.codes) { if (!COUNTRIES[c]) E(`나라표에 없는 나라 ${c}`); if (worldCodes && !worldCodes.has(c)) E(`지도에 없는 나라 ${c}`); }
+        if (!uniq(q.codes)) E("지도 보기 중복");
+        const names = q.codes.map((c) => COUNTRIES[c]?.ko).filter(Boolean);
+        if ((q.clues || []).some((t) => names.some((n) => norm(t).includes(norm(n))) || (q.place && norm(t).includes(norm(q.place))))) E("단서에 나라·장소 이름이 그대로 들어 있음 (정답 노출)");
+      }
+      if (Array.isArray(q.assets) && q.assets.some((a) => !a?.license || !a?.by || !/^https:\/\//.test(a?.from || ""))) E("사진 자료는 라이선스·작가·출처 필수");
+      break;
+    }
+    case "sort": {   // 분류 공장: 분류함 2~4개 + 물건 5~8개 [이름, 분류함 번호]
+      if (!Array.isArray(q.bins) || q.bins.length < 2 || q.bins.length > 4) { E("분류함 2~4개"); break; }
+      if (!uniq(q.bins)) E("분류함 이름 중복");
+      if (!Array.isArray(q.items) || q.items.length < 5 || q.items.length > 8) { E("물건 5~8개"); break; }
+      if (q.items.some((x) => !Array.isArray(x) || !String(x[0] || "").trim() || !Number.isInteger(x[1]) || x[1] < 0 || x[1] >= q.bins.length)) E("물건 형식 [이름, 분류함 번호]");
+      if (!uniq(q.items.map((x) => x[0]))) E("물건 이름 중복");
+      for (let b = 0; b < q.bins.length; b++) if (!q.items.some((x) => x[1] === b)) E(`분류함 '${q.bins[b]}'에 들어갈 물건이 없음`);
+      break;
+    }
+    case "link":     // 지식 연결왕: 짝 4~6개
+      if (!Array.isArray(q.pairs) || q.pairs.length < 4 || q.pairs.length > 6) E("연결 4~6쌍");
+      else if (!uniq(q.pairs.map((p) => p[0])) || !uniq(q.pairs.map((p) => p[1]))) E("짝 중복 (정답 유일성)");
+      break;
+    case "catch": {  // 상식 캐치!: 주제 + 떨어지는 것 10~16개 [이름, 주제에 맞음?]
+      if (!q.topic || String(q.topic).length < 2) E("주제(topic) 없음");
+      if (!Array.isArray(q.items) || q.items.length < 10 || q.items.length > 16) { E("떨어지는 것 10~16개"); break; }
+      if (q.items.some((x) => !Array.isArray(x) || !String(x[0] || "").trim() || typeof x[1] !== "boolean")) E("형식 [이름, 참/거짓]");
+      if (!uniq(q.items.map((x) => x[0]))) E("이름 중복");
+      const t = q.items.filter((x) => x[1]).length; if (t < 4 || q.items.length - t < 4) E("맞는 것·틀린 것 각각 4개 이상");
       break;
     }
     default: E(`방식 ${q.kind}`);

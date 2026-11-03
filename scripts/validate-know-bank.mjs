@@ -29,12 +29,12 @@ const live = BANK.filter((q) => LIVE_STATUS.has(q.status));
 const LEAK = /"(exp|src|ans|years|truth|key|value|clues|events":\[\[)"?:/;
 let guessSum = 0, guessN = 0;
 const randAns = (pub, r) => {
-  switch (pub.kind) { case "mcq": case "reveal": return Math.floor(r() * pub.opts.length); case "map": return Math.floor(r() * pub.codes.length); case "ox": return r() < 0.5; case "fake": return Math.floor(r() * pub.stmts.length); case "order": return C.shuffle(pub.events.map((_, i) => i), r); case "pair": return C.shuffle(pub.left.map((_, i) => i), r); case "num": return pub.num.min + r() * (pub.num.max - pub.num.min); }
+  switch (pub.kind) { case "mcq": case "reveal": return Math.floor(r() * pub.opts.length); case "map": return Math.floor(r() * pub.codes.length); case "ox": return r() < 0.5; case "fake": return Math.floor(r() * pub.stmts.length); case "order": return C.shuffle(pub.events.map((_, i) => i), r); case "pair": return C.shuffle(pub.left.map((_, i) => i), r); case "num": return pub.num.min + r() * (pub.num.max - pub.num.min); case "case": return Math.floor(r() * pub.opts.length); case "where": return Math.floor(r() * pub.codes.length); case "link": return C.shuffle(pub.left.map((_, i) => i), r); case "sort": return pub.items.map(() => Math.floor(r() * pub.bins.length)); case "catch": return pub.items.map((_, i) => i).filter(() => r() < 0.5); }
 };
 for (const q of live) for (let s = 1; s <= 30; s++) {
   const sv = serve(q, s * 7919), pubJ = JSON.stringify(sv.pub);
-  if (/"(exp|src|ans|years|truth|value)":/.test(pubJ) || (q.kind === "reveal" && pubJ.includes(q.clues[1]))) errs.push(`${q.id}: 화면 정보에 정답 재료가 섞임`);
-  if (C.judge(q.kind, sv.pub, q.kind === "num" ? sv.key.v : sv.key, sv.key, { stage: 1 }) !== 1) errs.push(`${q.id}: 정답 입력이 만점이 아님 (seed ${s})`);
+  if (/"(exp|src|ans|years|truth|value)":/.test(pubJ) || (C.CLUE_KINDS.has(q.kind) && pubJ.includes(q.clues[1])) || (q.kind === "where" && pubJ.includes(q.place))) errs.push(`${q.id}: 화면 정보에 정답 재료가 섞임`);
+  if (C.judge(q.kind, sv.pub, q.kind === "num" ? sv.key.v : q.kind === "catch" ? sv.key.map((t, i) => (t ? i : -1)).filter((i) => i >= 0) : sv.key, sv.key, { stage: 1 }) !== 1) errs.push(`${q.id}: 정답 입력이 만점이 아님 (seed ${s})`);
   const r = C.rng(s * 31 + 5); guessSum += C.judge(q.kind, sv.pub, randAns(sv.pub, r), sv.key, { stage: 4 }); guessN++;
 }
 // 모드별 출제 가능 여부·균형

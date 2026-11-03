@@ -3,7 +3,7 @@
 // /__ans?sid=&i= : 시험용 정답 (이 서버에만 있음)
 import http from "http"; import fs from "fs"; import path from "path"; import express from "express"; import { Server } from "socket.io";
 import { registerIq } from "../src/iq.js";
-import { registerKnow, _knowTest } from "../src/know.js";
+import { registerKnow, _knowTest, STORE } from "../src/know.js";
 import { registerKnowMulti } from "../src/know-multi.js";
 import { registerKnowBroadcast, _kbcTest } from "../src/know-broadcast.js";
 import { makeFakeSb } from "./mind-fake-sb.mjs";
@@ -27,6 +27,8 @@ registerSenseBroadcast(io, sb, app, {});
 registerKnowBroadcast(io, sb, app);
 app.get("/__bcans", (q, r) => { const b = _kbcTest.BC.get(String(q.query.id)); r.json(b?.cur ? { kind: b.cur.sv.pub.kind, key: b.cur.sv.key } : null); });
 app.get("/__ans", (q, r) => { const s = _knowTest.SESS.get(String(q.query.sid)); const sv = s?.served?.[Number(q.query.i)]; r.json(sv ? { kind: sv.pub.kind, key: sv.key } : null); });
+// 시험용: 세션 문항 중 원하는 미니게임을 맨 앞으로 (?sid=&games=sortfac,detective)
+app.get("/__front", (q, r) => { const s = _knowTest.SESS.get(String(q.query.sid)); if (!s) return r.json({ ok: false }); const want = String(q.query.games || "").split(","); const pick = []; for (const g of want) { const k = s.plan.findIndex((x, j) => !pick.includes(j) && STORE.all.get(x.id)?.game === g); if (k >= 0) pick.push(k); } const front = pick.map((k) => s.plan[k]); s.plan = [...front, ...s.plan.filter((_, j) => !pick.includes(j))]; r.json({ ok: true, games: front.map((x) => STORE.all.get(x.id).game) }); });
 app.get("/__db", (_q, r) => r.json(Object.fromEntries(Object.entries(sb.DB).map(([k, v]) => [k, v.length]))));
 const T = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".json": "application/json", ".woff2": "font/woff2", ".ogg": "audio/ogg", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".md": "text/plain; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".ico": "image/x-icon", ".svg": "image/svg+xml" };
 app.use((req, res) => {
