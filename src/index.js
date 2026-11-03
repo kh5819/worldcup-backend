@@ -36,6 +36,9 @@ import { registerMindBroadcast } from "./mind-broadcast.js";
 import { registerSense } from "./sense.js";
 import { registerSenseMulti } from "./sense-multi.js";
 import { registerSenseBroadcast } from "./sense-broadcast.js";
+import { registerKnow } from "./know.js";
+import { registerKnowMulti } from "./know-multi.js";
+import { registerKnowBroadcast } from "./know-broadcast.js";
 import { registerDodge } from "./dodge.js";
 import { registerGolf } from "./golf.js";
 import { registerAppleMulti } from "./apple-multi.js";
@@ -10472,6 +10475,10 @@ registerMindBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile }
 registerSense(io, supabaseAdmin, app, { getOptionalUser });
 registerSenseMulti(io, supabaseAdmin);
 registerSenseBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
+// 플듀 상식 레벨 진단소 — know:* 이벤트 + /know/* REST, 문제은행·정답은 서버만 (know-bank.js)
+registerKnow(io, supabaseAdmin, app, { getOptionalUser, requireAdmin });
+registerKnowMulti(io, supabaseAdmin);
+registerKnowBroadcast(io, supabaseAdmin, app);
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {
