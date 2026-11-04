@@ -13140,7 +13140,7 @@ class ChatBridge {
 
     // ── 오목 스트리머 모드: !a1 좌표 투표 (월드컵·퀴즈와 분리, 오목 방송 방에서만 켜짐) ──
     if (this.mode === "omok") {
-      if (!isHost) this._processOmokMsg(senderChannelId, nickname, content, messageTime);
+      this._processOmokMsg(senderChannelId, nickname, content, messageTime);   // 스트리머 채팅도 셈 (SOOP·씨미와 같게, 혼자 시험할 때 헷갈림 방지)
       return;
     }
 
@@ -13661,8 +13661,10 @@ Object.assign(SoopChatBridge.prototype, QuizScoringMixin);
 //  - 칸별 표 수는 Map 카운터로 바로 갱신 → 대형 방송에서도 조회는 칸 수(최대 625)만큼만
 // ============================================================
 const OMOK_COLS = "abcdefghijklmnopqrstuvwxy";   // 최대 25칸
+// 한/영 키가 한글인 채로 치면 "!h8" → "!ㅗ8" 이 됨 → 두벌식 자판 위치대로 영문으로 되돌림
+const OMOK_KO_KEYS = { "ㅁ": "a", "ㅠ": "b", "ㅊ": "c", "ㅇ": "d", "ㄷ": "e", "ㄹ": "f", "ㅎ": "g", "ㅗ": "h", "ㅑ": "i", "ㅓ": "j", "ㅏ": "k", "ㅣ": "l", "ㅡ": "m", "ㅜ": "n", "ㅐ": "o", "ㅔ": "p", "ㅂ": "q", "ㄱ": "r", "ㄴ": "s", "ㅅ": "t", "ㅕ": "u", "ㅍ": "v", "ㅈ": "w", "ㅌ": "x", "ㅛ": "y" };
 function _parseOmokCell(content, size) {
-  let t = String(content == null ? "" : content).normalize("NFKC").trim();
+  let t = String(content == null ? "" : content).replace(/[ㄱ-ㅣ]/g, (c) => OMOK_KO_KEYS[c] || c).normalize("NFKC").trim();
   if (!/^[!！]/.test(t)) return -1;
   t = t.replace(/^[!！]+/, "").replace(/[\s,.\-_]/g, "").toLowerCase();
   if (!t || t.length > 3) return -1;
@@ -13683,6 +13685,7 @@ const OmokVoteMixin = {
     this.omokCounts = new Map();    // cell → 표 수
     this.omokRecent = [];           // 최근 표 (화면 흐름 표시용, 최대 12)
     this.omokCollecting = true;
+    this.omokSeen = 0; this.omokRejected = [];
     this.omokParticipants = this.omokParticipants || new Set();
   },
   closeOmokRound() { this.omokCollecting = false; },
@@ -13690,7 +13693,12 @@ const OmokVoteMixin = {
     if (!this.omokCollecting || !this.omokVotes) return;
     if (this.roundEndsAt && Date.now() > this.roundEndsAt.getTime()) return;
     const cell = _parseOmokCell(content, this.omokSize);
-    if (cell < 0 || this.omokOccupied.has(cell)) return;
+    this.omokSeen = (this.omokSeen || 0) + 1;   // 이번 차례에 들어온 "!" 채팅 수 (화면에서 채팅이 오는지 확인용)
+    if (cell < 0 || this.omokOccupied.has(cell)) {
+      (this.omokRejected ||= []).push({ nickname: String(nickname || "익명").slice(0, 20), text: String(content || "").trim().slice(0, 20), why: cell < 0 ? "좌표 아님" : "이미 돌 있음" });
+      if (this.omokRejected.length > 6) this.omokRejected.shift();
+      return;
+    }
     const id = senderId || `anon_${nickname || "익명"}`;
     const prev = this.omokVotes.get(id);
     if (prev && prev.cell === cell) return;
@@ -13706,7 +13714,8 @@ const OmokVoteMixin = {
     return {
       mode: "omok", roundKey: this.currentRoundKey, collecting: !!this.omokCollecting, size: this.omokSize || null,
       total: this.omokVotes ? this.omokVotes.size : 0, counts: counts.slice(0, 120),
-      recent: (this.omokRecent || []).slice().reverse(), participants: this.omokParticipants ? this.omokParticipants.size : 0,
+      recent: (this.omokRecent || []).slice().reverse(), seen: this.omokSeen || 0, rejected: (this.omokRejected || []).slice().reverse(),
+      chatMsgs: this.totalMessagesProcessed || 0, participants: this.omokParticipants ? this.omokParticipants.size : 0,
     };
   },
 };
