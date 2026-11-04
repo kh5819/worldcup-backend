@@ -13138,6 +13138,12 @@ class ChatBridge {
 
     this.totalMessagesProcessed++;
 
+    // ── 오목 스트리머 모드: !a1 좌표 투표 (월드컵·퀴즈와 분리, 오목 방송 방에서만 켜짐) ──
+    if (this.mode === "omok") {
+      if (!isHost) this._processOmokMsg(senderChannelId, nickname, content, messageTime);
+      return;
+    }
+
     // ── 퀴즈 모드: 채팅 정답 매칭 (월드컵 투표와 분리) ──
     if (this.mode === "quiz") {
       this._processQuizMsg(senderChannelId, nickname, content, messageTime, userRole);
@@ -13529,7 +13535,8 @@ class SoopChatBridge {
       const userId = fields[2] || fields[5] || "";
       const nickname = fields[6] || fields[3] || "익명";
       const id = userId || nickname;
-      if (this.mode === "quiz") this._processQuizMsg(id, nickname, message, Date.now(), "viewer");
+      if (this.mode === "omok") this._processOmokMsg(id, nickname, message, Date.now());
+      else if (this.mode === "quiz") this._processQuizMsg(id, nickname, message, Date.now(), "viewer");
       else this._processVoteMsg(id, nickname, message, Date.now());
     }
   }
@@ -13646,6 +13653,65 @@ const QuizScoringMixin = {
   },
 };
 Object.assign(SoopChatBridge.prototype, QuizScoringMixin);
+
+// ============================================================
+// 오목 스트리머 모드 좌표 투표 믹스인 — 시청자가 채팅에 "!h8" 처럼 칸을 고르면 칸별 표 수 집계
+//  - mode="omok" 일 때만 동작 (오목 방송 페이지가 /chat-audience/omok-round 를 부른 방만). 월드컵·퀴즈 경로는 그대로
+//  - 한 사람 한 표, 다시 치면 마지막 칸으로 바뀜. 판 밖·이미 돌 있는 칸은 무시(앞의 표 유지)
+//  - 칸별 표 수는 Map 카운터로 바로 갱신 → 대형 방송에서도 조회는 칸 수(최대 625)만큼만
+// ============================================================
+const OMOK_COLS = "abcdefghijklmnopqrstuvwxy";   // 최대 25칸
+function _parseOmokCell(content, size) {
+  let t = String(content == null ? "" : content).normalize("NFKC").trim();
+  if (!/^[!！]/.test(t)) return -1;
+  t = t.replace(/^[!！]+/, "").replace(/[\s,.\-_]/g, "").toLowerCase();
+  if (!t || t.length > 3) return -1;
+  let m = t.match(/^([a-y])(\d{1,2})$/), col, row;
+  if (m) { col = OMOK_COLS.indexOf(m[1]); row = parseInt(m[2], 10); }
+  else { m = t.match(/^(\d{1,2})([a-y])$/); if (!m) return -1; col = OMOK_COLS.indexOf(m[2]); row = parseInt(m[1], 10); }
+  if (col < 0 || col >= size || !(row >= 1 && row <= size)) return -1;
+  return (row - 1) * size + col;   // 1행 = 판 맨 위
+}
+const OmokVoteMixin = {
+  setOmokRound(roundKey, size, occupied, endsAt) {
+    this.mode = "omok";
+    this.currentRoundKey = roundKey;
+    this.roundEndsAt = endsAt ? new Date(endsAt) : null;
+    this.omokSize = size;
+    this.omokOccupied = new Set(occupied);
+    this.omokVotes = new Map();     // voterId → { cell, nickname, t }
+    this.omokCounts = new Map();    // cell → 표 수
+    this.omokRecent = [];           // 최근 표 (화면 흐름 표시용, 최대 12)
+    this.omokCollecting = true;
+    this.omokParticipants = this.omokParticipants || new Set();
+  },
+  closeOmokRound() { this.omokCollecting = false; },
+  _processOmokMsg(senderId, nickname, content, messageTime) {
+    if (!this.omokCollecting || !this.omokVotes) return;
+    if (this.roundEndsAt && Date.now() > this.roundEndsAt.getTime()) return;
+    const cell = _parseOmokCell(content, this.omokSize);
+    if (cell < 0 || this.omokOccupied.has(cell)) return;
+    const id = senderId || `anon_${nickname || "익명"}`;
+    const prev = this.omokVotes.get(id);
+    if (prev && prev.cell === cell) return;
+    if (prev) { const n = (this.omokCounts.get(prev.cell) || 1) - 1; if (n > 0) this.omokCounts.set(prev.cell, n); else this.omokCounts.delete(prev.cell); }
+    this.omokCounts.set(cell, (this.omokCounts.get(cell) || 0) + 1);
+    this.omokVotes.set(id, { cell, nickname: nickname || "익명", t: messageTime || Date.now() });
+    if (this.omokParticipants.size < 100000) this.omokParticipants.add(id);
+    this.omokRecent.push({ nickname: String(nickname || "익명").slice(0, 20), cell });
+    if (this.omokRecent.length > 12) this.omokRecent.shift();
+  },
+  getOmokVotes() {
+    const counts = [...(this.omokCounts || new Map()).entries()].map(([cell, n]) => ({ cell, n })).sort((a, b) => b.n - a.n || a.cell - b.cell);
+    return {
+      mode: "omok", roundKey: this.currentRoundKey, collecting: !!this.omokCollecting, size: this.omokSize || null,
+      total: this.omokVotes ? this.omokVotes.size : 0, counts: counts.slice(0, 120),
+      recent: (this.omokRecent || []).slice().reverse(), participants: this.omokParticipants ? this.omokParticipants.size : 0,
+    };
+  },
+};
+Object.assign(ChatBridge.prototype, OmokVoteMixin);
+Object.assign(SoopChatBridge.prototype, OmokVoteMixin);
 
 // roomCode → ChatBridge / SoopChatBridge 인스턴스
 // ============================================================
@@ -13766,7 +13832,7 @@ const chatBridges = new Map();
 
 // 스트리머 채팅연동 사용 로그 (운영자 admin 탭에서 확인) — 실패해도 게임 흐름엔 영향 없음
 // 콘텐츠(DB) 없이 쓰는 스트리머 모드(예: 그려봐)는 종류만 프론트가 알려 줌 — 허용 목록만 저장
-const STREAMER_LOG_MODES = { draw: "그려봐 스트리머 모드" };
+const STREAMER_LOG_MODES = { draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드" };
 async function _logStreamerChat({ platform, channelId, nickname, contentId, roomCode, hostUserId, hostNick, contentMode }) {
   try {
     if (!platform || !channelId) return; // 식별자 없으면 기록 안 함
@@ -14175,7 +14241,44 @@ app.get("/chat-audience/quiz-board", (req, res) => {
   });
 });
 
+// --- 오목 스트리머 모드: 좌표 투표 (!h8) ---
+//  POST /chat-audience/omok-round { roomCode, roundKey, size, occupied:[칸번호], endsAt } → 이번 수 투표 시작(집계 초기화)
+//  POST /chat-audience/omok-close { roomCode } → 집계 멈춤 + 최종 표 반환
+//  GET  /chat-audience/omok-votes?room= → 칸별 표 수
+app.post("/chat-audience/omok-round", optionalAuth, async (req, res) => {
+  try {
+    const { roomCode, roundKey, endsAt } = req.body || {};
+    const size = Number(req.body?.size);
+    if (!roomCode || !roundKey || !Number.isInteger(size) || size < 5 || size > 25) return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
+    const bridge = chatBridges.get(roomCode);
+    if (!bridge) return res.status(404).json({ ok: false, error: "NO_BRIDGE", message: "채팅 연결이 없습니다" });
+    const occ = Array.isArray(req.body.occupied) ? req.body.occupied.slice(0, size * size).map(Number).filter((v) => Number.isInteger(v) && v >= 0 && v < size * size) : [];
+    bridge.setOmokRound(String(roundKey).slice(0, 64), size, occ, Number(endsAt) || null);
+    return res.json({ ok: true, bridgeStatus: bridge.status });
+  } catch (err) {
+    console.error("[CHAT_AUD] /omok-round 예외:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+app.post("/chat-audience/omok-close", optionalAuth, async (req, res) => {
+  try {
+    const bridge = chatBridges.get(req.body?.roomCode);
+    if (!bridge) return res.status(404).json({ ok: false, error: "NO_BRIDGE" });
+    bridge.closeOmokRound();
+    return res.json({ ok: true, ...bridge.getOmokVotes() });
+  } catch (err) {
+    console.error("[CHAT_AUD] /omok-close 예외:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+app.get("/chat-audience/omok-votes", (req, res) => {
+  const bridge = chatBridges.get(req.query.room);
+  if (!bridge) return res.json({ ok: true, status: "no_bridge", total: 0, counts: [], recent: [] });
+  return res.json({ ok: true, ...bridge.getOmokVotes(), status: bridge.status, errorCode: bridge.errorCode || null });
+});
+
 // --- GET /chat-audience/votes ---
+
 let _votesLogCount = 0;
 app.get("/chat-audience/votes", (req, res) => {
   const roomCode = req.query.room;
