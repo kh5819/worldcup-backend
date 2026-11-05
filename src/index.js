@@ -47,6 +47,7 @@ import { registerDodge } from "./dodge.js";
 import { registerGolf } from "./golf.js";
 import { registerAppleMulti } from "./apple-multi.js";
 import { registerBlockBlastMulti } from "./blockblast-multi.js";
+import { registerBlockRoyale } from "./blockroyale-multi.js";
 import { registerRaisingPvp } from "./raising-pvp.js";
 
 // ── 전역 크래시 가드 ──
@@ -10456,6 +10457,7 @@ registerDodge(io, supabaseAdmin);
 registerGolf(io, supabaseAdmin);
 registerAppleMulti(io, supabaseAdmin);
 registerBlockBlastMulti(io, supabaseAdmin);
+registerBlockRoyale(io, supabaseAdmin, app);
 // 플듀 키우기 친구 대전(1대1) — rpvp:* 이벤트, 서버는 시계·지시 중계만
 registerRaisingPvp(io, supabaseAdmin);
 // 플듀 미스터리 — mys:* 이벤트, 사건 진행·정답 판정 전부 서버

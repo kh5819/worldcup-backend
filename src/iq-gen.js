@@ -1043,7 +1043,7 @@ export function matchIsOneMove(from, to) {
   return removed === 1 && added === 1;
 }
 function genMatch(R, d) {
-  for (let tries = 0; tries < 400; tries++) {
+  for (let tries = 0; tries < 3000; tries++) {
     const two = d >= 4;
     const plus = R() < 0.5;
     let A, B, Cc;
@@ -1061,7 +1061,7 @@ function genMatch(R, d) {
     const sols = matchOneMoves(pick).filter((s) => matchEval(s) === true);
     if (!sols.length) continue;
     if (d <= 2 && sols.length > 3) { /* 쉬움: 정답 여러 개 OK */ }
-    if (d >= 3 && sols.length > 2) continue;
+    if (d >= 3 && sols.length !== 1) continue; // 어려운 단계는 정답이 하나뿐인 문제만
     return { view: { st: pick }, key: truth, exp: { truth, n: sols.length }, hint: { where: matchFlat(pick).findIndex((m, i) => m !== matchFlat(truth)[i]) } };
   }
   throw new Error("match gen");
