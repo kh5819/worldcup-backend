@@ -45,7 +45,7 @@ function pubPoll(p) { if (!p) return null; return { id: p.id, kind: p.kind, q: p
 function pubPred(p) { if (!p) return null; return { id: p.id, q: p.q, opts: p.opts, deadline: p.deadline, locked: p.locked, settled: p.settled, answer: p.answer ?? null, counts: p.counts, total: p.picks.size, winners: p.winners ?? null }; }
 function board(b) { const arr = [...b.viewers.values()].filter((v) => !v.host).sort((x, y) => y.pts - x.pts || x.no - y.no); return { top: arr.slice(0, 10).map((v) => ({ nick: v.nick, pts: v.pts })), players: arr.length }; }
 function pubState(b) {
-  return { id: b.id, title: b.title, nick: b.nick, lang: b.lang, intensity: b.intensity, viewers: Math.max(0, b.viewers.size - 1), status: b.status, poll: pubPoll(b.poll), pred: pubPred(b.pred), board: board(b), apps: b.apps.length, cast: b.castNicks, notice: b.notice, ended: !!b.ended, serverNow: now() };
+  return { season: b.season ? { at: b.season.at, pub: b.season.pub } : null, id: b.id, title: b.title, nick: b.nick, lang: b.lang, intensity: b.intensity, viewers: Math.max(0, b.viewers.size - 1), status: b.status, poll: pubPoll(b.poll), pred: pubPred(b.pred), board: board(b), apps: b.apps.length, cast: b.castNicks, notice: b.notice, ended: !!b.ended, serverNow: now() };
 }
 function emitState(io, b, force = false) {
   const t = now();
@@ -63,7 +63,7 @@ function closePoll(io, b) {
 
 export function registerLifeBroadcast(io, sb, app) {
   IO = io;
-  setInterval(() => { const t = now(); for (const [id, b] of BC) if (t - b.createdAt > TTL || (b.ended && t - b.endedAt > 600e3)) { clearTimeout(b.poll?.timer); clearTimeout(b.pred?.timer); BC.delete(id); } }, 10 * 60e3).unref?.();
+  setInterval(() => { const t = now(); for (const [id, b] of BC) if (t - b.createdAt > TTL || (b.ended && t - b.endedAt > (b.season ? 7200e3 : 600e3))) { clearTimeout(b.poll?.timer); clearTimeout(b.pred?.timer); BC.delete(id); } }, 10 * 60e3).unref?.();
   io.on("connection", (socket) => {
     const me = socket.user; if (!me) return;
     const key = (me.isGuest ? "g:" : "u:") + me.id;
@@ -161,10 +161,23 @@ export function registerLifeBroadcast(io, sb, app) {
       b.apps.push(app); emitState(io, b); reply({ ok: true, appId: app.id });
     });
     on("lbc:apps", (p, reply) => { const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); reply({ ok: true, rows: b.apps.slice(-100).map(({ key: _k, ...a }) => a) }); });
-    const take = (b, app) => { b.apps = b.apps.filter((a) => a !== app); b.accepted.add(app.key); b.castNicks.push(app.nick); b.notice = { kind: "cast", nick: app.nick, at: now() }; emitState(io, b, true); const { key: _k, ...pub } = app; return pub; };
+    const take = (b, app) => { b.apps = b.apps.filter((a) => a !== app); b.accepted.add(app.key); (b.castApp = b.castApp || new Map()).set(String(app.id), app.key); b.castNicks.push(app.nick); b.notice = { kind: "cast", nick: app.nick, at: now() }; emitState(io, b, true); const { key: _k, ...pub } = app; return pub; };
     on("lbc:accept", (p, reply) => { const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); const app = b.apps.find((a) => a.id === p.appId); if (!app) return reply({ ok: false, error: "APP_NOT_FOUND" }); reply({ ok: true, app: take(b, app) }); });
     on("lbc:draw", (p, reply) => { const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); if (!b.apps.length) return reply({ ok: false, error: "NO_APPS" }); reply({ ok: true, app: take(b, b.apps[Math.floor(Math.random() * b.apps.length)]) }); });
     on("lbc:reject", (p, reply) => { const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); b.apps = b.apps.filter((a) => a.id !== p.appId); emitState(io, b); reply({ ok: true }); });
+    // 시즌 결과: 스트리머가 보낸 시청자 출연자 카드를 '수락한 신청서 → 그 시청자'로만 연결 (다른 사람 것은 못 봄)
+    on("lbc:season", (p, reply) => {
+      const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" });
+      const raw = JSON.stringify(p.cards || []).length + JSON.stringify(p.pub || {}).length; if (raw > 300000) return reply({ ok: false, error: "TOO_BIG" });
+      const cards = new Map(); let linked = 0;
+      for (const c of Array.isArray(p.cards) ? p.cards.slice(0, 20) : []) { const k = b.castApp?.get(String(c?.appId || "")); if (k && c.card && typeof c.card === "object") { cards.set(k, c.card); linked++; } }
+      b.season = { at: now(), pub: p.pub && typeof p.pub === "object" ? p.pub : null, cards };
+      emitState(io, b, true); reply({ ok: true, linked });
+    });
+    on("lbc:myResult", (p, reply) => {
+      const b = get(p.id); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" }); if (!b.season) return reply({ ok: false, error: "NO_RESULT" });
+      reply({ ok: true, pub: b.season.pub, card: b.season.cards.get(key) || null, cast: b.accepted.has(key) });
+    });
     on("lbc:end", (p, reply) => { const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); if (b.poll && !b.poll.closed) closePoll(io, b); b.ended = true; b.endedAt = now(); emitState(io, b, true); reply({ ok: true, board: board(b) }); });
   });
   if (!app) return;
