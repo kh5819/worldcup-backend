@@ -5,6 +5,7 @@
 // 흐름: lobby → [intro → play → result] × 문항 수 → final (8위→1위 공개는 화면에서)
 // =========================
 import { createFlight } from "./create-flight.js";
+import { addPublicRooms } from "./public-rooms.js";
 import * as C from "./iq-core.js?v=c4";
 import * as G from "./iq-gen.js?v=g4";
 import { makeItem, judgeItem, pointsOf, resultId, publicRow, memberProfile, sanitizeProfile, sanitizePrefs, buildRow, insertResults, hintFor } from "./iq.js";
@@ -331,3 +332,5 @@ export function registerIqMulti(io, supabaseAdmin) {
   });
 }
 export const _test = { ROOMS, CODES, USER_ROOM, consts: { INTRO_MS, AREA_INTRO_MS, FIRST_INTRO_MS, RESULT_MS, GRACE_MS } };
+// 게임천국 공개 방 목록
+addPublicRooms("iq", ROOMS);

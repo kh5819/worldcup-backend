@@ -1,4 +1,5 @@
 import { createFlight } from "./create-flight.js";
+import { addPublicRooms } from "./public-rooms.js";
 // =========================
 // 사과게임 (DUO Apple / Fruit Box) — 멀티 2분 점수 대결 서버
 // 핵심: 모든 플레이어 같은 격자 (서버가 seed 1개 broadcast)
@@ -552,3 +553,5 @@ export function registerAppleMulti(io, supabaseAdmin) {
     });
   });
 }
+// 게임천국 공개 방 목록
+addPublicRooms("apple", appleRooms);

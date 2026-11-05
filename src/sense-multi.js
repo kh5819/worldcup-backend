@@ -5,6 +5,7 @@
 // 실시간 방 구조는 게이머 에이징 커브 단체 검사(clinic-multi.js)와 같음
 // =========================
 import { createFlight } from "./create-flight.js";
+import { addPublicRooms } from "./public-rooms.js";
 import * as C from "./sense-core.js";
 import { judgeSubmit, buildRow, publicRow, insertResults } from "./sense.js";
 import { memberProfile, sanitizeProfile, sanitizePrefs, resultId } from "./iq.js";
@@ -206,3 +207,5 @@ export function registerSenseMulti(io, supabaseAdmin) {
   });
 }
 export const _smTest = { ROOMS, CODES, USER_ROOM };
+// 게임천국 공개 방 목록
+addPublicRooms("sense", ROOMS);

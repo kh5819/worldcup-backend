@@ -48,6 +48,8 @@ import { registerGolf } from "./golf.js";
 import { registerAppleMulti } from "./apple-multi.js";
 import { registerBlockBlastMulti } from "./blockblast-multi.js";
 import { registerBlockRoyale } from "./blockroyale-multi.js";
+import { registerPublicRooms } from "./public-rooms.js";
+import { installLobbyBurstGuard } from "./lobby-burst-guard.js";
 import { registerRaisingPvp } from "./raising-pvp.js";
 
 // ── 전역 크래시 가드 ──
@@ -120,7 +122,7 @@ const restLimiter = rateLimit({
   legacyHeaders: false,
   message: { ok: false, error: "RATE_LIMITED" },
   // 대용량 월드컵/티어 저장 시 외부 이미지 복사는 전용 limiter로 따로 관리 (아래)
-  skip: (req) => req.path === "/api/proxy-image",
+  skip: (req) => req.path === "/api/proxy-image" || req.path === "/public-rooms",
 });
 app.use(restLimiter);
 
@@ -10458,6 +10460,8 @@ registerGolf(io, supabaseAdmin);
 registerAppleMulti(io, supabaseAdmin);
 registerBlockBlastMulti(io, supabaseAdmin);
 registerBlockRoyale(io, supabaseAdmin, app);
+registerPublicRooms(app, io);
+installLobbyBurstGuard(io);
 // 플듀 키우기 친구 대전(1대1) — rpvp:* 이벤트, 서버는 시계·지시 중계만
 registerRaisingPvp(io, supabaseAdmin);
 // 플듀 미스터리 — mys:* 이벤트, 사건 진행·정답 판정 전부 서버

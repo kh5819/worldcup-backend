@@ -6,6 +6,7 @@
 // 흐름: lobby → [intro → play → result] × N → final
 // =========================
 import { createFlight } from "./create-flight.js";
+import { addPublicList } from "./public-rooms.js";
 import * as C from "./know-core.js";
 import { STORE } from "./know-store.js";
 import { buildPlan, serveAll, revealAll, judgeServed, buildRow, publicRow, normLang, poolFor, localize, caughtOf } from "./know.js";
@@ -274,3 +275,6 @@ export function registerKnowMulti(io, supabaseAdmin) {
   });
 }
 export const _knmTest = { ROOMS, CODES, USER_ROOM };
+// 게임천국 공개 방 모아보기용 (knm:list 와 같은 조건)
+export const publicKnowRooms = () => [...ROOMS.values()].filter((r) => r.isPublic && r.phase === "lobby" && r.order.length < r.maxPlayers).slice(0, 30).map((r) => ({ code: r.code, host: r.players.get(r.host)?.name || "", n: r.order.length, max: r.maxPlayers }));
+addPublicList("know", publicKnowRooms);

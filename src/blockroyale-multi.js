@@ -6,6 +6,7 @@
 // 방별로 상태가 나뉘고, 순위·판 변경은 모아서 주기적으로 전송(50인 방 1초 / 작은 방 0.25초).
 // =========================
 import { createFlight } from "./create-flight.js";
+import { addPublicList } from "./public-rooms.js";
 import { BRGame, encodeBoard } from "./br-core.js";
 
 const rooms = new Map(), invites = new Map(), userRoom = new Map();
@@ -185,13 +186,13 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
         const specs = [...r.players.values()].filter((p) => p.status === "spec").length, seats = [...r.players.values()].filter((p) => p.status !== "spec").length;
         if (playing ? specs >= BR.specExtra : seats >= r.opts.maxPlayers) return cb({ ok: false, error: "ROOM_FULL" });
         const old = myRoom(); if (old && old !== r) leave(io, old, me.id);
-        const d = await profile(me); if (!rooms.has(r.id)) return cb({ ok: false, error: "ROOM_NOT_FOUND" }); if (!playing && [...r.players.values()].filter((p) => p.status !== "spec").length >= r.opts.maxPlayers) return cb({ ok: false, error: "ROOM_FULL" }); if (r.players.has(me.id)) return cb({ ok: false, error: "ALREADY_JOINED" });
+        const d = await profile(me); if (!rooms.has(r.id)) return cb({ ok: false, error: "ROOM_NOT_FOUND" }); if (!playing && [...r.players.values()].filter((p) => p.status !== "spec").length >= r.opts.maxPlayers) return cb({ ok: false, error: "ROOM_FULL" }); if (r.players.has(me.id)) return reJoinFresh(); // 두 번 눌러 동시에 온 입장은 재입장으로
         const p = newPlayer(d.nickname || payload?.nickname || (me.isGuest ? "게스트" : "유저"), me.isGuest, d.avatar_url, socket.id, r.nextIdx++); if (playing) p.status = "spec"; r.players.set(me.id, p); r.order.push(me.id); attachSocket(r, p);
         cb({ ok: true, roomId: r.id, inviteCode: r.inviteCode, playerId: me.id, room: pubRoom(r), spectate: playing ? { boards: allBoards(r), rows: [...r.players.values()].filter((x) => x.status !== "spec").map(row), alive: actives(r).length, serverNow: Date.now() } : null }); emitRoom(io, r);
       } catch (e) { console.error("[br:joinRoom]", e); cb({ ok: false, error: "INTERNAL" }); }
     });
 
-    socket.on("br:listRooms", (_p, cb) => { cb = fn(cb); const list = [...rooms.values()].filter((r) => r.opts.isPublic && r.status !== "ended").slice(0, 30).map((r) => ({ code: r.inviteCode, mode: r.opts.mode, n: r.order.length, max: r.opts.maxPlayers, status: r.status, locked: !!r.opts.password, host: r.players.get(r.hostUserId)?.name || "" })); cb({ ok: true, list }); });
+    socket.on("br:listRooms", (_p, cb) => { cb = fn(cb); const list = [...rooms.values()].filter((r) => r.opts.isPublic && r.status !== "ended").slice(0, 30).map((r) => ({ code: r.inviteCode, mode: r.opts.mode, n: r.order.length, max: r.opts.maxPlayers, status: r.status, spectate: r.opts.allowSpectate, locked: !!r.opts.password, host: r.players.get(r.hostUserId)?.name || "" })); cb({ ok: true, list }); });
 
     socket.on("br:setOptions", (o, cb) => {
       cb = fn(cb); const r = hostRoom(cb); if (!r) return; if (r.status === "playing") return cb({ ok: false, error: "NOT_LOBBY" }); const q = r.opts;
@@ -236,7 +237,7 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
       const snap = g.save(), okRun = g.replay(d.o); p.lastLock = now;
       // 잘못된 조작이면 도중에 움직인 것까지 전부 되돌림
       if (!okRun) { p.game = BRGame.load(snap); p.invalid++; if (p.invalid >= BR.maxInvalid) { console.warn("[br] 잘못된 조작 반복", me.id); return kill(io, r, me.id, "dead", "INVALID"); } return resync(io, p, "INVALID"); }
-      let atk = 0; for (const e of g.takeEvents()) { if (e.t === "attack") atk += e.n; else if (e.t === "clear") { if (e.n === 4) p.tetra++; if (e.ts) p.tspins++; if (e.perfect) p.perfects++; } }
+      let atk = 0; for (const e of g.takeEvents()) { if (e.t === "attack") atk += e.n; else if (e.t === "clear") { if (e.n === 4) p.tetra++; if (e.ts || e.spin) p.tspins++; if (e.perfect) p.perfects++; } }
       p.board = encodeBoard(g.visible()); p.dirtyRow = true; p.dirtyBoard = true; if (p.watchers) sendBoardToWatchers(io, r, me.id, p);
       if (atk) deliver(io, r, me.id, p, atk);
       if (g.dead) return kill(io, r, me.id);
@@ -265,3 +266,6 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
   });
 }
 export const _brTest = { rooms, invites, userRoom };
+// 게임천국 공개 방 모아보기용: 대기 중(자리 있음) + 경기 중(관전 허용)
+export const publicBlockRoyaleRooms = () => [...rooms.values()].filter((r) => r.opts.isPublic && (r.status === "playing" ? r.opts.allowSpectate : r.status === "lobby" && r.order.length < r.opts.maxPlayers)).slice(0, 30).map((r) => ({ code: r.inviteCode, host: r.players.get(r.hostUserId)?.name || "", n: [...r.players.values()].filter((p) => p.status !== "spec" && !p.wantSpec).length, max: r.opts.maxPlayers, playing: r.status === "playing", locked: !!r.opts.password }));
+addPublicList("blockroyale", publicBlockRoyaleRooms);

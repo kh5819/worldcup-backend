@@ -8,6 +8,7 @@
 // 개인 화면·비밀 정보는 mm:you로 본인 소켓에만, 방 전체에는 제출 여부·점수판만
 // =========================
 import { createFlight } from "./create-flight.js";
+import { addPublicList } from "./public-rooms.js";
 import * as C from "./mind-core.js";
 import * as G from "./mind-games.js";
 import { memberProfile, sanitizeProfile, sanitizePrefs, resultId } from "./iq.js";
@@ -368,3 +369,6 @@ export function registerMindMulti(io, supabaseAdmin) {
   });
 }
 export const _mmTest = { ROOMS, CODES, USER_ROOM };
+// 게임천국 공개 방 모아보기용 (mm:list 와 같은 조건)
+export const publicMindRooms = () => [...ROOMS.values()].filter((r) => r.isPublic && r.phase === "lobby" && r.order.length < r.maxPlayers).slice(0, 30).map((r) => ({ code: r.code, host: r.players.get(r.host)?.profile?.nick || r.players.get(r.host)?.name || "", n: r.order.length, max: r.maxPlayers }));
+addPublicList("mind", publicMindRooms);

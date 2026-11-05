@@ -11,6 +11,7 @@ const bbInvites = new Map();
 const bbUserRoom = new Map();
 
 import { createFlight } from "./create-flight.js";
+import { addPublicRooms } from "./public-rooms.js";
 import { isBig, markSnapshot, startBoard, stopBoard, setWatch, BIG_ALLOWED_MAX_PLAYERS } from "./big-room.js";
 const ALLOWED_MAX_PLAYERS = BIG_ALLOWED_MAX_PLAYERS;   // 9명 이상은 대규모 방(big-room.js)
 const ALLOWED_GAME_TIME = [300, 600, 0]; // 5분/10분/무제한
@@ -562,3 +563,5 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
     });
   });
 }
+// 게임천국 공개 방 목록
+addPublicRooms("blockblast", bbRooms);

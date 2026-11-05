@@ -1,4 +1,5 @@
 import { createFlight } from "./create-flight.js";
+import { addPublicRooms } from "./public-rooms.js";
 // =========================
 // 수상한 카드 (DUO) — 멀티플레이어 흑백 추리 카드 게임 서버
 // 모드: ffa(개인전) / 1v1 / 2v2 / 2v2v2 / 2v2v2v2
@@ -777,3 +778,5 @@ function checkPlayerDead(io, room, userId) {
     });
   }
 }
+// 게임천국 공개 방 목록
+addPublicRooms("suspect", scRooms);

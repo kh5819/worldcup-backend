@@ -1,4 +1,5 @@
 import { createFlight } from "./create-flight.js";
+import { addPublicRooms } from "./public-rooms.js";
 // =========================
 // 굴려굴려 (DUO Golf) — 멀티 네온 미니골프 10홀 동시 슬링 서버
 // 핵심: 모든 플레이어 같은 코스, 같은 홀에서 동시 진행
@@ -556,3 +557,5 @@ export function registerGolf(io, supabaseAdmin) {
     });
   });
 }
+// 게임천국 공개 방 목록
+addPublicRooms("golf", golfRooms);

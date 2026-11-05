@@ -21,6 +21,7 @@
 // =========================
 
 import { createFlight } from "./create-flight.js";
+import { addPublicRooms } from "./public-rooms.js";
 import { CARDS, buildDeck, getCard, isReactionCard, publicCardList, publicCardListByLang } from "./cardgame-cards.js";
 import { EVENTS, getEvent, pickRandomEvent, publicEventList } from "./cardgame-events.js";
 
@@ -2131,3 +2132,5 @@ export function registerCardGame(io, supabaseAdmin) {
     });
   });
 }
+// 게임천국 공개 방 목록
+addPublicRooms("cardgame", cgRooms);

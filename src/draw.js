@@ -1,4 +1,5 @@
 import { createFlight } from "./create-flight.js";
+import { addPublicRooms } from "./public-rooms.js";
 // =========================
 // 그려봐 (DUO Draw) — 멀티플레이어 그림 맞히기 서버
 // 모드: 직접 출제 (v1) + 공식 문제 (v2 예정)
@@ -739,3 +740,5 @@ export function registerDraw(io, supabaseAdmin) {
     });
   });
 }
+// 게임천국 공개 방 목록
+addPublicRooms("draw", drawRooms);

@@ -10,6 +10,7 @@ const dgInvites = new Map();
 const dgUserRoom = new Map();
 
 import { createFlight } from "./create-flight.js";
+import { addPublicRooms } from "./public-rooms.js";
 import { isBig, markSnapshot, startBoard, stopBoard, setWatch, BIG_ALLOWED_MAX_PLAYERS } from "./big-room.js";
 const ALLOWED_MAX_PLAYERS = BIG_ALLOWED_MAX_PLAYERS;   // 9명 이상은 대규모 방(big-room.js)
 const ALLOWED_TIME_LIMIT_SEC = [0, 180, 300, 600]; // 0 = 무제한, 3/5/10분
@@ -716,3 +717,5 @@ export function registerDodge(io, supabaseAdmin) {
     });
   });
 }
+// 게임천국 공개 방 목록
+addPublicRooms("dodge", dgRooms);

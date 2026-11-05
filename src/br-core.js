@@ -5,8 +5,8 @@
 export const RULES = {
   cols: 10, rows: 20, hidden: 4, garbageCell: 8,
   lockMs: 500, lockResets: 15, garbagePerLock: 8,
-  score: { line: [0, 100, 300, 500, 800], tspin: [400, 800, 1200, 1600], mini: [100, 200, 400], combo: 50, perfect: 1800, piece: 2 },
-  attack: { line: [0, 0, 1, 2, 4], tspin: [0, 2, 4, 6], mini: [0, 0, 1], b2b: 1, perfect: 6, combo: [0, 0, 1, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5] },
+  score: { line: [0, 100, 300, 500, 800], tspin: [400, 800, 1200, 1600], mini: [100, 200, 400], spin: [100, 300, 500, 700, 900], combo: 50, perfect: 1800, piece: 2 },
+  attack: { line: [0, 0, 1, 2, 4], tspin: [0, 2, 4, 6], mini: [0, 0, 1], spin: [0, 1, 2, 3, 4], b2b: 1, perfect: 6, combo: [0, 0, 1, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5] },
 };
 export const COLS = RULES.cols, ROWS = RULES.rows, HIDDEN = RULES.hidden, TOTAL = ROWS + HIDDEN, GARBAGE = RULES.garbageCell;
 // 조각: 1 I, 2 O, 3 T, 4 S, 5 Z, 6 J, 7 L — 회전별 칸 [x, y]
@@ -32,7 +32,7 @@ export class BRGame {
   constructor({ seed = 1, startLevel = 1 } = {}) {
     this.seed = seed >>> 0; this.gN = 0; this.grid = new Uint8Array(COLS * TOTAL); this.bagN = 0; this.queue = [];
     this.startLevel = startLevel; this.floor = startLevel; this.score = 0; this.lines = 0; this.pieces = 0; this.combo = -1; this.maxCombo = 0; this.b2b = false; this.sent = 0; this.hold = 0; this.holdUsed = false; this.garbage = [];
-    this.dead = false; this.cur = null; this.grav = 0; this.lock = 0; this.resets = 0; this.soft = false; this.lastRot = false; this.lastKick = 0; this.ev = []; this.ops = ""; this.lastOps = ""; this.fill(); this.spawn();
+    this.dead = false; this.cur = null; this.grav = 0; this.lock = 0; this.resets = 0; this.soft = false; this.softMs = 90; this.lastRot = false; this.lastKick = 0; this.ev = []; this.ops = ""; this.lastOps = ""; this.fill(); this.spawn();
   }
   get scoreLv() { return this.startLevel + Math.floor(this.lines / 10); }
   get level() { return Math.max(this.floor, this.scoreLv); }
@@ -64,23 +64,25 @@ export class BRGame {
   matureUpTo(seq) { for (const g of this.garbage) if (g.s <= seq) g.m = true; }
   pendingGarbage() { let a = 0; for (const g of this.garbage) a += g.n; return a; }
   tspinKind() { const c = this.cur; if (c.p !== 3 || !this.lastRot) return 0; const hit = (dx, dy) => { const X = c.x + dx, Y = c.y + dy; return X < 0 || X >= COLS || Y >= TOTAL || (Y >= 0 && this.at(X, Y)); }; let n = 0; for (const [dx, dy] of [[0, 0], [2, 0], [0, 2], [2, 2]]) if (hit(dx, dy)) n++; if (n < 3) return 0; const f = FRONT[c.r].filter(([dx, dy]) => hit(dx, dy)).length; return f === 2 || this.lastKick === 4 ? 2 : 1; }
+  // S·Z·L·J·I 스핀: 회전으로 들어와 꼼짝 못 하는 자리
+  spinKind() { const c = this.cur; if (c.p === 3 || c.p === 2 || !this.lastRot) return 0; return !this.free(c.p, c.r, c.x - 1, c.y) && !this.free(c.p, c.r, c.x + 1, c.y) && !this.free(c.p, c.r, c.x, c.y - 1) ? c.p : 0; }
   lockPiece() {
-    const c = this.cur, ts = this.tspinKind(); let above = true;
+    const c = this.cur, ts = this.tspinKind(), spin = this.spinKind(); let above = true;
     for (const [cx, cy] of SHAPES[c.p][c.r]) { const X = c.x + cx, Y = c.y + cy; if (Y >= 0) this.grid[Y * COLS + X] = c.p; if (Y >= HIDDEN) above = false; }
     this.pieces++; this.lastOps = this.ops; this.ops = ""; this.holdUsed = false;
     const full = []; for (let y = 0; y < TOTAL; y++) { let ok = true; for (let x = 0; x < COLS; x++) if (!this.at(x, y)) { ok = false; break; } if (ok) full.push(y); }
     const n = full.length, cells = SHAPES[c.p][c.r].map(([cx, cy]) => [c.x + cx, c.y + cy]);
     if (n) { const g = new Uint8Array(COLS * TOTAL); let to = TOTAL - 1; for (let y = TOTAL - 1; y >= 0; y--) { if (full.includes(y)) continue; for (let x = 0; x < COLS; x++) g[to * COLS + x] = this.at(x, y); to--; } this.grid = g; }
-    const R = RULES, hard = n === 4 || (ts > 0 && n > 0); let atk = 0; this.score += R.score.piece;
+    const R = RULES, hard = n === 4 || ((ts > 0 || spin > 0) && n > 0); let atk = 0; this.score += R.score.piece;
     if (n) {
       this.combo++; this.maxCombo = Math.max(this.maxCombo, this.combo); const lv = this.scoreLv, b2b = hard && this.b2b; this.lines += n;
-      const base = ts === 2 ? R.score.tspin[n] : ts === 1 ? R.score.mini[Math.min(n, 2)] : R.score.line[n];
+      const base = ts === 2 ? R.score.tspin[n] : ts === 1 ? R.score.mini[Math.min(n, 2)] : spin ? R.score.spin[n] : R.score.line[n];
       this.score += Math.round(base * lv * (b2b ? 1.5 : 1)) + (this.combo > 0 ? R.score.combo * this.combo * lv : 0);
-      atk = (ts === 2 ? R.attack.tspin[n] : ts === 1 ? R.attack.mini[Math.min(n, 2)] : R.attack.line[n]) + (b2b ? R.attack.b2b : 0) + R.attack.combo[Math.min(this.combo, R.attack.combo.length - 1)];
+      atk = (ts === 2 ? R.attack.tspin[n] : ts === 1 ? R.attack.mini[Math.min(n, 2)] : spin ? R.attack.spin[n] : R.attack.line[n]) + (b2b ? R.attack.b2b : 0) + R.attack.combo[Math.min(this.combo, R.attack.combo.length - 1)];
       const perfect = this.grid.every((v) => !v); if (perfect) { atk += R.attack.perfect; this.score += R.score.perfect * lv; }
       this.b2b = hard;
-      this.ev.push({ t: "clear", n, ts, combo: this.combo, perfect, b2b, rows: full, atk });
-    } else { this.combo = -1; if (ts) this.score += (ts === 2 ? R.score.tspin[0] : R.score.mini[0]) * this.scoreLv; this.ev.push({ t: "lock", ts, cells }); }
+      this.ev.push({ t: "clear", n, ts, spin, combo: this.combo, perfect, b2b, rows: full, atk });
+    } else { this.combo = -1; if (ts || spin) this.score += (ts === 2 ? R.score.tspin[0] : R.score.mini[0]) * this.scoreLv; this.ev.push({ t: "lock", ts, spin, cells }); }
     // 내 공격은 받을 방해 줄부터 막고, 남은 만큼만 상대에게
     while (atk > 0 && this.garbage.length) { const g = this.garbage[0], take = Math.min(atk, g.n); g.n -= take; atk -= take; if (!g.n) this.garbage.shift(); this.ev.push({ t: "cancel", n: take }); }
     if (atk > 0) { this.sent += atk; this.ev.push({ t: "attack", n: atk }); }
@@ -103,7 +105,7 @@ export class BRGame {
   setFloor(level) { this.floor = Math.max(this.startLevel, level | 0); }
   // 시간 진행 (브라우저 전용)
   tick(dt) {
-    if (this.dead) return; dt = Math.min(dt, 250); const ms = this.soft ? Math.min(40, speedMs(this.level)) : speedMs(this.level); this.grav += dt;
+    if (this.dead) return; dt = Math.min(dt, 250); const base = speedMs(this.level), ms = this.soft ? Math.min(this.softMs, base) : base; if (this.soft && this.grav > ms) this.grav = ms; this.grav += dt;
     while (this.grav >= ms && !this.dead) { this.grav -= ms; if (!this.down()) { this.grav = 0; break; } }
     if (!this.dead && this.grounded()) { this.lock += dt; if (this.lock >= RULES.lockMs) { this.ops += "K"; this.ev.push({ t: "settle" }); this.lockPiece(); } } else this.lock = 0;
   }

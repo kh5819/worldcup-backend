@@ -4,6 +4,7 @@
 // 흐름: lobby → [intro → play → result] × 검사 수 → final
 // =========================
 import { createFlight } from "./create-flight.js";
+import { addPublicRooms } from "./public-rooms.js";
 import * as C from "./clinic-core.js";
 import { judgeSubmit, resultId, publicRow, memberProfile, sanitizePrefs, withI18n, insertResults } from "./clinic.js";
 
@@ -402,3 +403,5 @@ export function registerClinicMulti(io, supabaseAdmin) {
 
 // 시험용
 export const _test = { ROOMS, CODES, USER_ROOM, consts: { INTRO_MS, FIRST_INTRO_MS, RESULT_MS, GRACE_MS } };
+// 게임천국 공개 방 목록
+addPublicRooms("clinic", ROOMS);

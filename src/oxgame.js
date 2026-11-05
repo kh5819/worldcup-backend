@@ -5,6 +5,7 @@
 // =========================
 
 import { createFlight } from "./create-flight.js";
+import { addPublicRooms } from "./public-rooms.js";
 import {
   OX_CATEGORIES,
   OX_QUESTIONS,
@@ -639,3 +640,5 @@ export function registerOxGame(io, supabaseAdmin) {
     });
   });
 }
+// 게임천국 공개 방 목록
+addPublicRooms("ox", oxRooms);

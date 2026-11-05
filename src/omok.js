@@ -18,6 +18,7 @@
 // =========================
 
 import { createFlight } from "./create-flight.js";
+import { addPublicRooms } from "./public-rooms.js";
 import { chooseOmokMove, OMOK_BOT_LEVELS } from "./omok-bot.js";
 
 // ===== Room storage =====
@@ -773,6 +774,7 @@ export function registerOmok(io, supabaseAdmin) {
           botSeq: 0,
           emptyRoomTimer: null,
         };
+        room.soloAi = payload?.soloAi === true; // AI 대결 방 표시 (공개 방 대상에서 제외)
         omokRooms.set(roomId, room);
         omokInvites.set(inviteCode, roomId);
 
@@ -1319,3 +1321,5 @@ function leavePlayer(io, room, userId, forced) {
 
 // 색 메타 export (테스트/디버그용)
 export const OMOK_COLORS = { names: COLOR_NAMES, hex: COLOR_HEX };
+// 게임천국 공개 방 목록
+addPublicRooms("omok", omokRooms);

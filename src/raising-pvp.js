@@ -1,4 +1,5 @@
 import { createFlight } from "./create-flight.js";
+import { addPublicRooms } from "./public-rooms.js";
 // =========================
 // 플듀 키우기 친구 대전 (1대1) — 서버
 // 핵심: 서버는 '시계 + 지시 중계'만 한다. 경기 계산은 두 화면이 같은 시작값·같은 지시로 각자 한다(결정적 시뮬).
@@ -611,3 +612,5 @@ export function registerRaisingPvp(io, supabaseAdmin) {
     });
   });
 }
+// 게임천국 공개 방 목록
+addPublicRooms("raising", rooms);
