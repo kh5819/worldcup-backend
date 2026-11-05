@@ -4,6 +4,7 @@
 // 'ox:*' 이벤트 prefix, 별도 Map (oxRooms)
 // =========================
 
+import { createFlight } from "./create-flight.js";
 import {
   OX_CATEGORIES,
   OX_QUESTIONS,
@@ -369,6 +370,7 @@ export function registerOxGame(io, supabaseAdmin) {
     if (!me) return;
 
     socket.on("ox:createRoom", async (payload, cb) => {
+      { const _f = createFlight("ox", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
         if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
         if (oxUserRoom.has(me.id)) {

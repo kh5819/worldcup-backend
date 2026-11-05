@@ -8,6 +8,7 @@
 // 동시에 정답을 내도 중복 처리되지 않는다 (이미 풀린 퍼즐은 already 응답).
 // =========================
 
+import { createFlight } from "./create-flight.js";
 import { CASES, defaultCaseId } from "./mystery-cases.js";
 import { createSession, act, snapshot, startEvents, publicCaseInfo, buildResult, normalizeFinal, ROLES } from "./mystery-engine.js";
 
@@ -331,6 +332,7 @@ export function registerMysteryMulti(io, supabaseAdmin) {
     const myRoom = () => rooms.get(userRoom.get(me.id));
 
     socket.on("mysm:create", async (payload, cb) => {
+      { const _f = createFlight("mysm", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
         if (!guard(cb)) return;
         if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });

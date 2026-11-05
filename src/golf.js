@@ -1,3 +1,4 @@
+import { createFlight } from "./create-flight.js";
 // =========================
 // 굴려굴려 (DUO Golf) — 멀티 네온 미니골프 10홀 동시 슬링 서버
 // 핵심: 모든 플레이어 같은 코스, 같은 홀에서 동시 진행
@@ -254,6 +255,7 @@ export function registerGolf(io, supabaseAdmin) {
 
     // ----- 방 만들기 -----
     socket.on("golf:createRoom", async (payload, cb) => {
+      { const _f = createFlight("golf", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
         if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
         if (golfUserRoom.has(me.id)) {

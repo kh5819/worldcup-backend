@@ -42,6 +42,7 @@ import { registerKnowBroadcast } from "./know-broadcast.js";
 import { registerLifeBroadcast, lbcChatVote, lbcExists } from "./lifebc-broadcast.js";
 import { registerLifeMulti } from "./lifebc-multi.js";
 import { registerLifeSave } from "./lifebc-save.js";
+import { createFlight } from "./create-flight.js";
 import { registerDodge } from "./dodge.js";
 import { registerGolf } from "./golf.js";
 import { registerAppleMulti } from "./apple-multi.js";
@@ -10559,6 +10560,7 @@ io.on("connection", (socket) => {
   // =========================
 
   safeOn(socket, "room:create", async (payload, cb) => {
+    { const _f = createFlight("room", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
     // ban 체크
     try {
       const { data: banRows } = await supabaseAdmin
@@ -10580,6 +10582,8 @@ io.on("connection", (socket) => {
     if (me.isGuest) {
       return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
     }
+    // 이미 들어가 있던 방이 있으면 먼저 나감 (이전 방이 목록에 남아 방이 2개로 보이던 문제)
+    { const prev = userRoomMap.get(me.id); if (prev && rooms.has(prev)) { try { _leaveRoomById(prev); } catch (e) { console.warn("[room:create] 이전 방 정리 실패", e?.message); } } }
 
     const room = {
       id: roomId,
@@ -10731,8 +10735,8 @@ io.on("connection", (socket) => {
     cb?.({ ok: true, roomId, inviteCode: room.inviteCode || null, mode: room.mode || "worldcup" });
   });
 
-  safeOn(socket, "room:leave", (payload, cb) => {
-    const roomId = payload?.roomId;
+  // 방 나가기 (나가기 버튼 · 새 방 만들 때 이전 방 정리 공용)
+  function _leaveRoomById(roomId) {
     const room = rooms.get(roomId);
     if (room) {
       const disc = room.disconnected?.get(me.id);
@@ -10768,6 +10772,9 @@ io.on("connection", (socket) => {
       }
     }
     socket.leave(roomId);
+  }
+  safeOn(socket, "room:leave", (payload, cb) => {
+    _leaveRoomById(payload?.roomId);
     cb?.({ ok: true });
   });
 

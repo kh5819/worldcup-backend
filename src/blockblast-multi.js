@@ -10,6 +10,7 @@ const bbRooms = new Map();
 const bbInvites = new Map();
 const bbUserRoom = new Map();
 
+import { createFlight } from "./create-flight.js";
 import { isBig, markSnapshot, startBoard, stopBoard, setWatch, BIG_ALLOWED_MAX_PLAYERS } from "./big-room.js";
 const ALLOWED_MAX_PLAYERS = BIG_ALLOWED_MAX_PLAYERS;   // 9명 이상은 대규모 방(big-room.js)
 const ALLOWED_GAME_TIME = [300, 600, 0]; // 5분/10분/무제한
@@ -233,6 +234,7 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
     if (!me) return;
 
     socket.on("blockblast:createRoom", async (payload, cb) => {
+      { const _f = createFlight("blockblast", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
         if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
         if (bbUserRoom.has(me.id)) {

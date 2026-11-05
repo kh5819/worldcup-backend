@@ -7,6 +7,7 @@
 // 흐름: lobby → [intro → play → result] × N → final
 // 개인 화면·비밀 정보는 mm:you로 본인 소켓에만, 방 전체에는 제출 여부·점수판만
 // =========================
+import { createFlight } from "./create-flight.js";
 import * as C from "./mind-core.js";
 import * as G from "./mind-games.js";
 import { memberProfile, sanitizeProfile, sanitizePrefs, resultId } from "./iq.js";
@@ -221,6 +222,7 @@ export function registerMindMulti(io, supabaseAdmin) {
       reply({ ok: true, rows });
     });
     on("mm:create", async (p, reply) => {
+      { const _f = createFlight("mm", me?.id, reply); if (!_f) return; reply = _f; } // 방 중복 생성 막기
       if (me.isGuest) { const ip = sockIp(socket), arr = (ipMakes.get(ip) || []).filter((t) => now() - t < IP_WIN); if (arr.length >= IP_MAX) return reply({ ok: false, error: "RATE_LIMITED" }); arr.push(now()); ipMakes.set(ip, arr); if (ipMakes.size > 5000) ipMakes.clear(); }
       const old = myRoom(); if (old) removePlayer(io, old, me.id);
       const id = "mm" + now().toString(36) + Math.random().toString(36).slice(2, 6);

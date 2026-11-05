@@ -3,6 +3,7 @@
 // 서버가 라운드 시작·마감 시각을 정하고(같은 시드), 각자 기록을 제출하면 서버가 채점·순위 확정
 // 흐름: lobby → [intro → play → result] × 검사 수 → final
 // =========================
+import { createFlight } from "./create-flight.js";
 import * as C from "./clinic-core.js";
 import { judgeSubmit, resultId, publicRow, memberProfile, sanitizePrefs, withI18n, insertResults } from "./clinic.js";
 
@@ -214,6 +215,7 @@ export function registerClinicMulti(io, supabaseAdmin) {
     });
 
     on("clm:create", async (p, reply) => {
+      { const _f = createFlight("clm", me?.id, reply); if (!_f) return; reply = _f; } // 방 중복 생성 막기
       if (me.isGuest) return reply({ ok: false, error: "GUEST_CANNOT_CREATE" });
       const old = myRoom();
       if (old) removePlayer(io, old, me.id);

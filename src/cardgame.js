@@ -20,6 +20,7 @@
 //   → 반응 깊이 제한 3
 // =========================
 
+import { createFlight } from "./create-flight.js";
 import { CARDS, buildDeck, getCard, isReactionCard, publicCardList, publicCardListByLang } from "./cardgame-cards.js";
 import { EVENTS, getEvent, pickRandomEvent, publicEventList } from "./cardgame-events.js";
 
@@ -1688,6 +1689,7 @@ export function registerCardGame(io, supabaseAdmin) {
     if (!me) return;
 
     socket.on("cg:createRoom", async (payload, cb) => {
+      { const _f = createFlight("cg", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
         if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
         if (cgUserRoom.has(me.id)) {

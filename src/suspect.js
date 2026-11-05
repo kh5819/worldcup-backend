@@ -1,3 +1,4 @@
+import { createFlight } from "./create-flight.js";
 // =========================
 // 수상한 카드 (DUO) — 멀티플레이어 흑백 추리 카드 게임 서버
 // 모드: ffa(개인전) / 1v1 / 2v2 / 2v2v2 / 2v2v2v2
@@ -421,6 +422,7 @@ export function registerSuspect(io, supabaseAdmin) {
 
     // ----- 방 만들기 -----
     socket.on("suspect:createRoom", async (payload, cb) => {
+      { const _f = createFlight("suspect", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
         if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
         if (scUserRoom.has(me.id)) {

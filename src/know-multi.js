@@ -5,6 +5,7 @@
 // 대결 점수 = 정확도 × 난이도 × 빠르기(서버가 받은 시각 기준). 개인 상식 진단서(속도 제외 채점)는 끝나고 따로 발급
 // 흐름: lobby → [intro → play → result] × N → final
 // =========================
+import { createFlight } from "./create-flight.js";
 import * as C from "./know-core.js";
 import { STORE } from "./know-store.js";
 import { buildPlan, serveAll, revealAll, judgeServed, buildRow, publicRow, normLang, poolFor, localize, caughtOf } from "./know.js";
@@ -159,6 +160,7 @@ export function registerKnowMulti(io, supabaseAdmin) {
 
     // 방 만들기: 게스트도 가능 (같은 사람 1분에 5개까지)
     on("knm:create", async (p, reply) => {
+      { const _f = createFlight("knm", me?.id, reply); if (!_f) return; reply = _f; } // 방 중복 생성 막기
       const c = (createdBy.get(me.id) || []).filter((t) => now() - t < 60000); if (c.length >= 5) return reply({ ok: false, error: "RATE_LIMITED" }); c.push(now()); createdBy.set(me.id, c); if (createdBy.size > 20000) createdBy.clear();
       const old = myRoom(); if (old) removePlayer(io, old, me.id);
       const id = "kn" + now().toString(36) + Math.random().toString(36).slice(2, 6);

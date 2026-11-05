@@ -1,3 +1,4 @@
+import { createFlight } from "./create-flight.js";
 // =========================
 // 그려봐 (DUO Draw) — 멀티플레이어 그림 맞히기 서버
 // 모드: 직접 출제 (v1) + 공식 문제 (v2 예정)
@@ -405,6 +406,7 @@ export function registerDraw(io, supabaseAdmin) {
 
     // ----- 방 만들기 -----
     socket.on("draw:createRoom", async (payload, cb) => {
+      { const _f = createFlight("draw", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
         if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
 

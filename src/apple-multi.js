@@ -1,3 +1,4 @@
+import { createFlight } from "./create-flight.js";
 // =========================
 // 사과게임 (DUO Apple / Fruit Box) — 멀티 2분 점수 대결 서버
 // 핵심: 모든 플레이어 같은 격자 (서버가 seed 1개 broadcast)
@@ -241,6 +242,7 @@ export function registerAppleMulti(io, supabaseAdmin) {
 
     // ----- 방 만들기 -----
     socket.on("apple:createRoom", async (payload, cb) => {
+      { const _f = createFlight("apple", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
         if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
         if (appleUserRoom.has(me.id)) {

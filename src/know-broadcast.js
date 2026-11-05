@@ -5,6 +5,7 @@
 // 대규모: 답은 메모리에서 바로 세고(문항당 1회), 방 화면 갱신은 0.5초에 한 번으로 묶어서 보냄
 // DB: know_broadcasts(방송 제목·최종 요약만). 진행 중 표는 메모리 — 서버 재시작 시 진행 중인 방송은 끝남
 // =========================
+import { createFlight } from "./create-flight.js";
 import * as C from "./know-core.js";
 import { STORE } from "./know-store.js";
 import { serveAll, revealAll, judgeServed, buildPlan, normLang, poolFor, localize } from "./know.js";
@@ -130,6 +131,7 @@ export function registerKnowBroadcast(io, supabaseAdmin, app) {
 
     // 방송 만들기: 게스트도 가능(닉네임 필수, 동시 1개·같은 IP 10분 5개), 회원 동시 3개
     on("kbc:create", async (p, reply) => {
+      { const _f = createFlight("kbc", me?.id, reply); if (!_f) return; reply = _f; } // 방 중복 생성 막기
       const mp = !me.isGuest ? await memberProfile(sb, me) : null;
       const nick = clean(p.nick || mp?.nickname, 16);
       if (!nick) return reply({ ok: false, error: "NEED_NICK" });

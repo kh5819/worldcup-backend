@@ -7,6 +7,7 @@
 // DB: sense_broadcasts / sense_bc_entries (sql/sense_tables.sql)
 // 구조는 IQ 진단소 방송(iq-broadcast.js)과 같음
 // =========================
+import { createFlight } from "./create-flight.js";
 import * as C from "./sense-core.js";
 import { setSenseHooks } from "./sense.js";
 
@@ -139,6 +140,7 @@ export function registerSenseBroadcast(io, supabaseAdmin, app, { memberProfile }
     const on = (ev, fn) => socket.on(ev, async (p, cb) => { const reply = typeof cb === "function" ? cb : () => {}; const n = now(); if (n - win > 10000) { win = n; cnt = 0; } if (++cnt > Number(process.env.SENSE_RL || 30)) return reply({ ok: false, error: "RATE_LIMITED" }); try { await fn(p || {}, reply); } catch (e) { console.error(`[${ev}]`, e); reply({ ok: false, error: "INTERNAL" }); } });
 
     on("sbc:create", async (p, reply) => {
+      { const _f = createFlight("sbc", me?.id, reply); if (!_f) return; reply = _f; } // 방 중복 생성 막기
       if (!SB) return reply({ ok: false, error: "NO_DB" });
       if (me.isGuest) { if (!String(p.streamerNick || "").replace(/[<>]/g, "").trim()) return reply({ ok: false, error: "NEED_NICK" }); const ip = sockIp(socket), n = now(); const arr = (ipMakes.get(ip) || []).filter((t) => n - t < GUEST_IP_WIN); if (arr.length >= GUEST_IP_MAX()) return reply({ ok: false, error: "RATE_LIMITED" }); ipMakes.set(ip, arr); }
       const mode = p.mode === "full" ? "full" : "quick";

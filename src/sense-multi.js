@@ -4,6 +4,7 @@
 // 흐름: lobby → [intro(설명+카운트다운) → play → result] × 검사 수 → final(시상식·개인 진단서)
 // 실시간 방 구조는 게이머 에이징 커브 단체 검사(clinic-multi.js)와 같음
 // =========================
+import { createFlight } from "./create-flight.js";
 import * as C from "./sense-core.js";
 import { judgeSubmit, buildRow, publicRow, insertResults } from "./sense.js";
 import { memberProfile, sanitizeProfile, sanitizePrefs, resultId } from "./iq.js";
@@ -133,6 +134,7 @@ export function registerSenseMulti(io, supabaseAdmin) {
     on("sm:time", (_p, reply) => reply({ ok: true, now: now() }));
     on("sm:mine", (_p, reply) => { const r = myRoom(); if (!r?.final?.individual?.[me.id]) return reply({ ok: false, error: "NO_RESULT" }); reply({ ok: true, result: r.final.individual[me.id] }); });
     on("sm:create", async (p, reply) => {
+      { const _f = createFlight("sm", me?.id, reply); if (!_f) return; reply = _f; } // 방 중복 생성 막기
       if (me.isGuest) return reply({ ok: false, error: "GUEST_CANNOT_CREATE" });
       const old = myRoom(); if (old) removePlayer(io, old, me.id);
       const id = "sm" + now().toString(36) + Math.random().toString(36).slice(2, 6);

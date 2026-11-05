@@ -6,6 +6,7 @@
 // 진행 중 라운드의 표는 서버 메모리에만 있음 → 서버 재시작 시 그 라운드 표는 사라짐(이미 공개된 라운드는 DB에 남음)
 // DB: mind_broadcasts / mind_bc_entries / mind_bc_voters / mind_bc_predictions
 // =========================
+import { createFlight } from "./create-flight.js";
 import * as C from "./mind-core.js";
 
 const BC = new Map(), REST_CACHE = new Map();
@@ -174,6 +175,7 @@ export function registerMindBroadcast(io, supabaseAdmin, app, { memberProfile } 
       try { await fn(p || {}, reply); } catch (e) { console.error(`[${ev}]`, e); reply({ ok: false, error: "INTERNAL" }); }
     });
     on("mbc:create", async (p, reply) => {
+      { const _f = createFlight("mbc", me?.id, reply); if (!_f) return; reply = _f; } // 방 중복 생성 막기
       if (!SB) return reply({ ok: false, error: "NO_DB" });
       if (me.isGuest) {
         if (!clean(p.streamerNick, 16)) return reply({ ok: false, error: "NEED_NICK" });

@@ -1,3 +1,4 @@
+import { createFlight } from "./create-flight.js";
 // =========================
 // 야추 다이스 (DUO Yacht / Yahtzee 한국형) — 2~8인 턴제 정통 룰
 // 5 주사위 × 최대 3번 굴림 × 13 카테고리
@@ -305,6 +306,7 @@ export function registerYachtMulti(io, supabaseAdmin) {
     if (!me) return;
 
     socket.on("yacht:createRoom", async (payload, cb) => {
+      { const _f = createFlight("yacht", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
         if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
         if (yachtUserRoom.has(me.id)) {

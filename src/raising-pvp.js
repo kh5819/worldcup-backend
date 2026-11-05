@@ -1,3 +1,4 @@
+import { createFlight } from "./create-flight.js";
 // =========================
 // 플듀 키우기 친구 대전 (1대1) — 서버
 // 핵심: 서버는 '시계 + 지시 중계'만 한다. 경기 계산은 두 화면이 같은 시작값·같은 지시로 각자 한다(결정적 시뮬).
@@ -371,6 +372,7 @@ export function registerRaisingPvp(io, supabaseAdmin) {
     const myRoom = () => { const id = userRoom.get(me.id); return id ? rooms.get(id) : null; };
 
     socket.on("rpvp:createRoom", async (payload, cb) => {
+      { const _f = createFlight("rpvp", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
         if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
         const old = myRoom();

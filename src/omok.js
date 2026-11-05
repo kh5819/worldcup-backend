@@ -17,6 +17,7 @@
 // 5목 검사: 매 착수 시 4방향 (가로/세로/대각 NW-SE, NE-SW) — 5 이상 연속이면 승리
 // =========================
 
+import { createFlight } from "./create-flight.js";
 import { chooseOmokMove, OMOK_BOT_LEVELS } from "./omok-bot.js";
 
 // ===== Room storage =====
@@ -712,6 +713,7 @@ export function registerOmok(io, supabaseAdmin) {
 
     // ===== createRoom =====
     socket.on("omok:createRoom", async (payload, cb) => {
+      { const _f = createFlight("omok", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
         // 게스트는 혼자 AI 대결용 방만 — 1대1 고정, 다른 사람 입장·설정 변경 불가
         const guestAiOnly = !!me.isGuest;

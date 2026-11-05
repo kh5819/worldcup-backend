@@ -9,6 +9,7 @@ const dgRooms = new Map();
 const dgInvites = new Map();
 const dgUserRoom = new Map();
 
+import { createFlight } from "./create-flight.js";
 import { isBig, markSnapshot, startBoard, stopBoard, setWatch, BIG_ALLOWED_MAX_PLAYERS } from "./big-room.js";
 const ALLOWED_MAX_PLAYERS = BIG_ALLOWED_MAX_PLAYERS;   // 9명 이상은 대규모 방(big-room.js)
 const ALLOWED_TIME_LIMIT_SEC = [0, 180, 300, 600]; // 0 = 무제한, 3/5/10분
@@ -314,6 +315,7 @@ export function registerDodge(io, supabaseAdmin) {
 
     // ----- 방 만들기 -----
     socket.on("dodge:createRoom", async (payload, cb) => {
+      { const _f = createFlight("dodge", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
         if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
         if (dgUserRoom.has(me.id)) {

@@ -72,6 +72,7 @@ export function registerLifeBroadcast(io, sb, app) {
     const on = (ev, fn) => socket.on(ev, async (p, cb) => { const reply = typeof cb === "function" ? cb : () => {}; if (limited()) return reply({ ok: false, error: "RATE_LIMITED" }); try { await fn(p && typeof p === "object" ? p : {}, reply); } catch (e) { console.error(`[${ev}]`, e); reply({ ok: false, error: "INTERNAL" }); } });
     const mine = (id) => { const b = BC.get(String(id || "")); return b && b.hostKey === key && !b.ended ? b : null; };
     const get = (id) => BC.get(String(id || "")) || null;
+    const uroom = (id) => `lbcu:${id}:${key}`; // 이 시청자 개인 알림 (강퇴·닉네임 변경)
 
     on("lbc:create", (p, reply) => {
       const nick = clean(p.nick, 16); if (!nick) return reply({ ok: false, error: "NEED_NICK" }); if (!nickOk(nick)) return reply({ ok: false, error: "BAD_NICK" });
@@ -84,12 +85,13 @@ export function registerLifeBroadcast(io, sb, app) {
       // admin 「📺 스트리머」 목록 — 인생 방송국 (게스트도 기록, 회원이면 host_user_id 남김)
       if (sb) Promise.resolve(sb.from("streamer_chat_log").insert({ platform: "lifebc", channel_id: id, nickname: nick, content_id: null, content_title: b.title, content_mode: b.intensity, room_code: id, host_user_id: me.isGuest ? null : me.id, host_nick: me.isGuest ? `게스트 ${nick}` : nick })).then((r) => r?.error && console.error("[lbc] streamer log", r.error.message), () => {});
     });
-    on("lbc:watch", (p, reply) => { const b = get(p.id); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" }); socket.join(room(b.id)); reply({ ok: true, host: b.hostKey === key, state: pubState(b) }); });
+    on("lbc:watch", (p, reply) => { const b = get(p.id); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" }); if (b.banned?.has(key)) return reply({ ok: false, error: "KICKED" }); socket.join(room(b.id)); socket.join(uroom(b.id)); reply({ ok: true, host: b.hostKey === key, state: pubState(b) }); });
     on("lbc:join", (p, reply) => {
       const b = get(p.id); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" }); if (b.ended) return reply({ ok: false, error: "BC_CLOSED" });
+      if (b.banned?.has(key)) return reply({ ok: false, error: "KICKED" });
       let v = b.viewers.get(key);
       if (!v) { if (b.viewers.size >= MAX_VIEWERS) return reply({ ok: false, error: "ROOM_FULL" }); const nick = clean(p.nick, 12); if (!nick) return reply({ ok: false, error: "NEED_NICK" }); if (!nickOk(nick)) return reply({ ok: false, error: "BAD_NICK" }); v = { nick, pts: 0, no: ++b.seq }; b.viewers.set(key, v); emitState(io, b); }
-      socket.join(room(b.id)); reply({ ok: true, nick: v.nick, pts: v.pts, state: pubState(b) });
+      socket.join(room(b.id)); socket.join(uroom(b.id)); reply({ ok: true, nick: v.nick, pts: v.pts, state: pubState(b) });
     });
     on("lbc:me", (p, reply) => { const b = get(p.id); const v = b?.viewers.get(key); if (!v) return reply({ ok: false, error: "NOT_JOINED" }); const all = [...b.viewers.values()].filter((x) => !x.host).sort((x, y) => y.pts - x.pts); const app_ = b.apps.find((a) => a.key === key); reply({ ok: true, nick: v.nick, pts: v.pts, rank: v.host ? null : all.filter((x) => x.pts > v.pts).length + 1, of: all.length, vote: b.poll ? b.poll.votes.get(key) ?? null : null, pick: b.pred ? b.pred.picks.get(key) ?? null : null, applied: !!app_, accepted: b.accepted.has(key) }); });
 
@@ -177,6 +179,33 @@ export function registerLifeBroadcast(io, sb, app) {
     on("lbc:myResult", (p, reply) => {
       const b = get(p.id); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" }); if (!b.season) return reply({ ok: false, error: "NO_RESULT" });
       reply({ ok: true, pub: b.season.pub, card: b.season.cards.get(key) || null, cast: b.accepted.has(key) });
+    });
+    // ----- 시청자 관리 (방장 전용): 목록 · 강퇴 · 닉네임 변경 -----
+    const appOf = (b, k) => { for (const [aid, kk] of b.castApp || []) if (kk === k) return aid; return null; };
+    const byVid = (b, vid) => { for (const [k, v] of b.viewers) if (!v.host && "v" + v.no === String(vid)) return [k, v]; return [null, null]; };
+    on("lbc:viewers", (p, reply) => {
+      const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" });
+      const rows = [...b.viewers.entries()].filter(([, v]) => !v.host).sort((x, y) => y[1].no - x[1].no).slice(0, 300)
+        .map(([k, v]) => ({ vid: "v" + v.no, nick: v.nick, pts: v.pts, cast: b.accepted.has(k), appId: appOf(b, k), applied: b.apps.some((a) => a.key === k) }));
+      reply({ ok: true, rows, kicked: b.banned?.size || 0 });
+    });
+    on("lbc:kick", (p, reply) => {
+      const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" });
+      const [k, v] = byVid(b, p.vid); if (!k) return reply({ ok: false, error: "VIEWER_NOT_FOUND" });
+      b.viewers.delete(k); (b.banned = b.banned || new Set()).add(k);
+      b.apps = b.apps.filter((a) => a.key !== k);
+      const P = b.poll; if (P && P.votes.has(k)) { const o = P.votes.get(k); P.votes.delete(k); P.counts[o] = Math.max(0, (P.counts[o] || 0) - 1); }
+      const R = b.pred; if (R && !R.settled && R.picks.has(k)) { const o = R.picks.get(k); R.picks.delete(k); R.counts[o] = Math.max(0, (R.counts[o] || 0) - 1); }
+      const r = `lbcu:${b.id}:${k}`; io.to(r).emit("lbc:kicked", { id: b.id }); io.in(r).socketsLeave(room(b.id));
+      emitState(io, b, true); reply({ ok: true, nick: v.nick, appId: appOf(b, k) });
+    });
+    on("lbc:rename", (p, reply) => {
+      const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" });
+      const [k, v] = byVid(b, p.vid); if (!k) return reply({ ok: false, error: "VIEWER_NOT_FOUND" });
+      const nick = clean(p.nick, 12); if (!nick) return reply({ ok: false, error: "NEED_NICK" }); if (!nickOk(nick)) return reply({ ok: false, error: "BAD_NICK" });
+      const old = v.nick; v.nick = nick; for (const a of b.apps) if (a.key === k) a.nick = nick.slice(0, 10);
+      io.to(`lbcu:${b.id}:${k}`).emit("lbc:renamed", { id: b.id, nick });
+      emitState(io, b, true); reply({ ok: true, old, nick, appId: appOf(b, k) });
     });
     on("lbc:end", (p, reply) => { const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); if (b.poll && !b.poll.closed) closePoll(io, b); b.ended = true; b.endedAt = now(); emitState(io, b, true); reply({ ok: true, board: board(b) }); });
   });
