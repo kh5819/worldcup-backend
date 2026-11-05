@@ -3,8 +3,8 @@
 // 문제는 한 문항씩 서버가 내줌(정답 없는 화면 정보만) → 답을 받으면 서버가 채점·시간 측정 → 해설 공개
 // DB: iq_results / iq_profiles / iq_groups (sql/iq_tables.sql, RLS 켬·정책 0 = 서버 전용)
 // =========================
-import * as C from "./iq-core.js?v=c3";
-import * as G from "./iq-gen.js?v=g3";
+import * as C from "./iq-core.js?v=c4";
+import * as G from "./iq-gen.js?v=g4";
 import { SLIDE_BANK } from "./iq-bank.js";
 import { bcOnBegin, bcOnFinish, bcPlay, bcPlayEnd } from "./iq-broadcast.js";
 
@@ -326,7 +326,7 @@ export function registerIq(io, supabaseAdmin, app, { getOptionalUser } = {}) {
   });
   app.get("/iq/today", (_req, res) => res.json({ ok: true, day: C.dayKey(), week: C.weekKey(), setVer: C.SET_VERSION }));
 
-  // 랭킹: mode=quick|full|daily|weekly (모드·세트·채점 버전이 같은 기록끼리만) · board=total|area · period=day|week|all · device=pc|mobile|all
+  // 랭킹: mode=quick|full|daily|weekly (모드·세트가 같은 기록끼리. 버전이 바뀌어도 기록은 유지) · board=total|area · period=day|week|all · device=pc|mobile|all
   const rankCache = new Map();
   app.get("/iq/ranking", async (req, res) => {
     try {
@@ -339,7 +339,7 @@ export function registerIq(io, supabaseAdmin, app, { getOptionalUser } = {}) {
       const ck = JSON.stringify([mode, board, area, period, dev, setKey]);
       const hit = rankCache.get(ck); if (hit && Date.now() - hit.at < 30000) return res.json(hit.body);
       let q = sb.from("iq_results").select(`id, owner_key, user_id, nickname, avatar, avatar_url, total, iq, correct, areas, diag->>title, diag->i18n, is_streamer, created_at`)
-        .eq("mode", mode).eq("set_ver", C.SET_VERSION).eq("is_public", true).eq("flagged", false);
+        .eq("mode", mode).eq("is_public", true).eq("flagged", false);
       if (setKey) q = q.eq("set_key", setKey);
       if (dev !== "all") q = q.eq("device", dev);
       if (board === "streamer") q = q.eq("is_streamer", true);

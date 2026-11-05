@@ -4,10 +4,10 @@
 // 서버 사본: worldcup-backend/src/iq-core.js ↔ 홈페이지 제작/js/iq/core.js (시험이 같은지 검사)
 // ※ 공인 IQ 검사가 아님. 인구 백분위·연령 표준치·성별 보정 없음. 같은 검사를 한 사람끼리만 비교.
 // =========================
-import { TYPES, AREAS, hashSeed, rng, GEN_VERSION } from "./iq-gen.js?v=g3";
+import { TYPES, AREAS, hashSeed, rng, GEN_VERSION } from "./iq-gen.js?v=g4";
 export { TYPES, AREAS, hashSeed, rng };
 
-export const CORE_VERSION = 3;          // 채점식·구성 버전 (바뀌면 랭킹·방송 비교 분리) — 2: 점수 환산 엄격·배분 조정(11-01)
+export const CORE_VERSION = 4;          // 채점식·구성 버전 (기록에 함께 저장, 랭킹은 버전이 바뀌어도 유지 · 방송 대항전만 같은 버전끼리) — 2: 점수 환산 엄격·배분 조정(11-01)
 export const SET_VERSION = `${CORE_VERSION}.${GEN_VERSION}`;
 export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
@@ -16,9 +16,9 @@ const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
 // [유형, 난이도 1~5] — 정밀 30문항: 8개 영역 모두 (논리4·패턴4·공간4·수리4·언어4·기억3·문제해결4·창의3), 뒤로 갈수록 어려움
 export const PLANS = {
   full: [
-    ["series", 1], ["liar", 2], ["rotate", 2], ["span", 2], ["order", 2], ["circuit", 2], ["symbols", 2], ["analogy", 3], ["make", 3], ["bells", 2],
-    ["lock", 3], ["gears", 3], ["match", 2], ["clock", 3], ["path", 4], ["figseq", 3], ["scale", 3], ["mirror", 3], ["syllogism", 4], ["make", 4],
-    ["gridmem", 3], ["liar", 4], ["path", 5], ["series", 4], ["rings", 5], ["make", 4], ["matrix", 5], ["oddword", 4], ["match", 4], ["slide", 5],
+    ["series", 2], ["rotate", 3], ["span", 2], ["liar", 3], ["order", 4], ["symbols", 4], ["circuit", 5], ["analogy", 5], ["bells", 3], ["make", 3],
+    ["lock", 3], ["gears", 4], ["match", 3], ["clock", 4], ["figseq", 5], ["scale", 3], ["mirror", 4], ["syllogism", 5], ["span", 3], ["gridmem", 5],
+    ["liar", 5], ["path", 5], ["series", 4], ["rings", 5], ["make", 4], ["matrix", 5], ["oddword", 5], ["match", 4], ["rotate", 5], ["slide", 5],
   ],
   quick: [["matrix", 3], ["series", 2], ["liar", 3], ["rotate", 3], ["lock", 3], ["span", 3], ["symbols", 3], ["slide", 4], ["match", 3], ["analogy", 3]],
   // 오늘의 챌린지: 날짜마다 모두 같은 10문항 / 주간 특별검사: 주마다 모두 같은 20문항(어려움)
@@ -31,7 +31,7 @@ export const PLANS = {
 export const MODES = Object.keys(PLANS);
 export const MODE_TX = {
   quick: { ko: ["빠른검사", "10문항 · 약 6분"], ja: ["クイック検査", "10問 · 約6分"], en: ["Quick Test", "10 items · ~6 min"] },
-  full: { ko: ["정밀검사", "30문항 · 약 20분"], ja: ["精密検査", "30問 · 約20分"], en: ["Full Test", "30 items · ~20 min"] },
+  full: { ko: ["정밀검사", "30문항 · 약 25분"], ja: ["精密検査", "30問 · 約25分"], en: ["Full Test", "30 items · ~25 min"] },
   daily: { ko: ["오늘의 챌린지", "모두 같은 10문항"], ja: ["今日のチャレンジ", "全員同じ10問"], en: ["Daily Challenge", "Same 10 items for all"] },
   weekly: { ko: ["주간 특별검사", "이번 주 20문항 · 어려움"], ja: ["週間特別検査", "今週の20問・難しい"], en: ["Weekly Special", "This week's 20 · hard"] },
 };

@@ -6,7 +6,7 @@
 // - 평균 IQ 예측 이벤트: 마감 전까지 한 사람 한 번, 확정 때 가장 가까운 사람 공개
 // DB: iq_broadcasts / iq_bc_entries / iq_bc_predictions (sql/iq_tables.sql)
 // =========================
-import * as C from "./iq-core.js?v=c3";
+import * as C from "./iq-core.js?v=c4";
 
 const BC = new Map();
 const REST_CACHE = new Map();
@@ -304,7 +304,7 @@ export function registerIqBroadcast(io, supabaseAdmin, app, { memberProfile } = 
   app.get("/iq/bc-ranking", async (req, res) => {
     try {
       const mode = req.query.mode === "full" ? "full" : "quick";
-      const { data, error } = await SB.from("iq_broadcasts").select("id, title, streamer_nick, mode, final_stats, finalized_at").eq("status", "final").eq("mode", mode).eq("set_ver", C.SET_VERSION).order("finalized_at", { ascending: false }).limit(300);
+      const { data, error } = await SB.from("iq_broadcasts").select("id, title, streamer_nick, mode, final_stats, finalized_at").eq("status", "final").eq("mode", mode).order("finalized_at", { ascending: false }).limit(300);
       if (error) return res.status(500).json({ ok: false, error: "QUERY_FAIL" });
       const rows = (data || []).filter((r) => (r.final_stats?.count || 0) >= MIN_BATTLE).map((r) => ({ id: r.id, title: r.title, streamer: r.streamer_nick, count: r.final_stats.count, avgIq: r.final_stats.avgIq, avgTotal: r.final_stats.avgTotal, at: r.finalized_at }))
         .sort((a, b) => b.avgTotal - a.avgTotal).slice(0, 50);

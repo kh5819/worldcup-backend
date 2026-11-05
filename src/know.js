@@ -427,7 +427,7 @@ export function registerKnow(io, supabaseAdmin, app, { getOptionalUser, requireA
       const setKey = mode === "daily" ? (/^\d{4}-\d\d-\d\d$/.test(req.query.set || "") ? req.query.set : C.dayKey()) : null;
       const ck = JSON.stringify([mode, period, board, area, setKey]);
       const hit = rankCache.get(ck); if (hit && Date.now() - hit.at < 30000) return res.json(hit.body);
-      let q = sb.from("know_results").select("id, owner_key, user_id, nickname, avatar, avatar_url, total, lv, acc, correct, type_id, is_streamer, created_at").eq("mode", mode).eq("core_ver", C.CORE_VERSION).eq("is_public", true).eq("flagged", false);
+      let q = sb.from("know_results").select("id, owner_key, user_id, nickname, avatar, avatar_url, total, lv, acc, correct, type_id, is_streamer, created_at").eq("mode", mode).eq("is_public", true).eq("flagged", false);
       if (area) q = q.eq("area", area);
       if (setKey) q = q.eq("set_key", setKey);
       if (board === "streamer") q = q.eq("is_streamer", true);

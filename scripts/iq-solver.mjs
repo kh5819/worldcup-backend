@@ -38,7 +38,7 @@ function slideSolve(view) {   // BFS로 실제 이동 목록
 export function answerFor(it) {
   const v = it.view;
   switch (it.type) {
-    case "rings": { const val = v.init.slice(), ops = []; for (let i = 0; i < v.n; i++) { const x = (v.steps - val[i]) % v.steps; for (let k = 0; k < x; k++) { ops.push(i); val[i] = (val[i] + 1) % v.steps; if (i + 1 < v.n) val[i + 1] = (val[i + 1] + 1) % v.steps; } } return ops; }
+    case "rings": { const val = v.init.slice(), ops = []; for (let i = 0; i < v.n; i++) { const x = (v.steps - val[i]) % v.steps; for (let k = 0; k < x; k++) { ops.push(i); val[i] = (val[i] + 1) % v.steps; if (i + 1 < v.n) val[i + 1] = (val[i + 1] + (v.link || 1)) % v.steps; } } return ops; }
     case "slide": return slideSolve(v);
     case "path": return it.exp.route;
     case "make": return solveMake(v);

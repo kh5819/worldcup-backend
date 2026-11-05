@@ -7,7 +7,7 @@
 // 외부 import 금지
 // =========================
 
-export const GEN_VERSION = 3;   // 3: 문제해결 난이도 상향 — 길찾기 판·별↑, 원판 횟수 제한 (2026-11-06 사용자 '문제해결 너무 쉽다')
+export const GEN_VERSION = 4;   // 3: 문제해결 난이도 상향 — 길찾기 판·별↑, 원판 횟수 제한 (2026-11-06 사용자 '문제해결 너무 쉽다')
 // 이전: GEN_VERSION 2   // 2: 패턴·공간·언어 난이도 상향 (2026-11-01 사용자 '너무 쉽다')
 
 // ---------- 공통 ----------
@@ -59,7 +59,7 @@ export const TYPES = {
   span:      { area: "memory",   kind: "input", lim: [35, 40, 45, 50, 55], from: null },
   gridmem:   { area: "memory",   kind: "play",  lim: [30, 30, 35, 35, 40], from: "hidden" },
   slide:     { area: "problem",  kind: "play",  lim: [60, 75, 90, 110, 130], from: "slide" },
-  path:      { area: "problem",  kind: "play",  lim: [50, 60, 75, 90, 105], from: "path" },
+  path:      { area: "problem",  kind: "play",  lim: [50, 60, 75, 75, 85], from: "path" },
   rings:     { area: "problem",  kind: "play",  lim: [50, 60, 75, 110, 130], from: "rings" },
   match:     { area: "creative", kind: "play",  lim: [60, 75, 90, 100, 110], from: null },
   make:      { area: "creative", kind: "play",  lim: [60, 75, 90, 100, 120], from: null },
@@ -262,8 +262,8 @@ function genClock(R, d) {
     return { view: { kind: sub ? "sub" : "add", h, m, dm }, key: { h: Math.floor(a / 60) || 12, m: a % 60 }, exp: { kind: sub ? "sub" : "add", h, m, dm }, hint: { dm } };
   }
   if (d === 4) {   // 거울에 비친 시계
-    const a = (720 - toMin(h, m)) % 720;
-    return { view: { kind: "mirror", h, m }, key: { h: Math.floor(a / 60) || 12, m: a % 60 }, exp: { kind: "mirror", h, m }, hint: { kind: "mirror" } };
+    const a = (720 - toMin(h, m)) % 720, sh = Math.floor(a / 60) || 12, sm = a % 60; // 거울 속 바늘 위치
+    return { view: { kind: "mirror", h: sh, m: sm }, key: { h, m }, exp: { kind: "mirror", h: sh, m: sm }, hint: { kind: "mirror" } };
   }
   // 두 바늘 사이 각도
   let ang = Math.abs(30 * (h % 12) - 5.5 * m); if (ang > 180) ang = 360 - ang;
@@ -621,6 +621,7 @@ function genMirror(R, d) {
     const view = { w, h, source: { r: sr, c: -1, dir: "E" }, target, walls, mirrors: all.map((m, i) => ({ r: m.r, c: m.c, s: start[i] })) };
     if (traceBeam(view, start).hit) continue;
     if (!traceBeam(view, solution).hit) continue;
+    if (d >= 3) view.shots = [3, 2, 2][d - 3]; // 어려운 단계: 빛은 '쏘기'로만 보임 (눌러 보며 맞추기 방지)
     return { view, key: solution, exp: { n: mirrors.length }, hint: { first: mirrors[0] } };
   }
   throw new Error("mirror gen");
@@ -922,20 +923,21 @@ export function slideReplay(view, moves) {
 // 17) 지도 길찾기 (미스터리 지도 동선) — 별을 모두 지나 도착, 걸음 수 제한. 같은 칸 다시 지나기 없음
 // =========================================================
 function genPath(R, d) {
-  const size = [5, 6, 7, 8, 8][d - 1], stars = [1, 2, 3, 3, 4][d - 1], slack = [2, 1, 1, 0, 0][d - 1], minOpt = [5, 8, 12, 15, 18][d - 1];
-  for (let tries = 0; tries < 900; tries++) {
+  const size = [5, 6, 7, 8, 8][d - 1], stars = [1, 2, 3, 4, 5][d - 1], slack = [2, 1, 1, 0, 0][d - 1], minOpt = [5, 8, 12, 18, 22][d - 1];
+  for (let tries = 0; tries < 3000; tries++) { // 조건이 까다로워 못 만들면 조금씩 풀어 줌 (문제가 안 만들어지는 일은 없어야 함)
+    const relax = tries < 1000 ? 0 : tries < 2000 ? 1 : 2, starsN = Math.max(1, stars - relax), needOpt = Math.max(size, minOpt - relax * 4);
     const g = range(size).map(() => Array(size).fill("."));
     const free = R.shuffle(range(size * size));
     const at = (i) => [Math.floor(i / size), i % size];
     const [sr, sc] = at(free[0]), [tr2, tc] = at(free[1]);
     if (Math.abs(sr - tr2) + Math.abs(sc - tc) < size - 1) continue;
     g[sr][sc] = "S"; g[tr2][tc] = "T";
-    const st = free.slice(2, 2 + stars).map(at); st.forEach(([r, c]) => (g[r][c] = "*"));
+    const st = free.slice(2, 2 + starsN).map(at); st.forEach(([r, c]) => (g[r][c] = "*"));
     const wallN = Math.floor(size * size * [0.18, 0.2, 0.22, 0.24, 0.26][d - 1]);
-    free.slice(2 + stars, 2 + stars + wallN).map(at).forEach(([r, c]) => (g[r][c] = "#"));
+    free.slice(2 + starsN, 2 + starsN + wallN).map(at).forEach(([r, c]) => (g[r][c] = "#"));
     // (칸, 모은 별) BFS — 경로 복원해서 같은 칸을 다시 지나지 않는지 확인
     const sIdx = (r, c) => st.findIndex(([a, b]) => a === r && b === c);
-    const full = (1 << stars) - 1;
+    const full = (1 << starsN) - 1;
     const key = (r, c, m) => `${r},${c},${m}`;
     const prev = new Map([[key(sr, sc, 0), null]]); let q = [[sr, sc, 0]]; let end = null;
     for (let dep = 0; q.length && !end; dep++) {
@@ -958,7 +960,7 @@ function genPath(R, d) {
     while (k) { const [r, c] = k.split(",").map(Number); route.unshift([r, c]); k = prev.get(k); }
     if (new Set(route.map((x) => x.join())).size !== route.length) continue;
     const opt = route.length - 1;
-    if (opt < minOpt) continue;
+    if (opt < needOpt) continue;
     return { view: { grid: g.map((row) => row.join("")), maxSteps: opt + slack }, key: opt, exp: { opt, route }, hint: { first: route.slice(0, 3) } };
   }
   throw new Error("path gen");
@@ -983,15 +985,15 @@ export function pathCheck(view, path) {
 // 18) 원판 맞추기 (미스터리 H2) — i번 원판을 돌리면 안쪽 원판도 한 칸 같이 돎
 // =========================================================
 function genRings(R, d) {
-  const n = [3, 3, 4, 5, 5][d - 1], steps = [6, 8, 8, 8, 10][d - 1], k = [3, 5, 9, 14, 20][d - 1], minOps = [2, 4, 9, 14, 20][d - 1], slack = [null, null, 3, 1, 0][d - 1];
+  const n = [3, 3, 4, 5, 5][d - 1], steps = [6, 8, 8, 8, 10][d - 1], k = [3, 5, 9, 14, 20][d - 1], minOps = [2, 4, 9, 14, 18][d - 1], slack = [null, null, 3, 1, 0][d - 1], link = [1, 1, 1, 2, 3][d - 1];
   for (let tries = 0; tries < 50; tries++) {
     const val = Array(n).fill(0);
-    for (let i = 0; i < k; i++) { const op = R.int(0, n - 1); val[op] = (val[op] + steps - 1) % steps; if (op + 1 < n) val[op + 1] = (val[op + 1] + steps - 1) % steps; }
+    for (let i = 0; i < k; i++) { const op = R.int(0, n - 1); val[op] = (val[op] + steps - 1) % steps; if (op + 1 < n) val[op + 1] = (val[op + 1] + steps * 3 - link) % steps; }
     if (val.every((v) => v === 0)) continue;
     // 정답은 하나뿐: 바깥부터 순서대로 필요한 횟수 → 어려운 단계는 횟수 제한 (막 돌리면 못 풂)
-    const sim = val.slice(); let opt = 0; for (let i = 0; i < n; i++) { const x = (steps - sim[i]) % steps; opt += x; sim[i] = 0; if (i + 1 < n) sim[i + 1] = (sim[i + 1] + x) % steps; }
+    const sim = val.slice(); let opt = 0; for (let i = 0; i < n; i++) { const x = (steps - sim[i]) % steps; opt += x; sim[i] = 0; if (i + 1 < n) sim[i + 1] = (sim[i + 1] + x * link) % steps; }
     if (opt < minOps) continue;
-    return { view: { n, steps, init: val, maxOps: slack == null ? null : opt + slack }, key: null, exp: { k, opt }, hint: { order: "outer" } };
+    return { view: { n, steps, init: val, link, maxOps: slack == null ? null : opt + slack }, key: null, exp: { k, opt }, hint: { order: "outer" } };
   }
   throw new Error("rings gen");
 }
@@ -999,7 +1001,7 @@ export function ringsReplay(view, ops) {
   if (!Array.isArray(ops) || ops.length > 120) return false;
   if (view.maxOps != null && ops.length > view.maxOps) return false;
   const v = view.init.slice();
-  for (const op of ops) { if (!isInt(op) || op < 0 || op >= view.n) return false; v[op] = (v[op] + 1) % view.steps; if (op + 1 < view.n) v[op + 1] = (v[op + 1] + 1) % view.steps; }
+  const lk = view.link || 1; for (const op of ops) { if (!isInt(op) || op < 0 || op >= view.n) return false; v[op] = (v[op] + 1) % view.steps; if (op + 1 < view.n) v[op + 1] = (v[op + 1] + lk) % view.steps; }
   return v.every((x) => x === 0);
 }
 

@@ -231,7 +231,7 @@ export function registerMind(io, supabaseAdmin, app, { getOptionalUser } = {}) {
       res.json({ ok: true, group: data });
     } catch { res.status(500).json({ ok: false, error: "INTERNAL" }); }
   });
-  // 랭킹: 검사 길이·난이도·채점 버전이 같은 기록끼리만 — 섞지 않음
+  // 랭킹: 검사 길이·난이도가 같은 기록끼리. 버전이 바뀌어도 기록은 유지
   const rankCache = new Map();
   app.get("/mind/ranking", async (req, res) => {
     try {
@@ -243,7 +243,7 @@ export function registerMind(io, supabaseAdmin, app, { getOptionalUser } = {}) {
       const period = ["day", "week", "all"].includes(req.query.period) ? req.query.period : "all";
       const ck = JSON.stringify([mode, lv, board, area, period]);
       const hit = rankCache.get(ck); if (hit && Date.now() - hit.at < 30000) return res.json(hit.body);
-      let q = sb.from("mind_results").select("id, owner_key, user_id, nickname, avatar, avatar_url, total, wins, n, areas, diag->type, diag->titles, is_streamer, created_at").eq("mode", mode).eq("lv", lv).eq("set_ver", C.SET_VERSION).eq("is_public", true).eq("flagged", false);
+      let q = sb.from("mind_results").select("id, owner_key, user_id, nickname, avatar, avatar_url, total, wins, n, areas, diag->type, diag->titles, is_streamer, created_at").eq("mode", mode).eq("lv", lv).eq("is_public", true).eq("flagged", false);
       if (board === "streamer") q = q.eq("is_streamer", true);
       const since = period === "day" ? Date.now() - 864e5 : period === "week" ? Date.now() - 7 * 864e5 : null;
       if (since) q = q.gte("created_at", new Date(since).toISOString());

@@ -296,7 +296,7 @@ export function registerMindBroadcast(io, supabaseAdmin, app, { memberProfile } 
   app.get("/mind/bc-ranking", async (req, res) => {
     try {
       const mode = req.query.mode === "full" ? "full" : "quick", lv = [1, 2, 3].includes(Number(req.query.lv)) ? Number(req.query.lv) : 1;
-      const { data, error } = await SB.from("mind_broadcasts").select("id, title, streamer_nick, mode, lv, final_stats, finalized_at").eq("status", "final").eq("mode", mode).eq("lv", lv).eq("set_ver", C.SET_VERSION).order("finalized_at", { ascending: false }).limit(300);
+      const { data, error } = await SB.from("mind_broadcasts").select("id, title, streamer_nick, mode, lv, final_stats, finalized_at").eq("status", "final").eq("mode", mode).eq("lv", lv).order("finalized_at", { ascending: false }).limit(300);
       if (error) return res.status(500).json({ ok: false, error: "QUERY_FAIL" });
       const rows = (data || []).filter((r) => (r.final_stats?.count || 0) >= MIN_BATTLE && r.final_stats?.avgTotal != null).map((r) => ({ id: r.id, title: r.title, streamer: r.streamer_nick, count: r.final_stats.count, avgTotal: r.final_stats.avgTotal, medianTotal: r.final_stats.medianTotal, at: r.finalized_at })).sort((a, b) => b.avgTotal - a.avgTotal).slice(0, 50);
       res.json({ ok: true, mode, lv, minCount: MIN_BATTLE, rows });
