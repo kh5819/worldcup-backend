@@ -39,6 +39,9 @@ import { registerSenseBroadcast } from "./sense-broadcast.js";
 import { registerKnow } from "./know.js";
 import { registerKnowMulti } from "./know-multi.js";
 import { registerKnowBroadcast } from "./know-broadcast.js";
+import { registerLifeBroadcast, lbcChatVote, lbcExists } from "./lifebc-broadcast.js";
+import { registerLifeMulti } from "./lifebc-multi.js";
+import { registerLifeSave } from "./lifebc-save.js";
 import { registerDodge } from "./dodge.js";
 import { registerGolf } from "./golf.js";
 import { registerAppleMulti } from "./apple-multi.js";
@@ -10479,6 +10482,9 @@ registerSenseBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile 
 registerKnow(io, supabaseAdmin, app, { getOptionalUser, requireAdmin });
 registerKnowMulti(io, supabaseAdmin);
 registerKnowBroadcast(io, supabaseAdmin, app);
+registerLifeBroadcast(io, supabaseAdmin, app);
+registerLifeMulti(io);
+registerLifeSave(io, supabaseAdmin);
 
 // ============= 그려봐 신고 admin =============
 app.get("/admin/draw-reports", requireAdmin, async (req, res) => {
@@ -13138,6 +13144,8 @@ class ChatBridge {
 
     this.totalMessagesProcessed++;
 
+    // ── 인생 방송국 스트리머 모드: !1 ~ !6 투표 (폰 투표와 같은 집계에 합침) ──
+    if (this.mode === "lifebc") { this._processLifebcMsg(senderChannelId, nickname, content); return; }
     // ── 오목 스트리머 모드: !a1 좌표 투표 (월드컵·퀴즈와 분리, 오목 방송 방에서만 켜짐) ──
     if (this.mode === "omok") {
       this._processOmokMsg(senderChannelId, nickname, content, messageTime);   // 스트리머 채팅도 셈 (SOOP·씨미와 같게, 혼자 시험할 때 헷갈림 방지)
@@ -13535,7 +13543,8 @@ class SoopChatBridge {
       const userId = fields[2] || fields[5] || "";
       const nickname = fields[6] || fields[3] || "익명";
       const id = userId || nickname;
-      if (this.mode === "omok") this._processOmokMsg(id, nickname, message, Date.now());
+      if (this.mode === "lifebc") this._processLifebcMsg(id, nickname, message);
+      else if (this.mode === "omok") this._processOmokMsg(id, nickname, message, Date.now());
       else if (this.mode === "quiz") this._processQuizMsg(id, nickname, message, Date.now(), "viewer");
       else this._processVoteMsg(id, nickname, message, Date.now());
     }
@@ -13722,6 +13731,21 @@ const OmokVoteMixin = {
 Object.assign(ChatBridge.prototype, OmokVoteMixin);
 Object.assign(SoopChatBridge.prototype, OmokVoteMixin);
 
+// ── 인생 방송국: 채팅 "!1" ~ "!6" → lifebc-broadcast 의 현재 투표/예측에 1표 ──
+const LifebcVoteMixin = {
+  setLifebc(bcId, platform) { this.mode = "lifebc"; this.lbcId = bcId; this.lbcPlatform = platform || "chat"; this.lbcSeen = 0; this.lbcVotes = 0; this.lbcRecent = []; },
+  _processLifebcMsg(senderId, nickname, content) {
+    const t = String(content == null ? "" : content).normalize("NFKC").trim();
+    const m = t.match(/^[!！]\s*([1-6])\s*$/); if (!m) return;
+    this.lbcSeen = (this.lbcSeen || 0) + 1;
+    const id = senderId || `anon_${nickname || "익명"}`;
+    const r = lbcChatVote(this.lbcId, `c:${this.lbcPlatform}:${id}`, Number(m[1]));
+    if (r && !r.dup) { this.lbcVotes = (this.lbcVotes || 0) + 1; this.lbcRecent.push({ nickname: String(nickname || "익명").slice(0, 20), n: Number(m[1]) }); if (this.lbcRecent.length > 8) this.lbcRecent.shift(); }
+  },
+};
+Object.assign(ChatBridge.prototype, LifebcVoteMixin);
+Object.assign(SoopChatBridge.prototype, LifebcVoteMixin);
+
 // roomCode → ChatBridge / SoopChatBridge 인스턴스
 // ============================================================
 // CimeChatBridge — 씨미(ci.me) OpenAPI 채팅 연결
@@ -13841,7 +13865,7 @@ const chatBridges = new Map();
 
 // 스트리머 채팅연동 사용 로그 (운영자 admin 탭에서 확인) — 실패해도 게임 흐름엔 영향 없음
 // 콘텐츠(DB) 없이 쓰는 스트리머 모드(예: 그려봐)는 종류만 프론트가 알려 줌 — 허용 목록만 저장
-const STREAMER_LOG_MODES = { draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드" };
+const STREAMER_LOG_MODES = { draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드" };
 async function _logStreamerChat({ platform, channelId, nickname, contentId, roomCode, hostUserId, hostNick, contentMode }) {
   try {
     if (!platform || !channelId) return; // 식별자 없으면 기록 안 함
@@ -14254,6 +14278,29 @@ app.get("/chat-audience/quiz-board", (req, res) => {
 //  POST /chat-audience/omok-round { roomCode, roundKey, size, occupied:[칸번호], endsAt } → 이번 수 투표 시작(집계 초기화)
 //  POST /chat-audience/omok-close { roomCode } → 집계 멈춤 + 최종 표 반환
 //  GET  /chat-audience/omok-votes?room= → 칸별 표 수
+// --- 인생 방송국 스트리머 모드: 채팅 연결을 방송에 묶기 ---
+//  POST /chat-audience/lifebc-link { roomCode, bcId, platform } → 이 채팅의 "!1"~"!6" 이 그 방송의 투표·예측에 들어감
+//  GET  /chat-audience/lifebc-stat?room= → 연결 상태·채팅 표 수 (화면 표시용)
+app.post("/chat-audience/lifebc-link", optionalAuth, async (req, res) => {
+  try {
+    const { roomCode, bcId } = req.body || {};
+    const bridge = chatBridges.get(roomCode);
+    if (!bridge) return res.status(404).json({ ok: false, error: "NO_BRIDGE", message: "채팅 연결이 없습니다" });
+    if (!lbcExists(bcId)) return res.status(404).json({ ok: false, error: "BC_NOT_FOUND" });
+    const plat = ["chzzk", "soop", "cime"].includes(req.body.platform) ? req.body.platform : "chat";
+    bridge.setLifebc(String(bcId).slice(0, 16), plat);
+    return res.json({ ok: true, bridgeStatus: bridge.status });
+  } catch (err) {
+    console.error("[CHAT_AUD] /lifebc-link 예외:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+app.get("/chat-audience/lifebc-stat", (req, res) => {
+  const bridge = chatBridges.get(req.query.room);
+  if (!bridge) return res.json({ ok: true, status: "no_bridge" });
+  return res.json({ ok: true, status: bridge.status, errorCode: bridge.errorCode || null, linked: bridge.mode === "lifebc", seen: bridge.lbcSeen || 0, votes: bridge.lbcVotes || 0, recent: (bridge.lbcRecent || []).slice().reverse(), chatMsgs: bridge.totalMessagesProcessed || 0 });
+});
+
 app.post("/chat-audience/omok-round", optionalAuth, async (req, res) => {
   try {
     const { roomCode, roundKey, endsAt } = req.body || {};
