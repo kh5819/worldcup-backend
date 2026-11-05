@@ -3,6 +3,7 @@ import http from "http";
 import express from "express";
 import { Server } from "socket.io";
 import ioc from "socket.io-client";
+import { gzipSync } from "zlib";
 import { registerLifeSave, inspectSave } from "../src/lifebc-save.js";
 
 let fail = 0, pass = 0; const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL", m); } };
@@ -60,6 +61,15 @@ ok(inspectSave(save({ mode: "hack", day: -5 })).meta.mode === "story" && inspect
   ok((await emit(V, "lbs:load", { slot: 1 })).error === "EMPTY", "다른 회원 저장은 못 봄");
   ok((await emit(U, "lbs:delete", { slot: 1 })).ok && (await emit(U, "lbs:list", {})).slots.length === 1, "삭제");
   ok([...db.rows.values()].every((r) => r.owner_key.startsWith("u:") && r.user_id), "회원 키·아이디로만 저장");
+  // 압축 저장: 450KB 넘는 원본도 저장·불러오기 왕복, 메타는 푼 내용에서, 망가진 압축·압축 폭탄 거절
+  const big = save({ day: 77, pad: "방송국 기록 ".repeat(35000) }), gz64 = (t) => gzipSync(Buffer.from(t, "utf8")).toString("base64");
+  ok(Buffer.byteLength(big) > 450000, "시험 데이터가 450KB 초과");
+  ok((await emit(U, "lbs:save", { slot: 3, json: big })).error === "TOO_BIG", "압축 없이 큰 데이터는 거절");
+  const sg = await emit(U, "lbs:save", { slot: 3, gz: gz64(big) }); ok(sg.ok && sg.meta.day === 77 && sg.meta.bytes < 450000, "압축하면 큰 저장도 성공");
+  const lg = await emit(U, "lbs:load", { slot: 3 }); ok(lg.ok && lg.json === big, "압축 저장 불러오기는 원본 그대로");
+  ok((await emit(U, "lbs:save", { slot: 2, gz: "이건압축이아님" })).error === "BAD_GZ", "망가진 압축 거절");
+  ok((await emit(U, "lbs:save", { slot: 2, gz: gz64(save({ pad: "x".repeat(4100000) })) })).error === "TOO_BIG", "압축 폭탄(4MB 초과) 거절");
+  ok((await emit(U, "lbs:save", { slot: 2, gz: gz64(JSON.stringify({ hello: 1 })) })).error === "BAD_SHAPE", "압축해도 형식 검사");
   for (const s of [G, U, V]) s.disconnect(); server.close();
 }
 // 테이블이 아직 없을 때 → 조용히 NO_TABLE

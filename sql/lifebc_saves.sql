@@ -15,7 +15,7 @@ create table if not exists public.lifebc_saves (
   money        bigint not null default 0,
   ver          int  not null default 1,
   bytes        int  not null default 0,
-  data         text not null,                      -- 게임 상태 JSON (서버에서 크기·형식 검사 후 저장, 최대 450KB)
+  data         text not null,                      -- 게임 상태 JSON 또는 "gz:"+압축본 (서버에서 크기·형식 검사 후 저장, 최대 450KB)
   updated_at   timestamptz not null default now(),
   primary key (owner_key, slot)
 );

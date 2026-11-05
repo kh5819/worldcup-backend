@@ -53,7 +53,7 @@ const st = await emit(host, "lbc:predSettle", { id, predId: pr.predId, answer: "
 const hit = vs.filter((_, k) => k % 3 === 1).length;
 ok(st.ok && st.winners.n === hit, `예측 정산 (${hit}명 정답, +${st.winners.pts}점)`);
 const me1 = await emit(vs[1], "lbc:me", { id }), me0 = await emit(vs[0], "lbc:me", { id });
-ok(me1.pts === st.winners.pts && me0.pts === 0 && me1.rank === 1, "점수·순위 (현금성 없음, 게임 포인트만)");
+ok(me1.pts === me0.pts + st.winners.pts && me1.rank === 1, "점수·순위 (현금성 없음, 게임 포인트만)");
 ok((await emit(host, "lbc:predSettle", { id, predId: pr.predId, answer: "doyun" })).dup, "두 번 정산 막기");
 
 // 출연 신청

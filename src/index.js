@@ -39,7 +39,7 @@ import { registerSenseBroadcast } from "./sense-broadcast.js";
 import { registerKnow } from "./know.js";
 import { registerKnowMulti } from "./know-multi.js";
 import { registerKnowBroadcast } from "./know-broadcast.js";
-import { registerLifeBroadcast, lbcChatVote, lbcExists } from "./lifebc-broadcast.js";
+import { registerLifeBroadcast, lbcChatVote, lbcChatCard, CHAT_CARD, lbcExists } from "./lifebc-broadcast.js";
 import { registerLifeMulti } from "./lifebc-multi.js";
 import { registerLifeSave } from "./lifebc-save.js";
 import { createFlight } from "./create-flight.js";
@@ -13741,7 +13741,12 @@ const LifebcVoteMixin = {
   setLifebc(bcId, platform) { this.mode = "lifebc"; this.lbcId = bcId; this.lbcPlatform = platform || "chat"; this.lbcSeen = 0; this.lbcVotes = 0; this.lbcRecent = []; },
   _processLifebcMsg(senderId, nickname, content) {
     const t = String(content == null ? "" : content).normalize("NFKC").trim();
-    const m = t.match(/^[!！]\s*([1-6])\s*$/); if (!m) return;
+    const m = t.match(/^[!！]\s*([1-6])\s*$/);
+    if (!m) { // 사건 카드: !고백 철수 영희 · !응원 철수 (채팅 계정마다 포인트)
+      const c = t.match(/^[!！]\s*(\S+)\s+(\S+)(?:\s+(\S+))?\s*$/); const card = c && CHAT_CARD[c[1].toLowerCase()];
+      if (card) { const id = senderId || `anon_${nickname || "익명"}`; const r = lbcChatCard(this.lbcId, `c:${this.lbcPlatform}:${id}`, String(nickname || "익명").slice(0, 16), card, c[2], c[3] || ""); if (r?.ok) { this.lbcCards = (this.lbcCards || 0) + 1; } }
+      return;
+    }
     this.lbcSeen = (this.lbcSeen || 0) + 1;
     const id = senderId || `anon_${nickname || "익명"}`;
     const r = lbcChatVote(this.lbcId, `c:${this.lbcPlatform}:${id}`, Number(m[1]));
