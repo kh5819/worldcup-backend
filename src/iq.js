@@ -3,8 +3,8 @@
 // 문제는 한 문항씩 서버가 내줌(정답 없는 화면 정보만) → 답을 받으면 서버가 채점·시간 측정 → 해설 공개
 // DB: iq_results / iq_profiles / iq_groups (sql/iq_tables.sql, RLS 켬·정책 0 = 서버 전용)
 // =========================
-import * as C from "./iq-core.js?v=c2";
-import * as G from "./iq-gen.js?v=g2";
+import * as C from "./iq-core.js?v=c3";
+import * as G from "./iq-gen.js?v=g3";
 import { SLIDE_BANK } from "./iq-bank.js";
 import { bcOnBegin, bcOnFinish, bcPlay, bcPlayEnd } from "./iq-broadcast.js";
 

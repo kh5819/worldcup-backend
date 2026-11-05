@@ -5,8 +5,8 @@
 // 흐름: lobby → [intro → play → result] × 문항 수 → final (8위→1위 공개는 화면에서)
 // =========================
 import { createFlight } from "./create-flight.js";
-import * as C from "./iq-core.js?v=c2";
-import * as G from "./iq-gen.js?v=g2";
+import * as C from "./iq-core.js?v=c3";
+import * as G from "./iq-gen.js?v=g3";
 import { makeItem, judgeItem, pointsOf, resultId, publicRow, memberProfile, sanitizeProfile, sanitizePrefs, buildRow, insertResults, hintFor } from "./iq.js";
 
 const ROOMS = new Map(), CODES = new Map(), USER_ROOM = new Map();

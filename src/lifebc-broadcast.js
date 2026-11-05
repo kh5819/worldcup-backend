@@ -46,9 +46,11 @@ export const CARD_COST = { confess: 30, gift: 10, prank: 20, rumor: 25, challeng
 const CARD_TWO = { confess: 1, gift: 1, prank: 1, rumor: 1, challenge: 1, fight: 1 };
 export const CHAT_CARD = { 고백: "confess", 告白: "confess", confess: "confess", 선물: "gift", プレゼント: "gift", gift: "gift", 몰카: "prank", 몰래카메라: "prank", ドッキリ: "prank", prank: "prank",
   뒷담: "rumor", 뒷담화: "rumor", 소문: "rumor", 陰口: "rumor", 噂: "rumor", rumor: "rumor", 대결: "challenge", 対決: "challenge", duel: "challenge", 싸움: "fight", ケンカ: "fight", 喧嘩: "fight", fight: "fight", 응원: "cheer", 応援: "cheer", cheer: "cheer" };
-const START_PTS = 30, VOTE_PTS = 2, CARD_CD = 45e3, CARD_Q = 8, CARD_STALE = 120e3;
+const START_PTS = 30, VOTE_PTS = 2, CARD_CD = 45e3, CARD_STALE = 120e3;
+// 시청자가 아무리 많아도 방송 전체로 카드는 이 간격에 하나만 받음 (개입 강도별). 막힌 사람은 포인트·쿨타임 그대로
+const CARD_GAP = { low: 90e3, normal: 45e3, high: 25e3 }, CARD_QMAX = { low: 1, normal: 2, high: 4 };
 // 대기 중 카드 정리: 스트리머가 2분 동안 처리 못 하면 포인트 돌려줌
-function sweepCards(b) { const t = now(); for (const r of [...(b.cardQ || [])]) if (t - r.at > CARD_STALE) { b.cardQ = b.cardQ.filter((x) => x !== r); refund(b, r); } }
+function sweepCards(b) { const t = now(); for (const r of [...(b.cardQ || [])]) if (t - r.at > CARD_STALE) { b.cardQ = b.cardQ.filter((x) => x !== r); refund(b, r); if (!r.chat) IO?.to(`lbcu:${b.id}:${r.key}`).emit("lbc:cardResult", { id: b.id, rid: r.rid, ok: false, good: false, text: null }); } }
 function wallet(b, r) { return r.chat ? (b.chatW?.get(r.key) || null) : b.viewers.get(r.key) || null; }
 function refund(b, r) { const w = wallet(b, r); if (w) w.pts += r.cost; }
 // 카드 요청 넣기 (폰·채팅 공용). 돌려줌: { ok, error, rid }
@@ -58,9 +60,11 @@ function pushCard(io, b, key, w, nick, card, x, y, chat) {
   if (!x || (CARD_TWO[card] && (!y || x === y))) return { ok: false, error: "BAD_TARGET" };
   sweepCards(b); const t = now();
   if (w.cardAt && t - w.cardAt < CARD_CD) return { ok: false, error: "CARD_COOLDOWN", wait: Math.ceil((CARD_CD - (t - w.cardAt)) / 1000) };
-  if ((b.cardQ || []).length >= CARD_Q) return { ok: false, error: "CARD_BUSY" };
+  const gap = _lbcTest.gap ?? CARD_GAP[b.intensity] ?? CARD_GAP.normal, gapLeft = gap - (t - (b.cardLastAt || 0));
+  if (gapLeft > 0) return { ok: false, error: "CARD_BUSY", wait: Math.ceil(gapLeft / 1000) };
+  if ((b.cardQ || []).length >= (CARD_QMAX[b.intensity] ?? CARD_QMAX.normal)) return { ok: false, error: "CARD_BUSY", wait: Math.ceil(gap / 1000) };
   if (w.pts < cost) return { ok: false, error: "NO_POINTS", need: cost, pts: w.pts };
-  w.pts -= cost; w.cardAt = t;
+  w.pts -= cost; w.cardAt = t; b.cardLastAt = t;
   const r = { rid: "c" + ++b.pseq, card, a: x, b: CARD_TWO[card] ? y : null, nick: clean(nick, 16) || "?", key, chat: !!chat, cost, at: t };
   (b.cardQ = b.cardQ || []).push(r);
   const { key: _k, ...pub } = r; io.to(`lbcu:${b.id}:${b.hostKey}`).emit("lbc:cardReq", pub);
@@ -128,7 +132,7 @@ export function registerLifeBroadcast(io, sb, app) {
     on("lbc:me", (p, reply) => { const b = get(p.id); const v = b?.viewers.get(key); if (!v) return reply({ ok: false, error: "NOT_JOINED" }); const all = [...b.viewers.values()].filter((x) => !x.host).sort((x, y) => y.pts - x.pts); const app_ = b.apps.find((a) => a.key === key); reply({ ok: true, nick: v.nick, pts: v.pts, rank: v.host ? null : all.filter((x) => x.pts > v.pts).length + 1, of: all.length, vote: b.poll ? b.poll.votes.get(key) ?? null : null, pick: b.pred ? b.pred.picks.get(key) ?? null : null, applied: !!app_, accepted: b.accepted.has(key), cardWait: v.cardAt ? Math.max(0, Math.ceil((CARD_CD - (now() - v.cardAt)) / 1000)) : 0 }); });
 
     // 스트리머 화면이 보내는 게임 상황 (시청자 폰 화면에 표시) — 크기 제한
-    on("lbc:status", (p, reply) => { const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); const s = p.status || {};
+    on("lbc:status", (p, reply) => { const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); sweepCards(b); const s = p.status || {};
       b.status = { day: s.day | 0, time: clean(s.time, 5), money: Math.round(Number(s.money) || 0), rating: Math.round((Number(s.rating) || 0) * 10) / 10, show: txt(s.show, 40), ticker: Array.isArray(s.ticker) ? s.ticker.slice(0, 4).map((x) => txt(x, 120)).filter(Boolean) : [], cast: Array.isArray(s.cast) ? s.cast.slice(0, 16).map((c) => ({ id: clean(c?.id, 24), name: txt(c?.name, 20), mood: clean(c?.mood, 4), doing: txt(c?.doing, 30), me: !!c?.me })) : [],
         soc: s.soc && typeof s.soc === "object" ? { al: Array.isArray(s.soc.al) ? s.soc.al.slice(0, 8).map((x) => ({ a: txt(x?.a, 20), b: txt(x?.b, 20), t: txt(x?.t, 30), on: !!x?.on })) : [], rev: Array.isArray(s.soc.rev) ? s.soc.rev.slice(0, 5).map((x) => txt(x, 120)).filter(Boolean) : [], iv: s.soc.iv && typeof s.soc.iv === "object" ? { who: txt(s.soc.iv.who, 20), lines: Array.isArray(s.soc.iv.lines) ? s.soc.iv.lines.slice(0, 3).map((l) => ({ q: txt(l?.q, 80), a: txt(l?.a, 160), h: ["honest", "partial", "evade", "lie", "hint"].includes(l?.h) ? l.h : null })) : [] } : null } : null };
       emitState(io, b); reply({ ok: true }); });
@@ -261,4 +265,4 @@ export function registerLifeBroadcast(io, sb, app) {
   if (!app) return;
   app.get("/lifebc/bc/:id", (req, res) => { const b = BC.get(String(req.params.id || "").slice(0, 12)); if (!b) return res.status(404).json({ ok: false, error: "BC_NOT_FOUND" }); res.json({ ok: true, title: b.title, nick: b.nick, ended: !!b.ended, viewers: b.viewers.size - 1 }); });
 }
-export const _lbcTest = { BC };
+export const _lbcTest = { BC, gap: null };

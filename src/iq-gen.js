@@ -7,7 +7,8 @@
 // 외부 import 금지
 // =========================
 
-export const GEN_VERSION = 2;   // 2: 패턴·공간·언어 난이도 상향 (2026-11-01 사용자 '너무 쉽다')
+export const GEN_VERSION = 3;   // 3: 문제해결 난이도 상향 — 길찾기 판·별↑, 원판 횟수 제한 (2026-11-06 사용자 '문제해결 너무 쉽다')
+// 이전: GEN_VERSION 2   // 2: 패턴·공간·언어 난이도 상향 (2026-11-01 사용자 '너무 쉽다')
 
 // ---------- 공통 ----------
 export function rng(seed) {
@@ -59,7 +60,7 @@ export const TYPES = {
   gridmem:   { area: "memory",   kind: "play",  lim: [30, 30, 35, 35, 40], from: "hidden" },
   slide:     { area: "problem",  kind: "play",  lim: [60, 75, 90, 110, 130], from: "slide" },
   path:      { area: "problem",  kind: "play",  lim: [50, 60, 75, 90, 105], from: "path" },
-  rings:     { area: "problem",  kind: "play",  lim: [50, 60, 75, 90, 105], from: "rings" },
+  rings:     { area: "problem",  kind: "play",  lim: [50, 60, 75, 110, 130], from: "rings" },
   match:     { area: "creative", kind: "play",  lim: [60, 75, 90, 100, 110], from: null },
   make:      { area: "creative", kind: "play",  lim: [60, 75, 90, 100, 120], from: null },
 };
@@ -921,8 +922,8 @@ export function slideReplay(view, moves) {
 // 17) 지도 길찾기 (미스터리 지도 동선) — 별을 모두 지나 도착, 걸음 수 제한. 같은 칸 다시 지나기 없음
 // =========================================================
 function genPath(R, d) {
-  const size = [5, 6, 6, 7, 7][d - 1], stars = [1, 2, 2, 3, 3][d - 1], slack = [2, 2, 1, 0, 0][d - 1];
-  for (let tries = 0; tries < 300; tries++) {
+  const size = [5, 6, 7, 8, 8][d - 1], stars = [1, 2, 3, 3, 4][d - 1], slack = [2, 1, 1, 0, 0][d - 1], minOpt = [5, 8, 12, 15, 18][d - 1];
+  for (let tries = 0; tries < 900; tries++) {
     const g = range(size).map(() => Array(size).fill("."));
     const free = R.shuffle(range(size * size));
     const at = (i) => [Math.floor(i / size), i % size];
@@ -957,7 +958,7 @@ function genPath(R, d) {
     while (k) { const [r, c] = k.split(",").map(Number); route.unshift([r, c]); k = prev.get(k); }
     if (new Set(route.map((x) => x.join())).size !== route.length) continue;
     const opt = route.length - 1;
-    if (opt < size) continue;
+    if (opt < minOpt) continue;
     return { view: { grid: g.map((row) => row.join("")), maxSteps: opt + slack }, key: opt, exp: { opt, route }, hint: { first: route.slice(0, 3) } };
   }
   throw new Error("path gen");
@@ -982,17 +983,21 @@ export function pathCheck(view, path) {
 // 18) 원판 맞추기 (미스터리 H2) — i번 원판을 돌리면 안쪽 원판도 한 칸 같이 돎
 // =========================================================
 function genRings(R, d) {
-  const n = [3, 3, 4, 4, 4][d - 1], steps = [6, 8, 8, 8, 10][d - 1], k = [3, 5, 6, 8, 10][d - 1];
+  const n = [3, 3, 4, 5, 5][d - 1], steps = [6, 8, 8, 8, 10][d - 1], k = [3, 5, 9, 14, 20][d - 1], minOps = [2, 4, 9, 14, 20][d - 1], slack = [null, null, 3, 1, 0][d - 1];
   for (let tries = 0; tries < 50; tries++) {
     const val = Array(n).fill(0);
     for (let i = 0; i < k; i++) { const op = R.int(0, n - 1); val[op] = (val[op] + steps - 1) % steps; if (op + 1 < n) val[op + 1] = (val[op + 1] + steps - 1) % steps; }
     if (val.every((v) => v === 0)) continue;
-    return { view: { n, steps, init: val }, key: null, exp: { k }, hint: { order: "outer" } };
+    // 정답은 하나뿐: 바깥부터 순서대로 필요한 횟수 → 어려운 단계는 횟수 제한 (막 돌리면 못 풂)
+    const sim = val.slice(); let opt = 0; for (let i = 0; i < n; i++) { const x = (steps - sim[i]) % steps; opt += x; sim[i] = 0; if (i + 1 < n) sim[i + 1] = (sim[i + 1] + x) % steps; }
+    if (opt < minOps) continue;
+    return { view: { n, steps, init: val, maxOps: slack == null ? null : opt + slack }, key: null, exp: { k, opt }, hint: { order: "outer" } };
   }
   throw new Error("rings gen");
 }
 export function ringsReplay(view, ops) {
   if (!Array.isArray(ops) || ops.length > 120) return false;
+  if (view.maxOps != null && ops.length > view.maxOps) return false;
   const v = view.init.slice();
   for (const op of ops) { if (!isInt(op) || op < 0 || op >= view.n) return false; v[op] = (v[op] + 1) % view.steps; if (op + 1 < view.n) v[op + 1] = (v[op + 1] + 1) % view.steps; }
   return v.every((x) => x === 0);

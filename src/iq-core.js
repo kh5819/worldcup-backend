@@ -4,10 +4,10 @@
 // 서버 사본: worldcup-backend/src/iq-core.js ↔ 홈페이지 제작/js/iq/core.js (시험이 같은지 검사)
 // ※ 공인 IQ 검사가 아님. 인구 백분위·연령 표준치·성별 보정 없음. 같은 검사를 한 사람끼리만 비교.
 // =========================
-import { TYPES, AREAS, hashSeed, rng, GEN_VERSION } from "./iq-gen.js?v=g2";
+import { TYPES, AREAS, hashSeed, rng, GEN_VERSION } from "./iq-gen.js?v=g3";
 export { TYPES, AREAS, hashSeed, rng };
 
-export const CORE_VERSION = 2;          // 채점식·구성 버전 (바뀌면 랭킹·방송 비교 분리) — 2: 점수 환산 엄격·배분 조정(11-01)
+export const CORE_VERSION = 3;          // 채점식·구성 버전 (바뀌면 랭킹·방송 비교 분리) — 2: 점수 환산 엄격·배분 조정(11-01)
 export const SET_VERSION = `${CORE_VERSION}.${GEN_VERSION}`;
 export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
@@ -16,11 +16,11 @@ const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
 // [유형, 난이도 1~5] — 정밀 30문항: 8개 영역 모두 (논리4·패턴4·공간4·수리4·언어4·기억3·문제해결4·창의3), 뒤로 갈수록 어려움
 export const PLANS = {
   full: [
-    ["series", 1], ["liar", 2], ["matrix", 2], ["rotate", 2], ["span", 2], ["order", 2], ["circuit", 2], ["symbols", 2], ["analogy", 3], ["slide", 2],
-    ["bells", 2], ["lock", 3], ["gears", 3], ["match", 2], ["clock", 3], ["path", 3], ["figseq", 3], ["scale", 3], ["mirror", 3], ["syllogism", 4],
-    ["gridmem", 3], ["liar", 4], ["path", 5], ["series", 4], ["rings", 4], ["make", 4], ["matrix", 5], ["oddword", 4], ["match", 4], ["slide", 5],
+    ["series", 1], ["liar", 2], ["rotate", 2], ["span", 2], ["order", 2], ["circuit", 2], ["symbols", 2], ["analogy", 3], ["make", 3], ["bells", 2],
+    ["lock", 3], ["gears", 3], ["match", 2], ["clock", 3], ["path", 4], ["figseq", 3], ["scale", 3], ["mirror", 3], ["syllogism", 4], ["make", 4],
+    ["gridmem", 3], ["liar", 4], ["path", 5], ["series", 4], ["rings", 5], ["make", 4], ["matrix", 5], ["oddword", 4], ["match", 4], ["slide", 5],
   ],
-  quick: [["matrix", 3], ["series", 2], ["liar", 3], ["rotate", 3], ["lock", 3], ["span", 3], ["symbols", 3], ["slide", 3], ["match", 3], ["analogy", 3]],
+  quick: [["matrix", 3], ["series", 2], ["liar", 3], ["rotate", 3], ["lock", 3], ["span", 3], ["symbols", 3], ["slide", 4], ["match", 3], ["analogy", 3]],
   // 오늘의 챌린지: 날짜마다 모두 같은 10문항 / 주간 특별검사: 주마다 모두 같은 20문항(어려움)
   daily: [["figseq", 3], ["series", 3], ["order", 3], ["gears", 4], ["syllogism", 4], ["gridmem", 3], ["symbols", 3], ["path", 4], ["make", 3], ["matrix", 4]],
   weekly: [

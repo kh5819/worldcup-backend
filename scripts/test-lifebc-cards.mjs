@@ -3,6 +3,7 @@ import http from "http";
 import { Server } from "socket.io";
 import ioc from "socket.io-client";
 import { registerLifeBroadcast, lbcChatCard, lbcChatVote, CARD_COST, CHAT_CARD, _lbcTest } from "../src/lifebc-broadcast.js";
+_lbcTest.gap = 0; // 개별 규칙 시험에서는 방송 전체 간격을 끔 (아래 '한꺼번에' 시험에서 켬)
 
 let fail = 0, pass = 0; const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL", m); } };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -51,13 +52,13 @@ ok(CHAT_CARD["고백"] === "confess" && CHAT_CARD["告白"] === "confess" && CHA
 const cc = lbcChatCard(id, "c:chzzk:u1", "채팅러", "confess", "철수", "영희"); ok(cc.ok && cc.pts === 0, "채팅 계정: 처음 30점 → 고백 후 0점");
 await wait(100); const last = reqs[reqs.length - 1]; ok(last.chat === true && last.a === "철수" && last.b === "영희" && last.nick === "채팅러", "채팅 카드는 이름으로 전달");
 ok(lbcChatCard(id, "c:chzzk:u1", "채팅러", "gift", "철수", "영희").error === "CARD_COOLDOWN", "채팅도 쿨타임");
-_b.chatW.get("c:chzzk:u1").cardAt = 0; ok(lbcChatCard(id, "c:chzzk:u1", "채팅러", "gift", "철수", "영희").error === "NO_POINTS", "채팅도 포인트 필요");
+_b.cardQ = []; _b.chatW.get("c:chzzk:u1").cardAt = 0; ok(lbcChatCard(id, "c:chzzk:u1", "채팅러", "gift", "철수", "영희").error === "NO_POINTS", "채팅도 포인트 필요");
 const poll2 = await emit(H, "lbc:poll", { id, q: "q2", opts: [{ id: "x", label: "X" }, { id: "y", label: "Y" }], sec: 30 });
 lbcChatVote(id, "c:chzzk:u1", 1); lbcChatVote(id, "c:chzzk:u1", 2); ok(_b.chatW.get("c:chzzk:u1").pts === 2, "채팅 투표 +2 (표 바꾸기는 추가 없음)");
 // 대기열 한도
 for (const r of _b.cardQ) r.at = Date.now(); let busy = null;
 for (let i = 0; i < 12; i++) { const r = lbcChatCard(id, "c:soop:x" + i, "x" + i, "cheer", "철수"); if (r?.error === "CARD_BUSY") { busy = i; break; } }
-ok(busy != null && _b.cardQ.length === 8, "대기 카드 8개 넘으면 잠시 막힘");
+ok(busy != null && _b.cardQ.length === 2, "대기 카드 한도(보통 2개) 넘으면 막힘");
 // 개입 끄기
 await emit(H, "lbc:intensity", { id, level: "off" }); _b.viewers.get("g:va").cardAt = 0;
 ok((await emit(A, "lbc:card", { id, card: "cheer", a: "c1" })).error === "APPLY_OFF", "시청자 개입 끄면 카드 못 냄");
@@ -68,4 +69,39 @@ await emit(H, "lbc:status", { id, status: { day: 3, cast: [], soc: { al: Array.f
 const st2 = (await emit(B, "lbc:watch", { id })).state.status.soc;
 ok(st2.al.length === 8 && !/[<>]/.test(st2.al[0].a.ko) && st2.al[0].t.length <= 30, "동맹 목록 8개까지 · 태그 제거 · 길이 제한");
 ok(st2.rev[0].length <= 120 && st2.iv.lines.length === 3 && st2.iv.lines[0].h === null, "비밀 120자 · 인터뷰 3줄 · 이상한 값 버림");
+// ---------- 한꺼번에: 시청자 300 + 채팅 300이 같은 순간 카드 ----------
+{
+  _lbcTest.gap = null;
+  const H2 = await conn("host2"); const rq = []; H2.on("lbc:cardReq", (r) => rq.push(r));
+  const { id: id2 } = await emit(H2, "lbc:create", { nick: "방장2", title: "t2" }); const b2 = _lbcTest.BC.get(id2);
+  const vs = []; for (let k = 0; k < 300; k += 30) vs.push(...await Promise.all(Array.from({ length: 30 }, (_, i) => conn("burst" + (k + i))))); // 접속만 나눠서, 카드는 동시에
+  await Promise.all(vs.map((v, i) => emit(v, "lbc:join", { id: id2, nick: "시청" + i })));
+  const before = [...b2.viewers.values()].filter((x) => !x.host).reduce((s, x) => s + x.pts, 0);
+  const [phone, chat] = await Promise.all([
+    Promise.all(vs.map((v) => emit(v, "lbc:card", { id: id2, card: "cheer", a: "c1" }))),
+    Promise.resolve(Array.from({ length: 300 }, (_, i) => lbcChatCard(id2, "c:chzzk:b" + i, "채팅" + i, "cheer", "철수"))),
+  ]);
+  const all = [...phone, ...chat], okN = all.filter((r) => r.ok).length, busyN = all.filter((r) => r.error === "CARD_BUSY").length;
+  ok(okN === 1 && busyN === 599, `600명 동시 → 1장만 접수, 599명 대기 안내 (${okN}/${busyN})`);
+  ok(all.filter((r) => r.error === "CARD_BUSY").every((r) => r.wait > 0), "막힌 사람에게 남은 초를 알려 줌");
+  const after = [...b2.viewers.values()].filter((x) => !x.host).reduce((s, x) => s + x.pts, 0), used = phone.some((r) => r.ok) ? CARD_COST.cheer : 0;
+  ok(after === before - used, "막힌 시청자 포인트는 안 깎임");
+  ok([...b2.viewers.values()].filter((x) => x.cardAt).length === (phone.some((r) => r.ok) ? 1 : 0), "막힌 시청자 개인 쿨타임도 안 걸림");
+  await wait(200); ok(rq.length === 1 && b2.cardQ.length === 1, "스트리머에게도 1장만 전달");
+  // 간격이 지나면 다음 카드 접수, 대기열은 한도까지만
+  b2.cardLastAt = 0; const nx = lbcChatCard(id2, "c:chzzk:z1", "다음", "cheer", "철수"); ok(nx.ok, "간격 지나면 다음 카드 접수");
+  b2.cardLastAt = 0; ok(lbcChatCard(id2, "c:chzzk:z2", "다음2", "cheer", "철수").error === "CARD_BUSY" && b2.cardQ.length === 2, "대기열 한도는 간격과 별도로 지킴");
+  // 개입 강도별 간격
+  await emit(H2, "lbc:intensity", { id: id2, level: "high" }); b2.cardLastAt = Date.now() - 26e3; ok(lbcChatCard(id2, "c:chzzk:z3", "높음", "cheer", "철수").ok, "높음: 25초 간격");
+  await emit(H2, "lbc:intensity", { id: id2, level: "low" }); b2.cardQ = []; b2.cardLastAt = Date.now() - 80e3; ok(lbcChatCard(id2, "c:chzzk:z4", "낮음", "cheer", "철수").error === "CARD_BUSY", "낮음: 90초 간격");
+  // 2분 지난 카드: 상태 전송만으로도 환불 + 폰에 알림
+  await emit(H2, "lbc:intensity", { id: id2, level: "normal" }); b2.cardQ = []; b2.cardLastAt = 0;
+  const v0 = vs.find((_, i) => !b2.viewers.get("g:burst" + i)?.cardAt), k0 = "g:" + "burst" + vs.indexOf(v0), got = []; v0.on("lbc:cardResult", (m) => got.push(m));
+  const pts0 = b2.viewers.get(k0).pts; ok((await emit(v0, "lbc:card", { id: id2, card: "cheer", a: "c1" })).ok, "환불 시험 카드");
+  b2.cardQ[0].at -= 200e3; const rid0 = b2.cardQ[0].rid; await emit(H2, "lbc:status", { id: id2, status: { day: 1, cast: [] } }); await wait(150);
+  ok(b2.viewers.get(k0).pts === pts0 && b2.cardQ.length === 0, "2분 지난 카드는 상태 전송 때 자동 환불");
+  ok(got.length === 1 && got[0].ok === false && got[0].rid === rid0, "환불되면 시청자 폰에 실패 안내");
+  ok((await emit(H2, "lbc:cardDone", { id: id2, rid: rid0, ok: true })).error === "CARD_NOT_FOUND" && b2.viewers.get(k0).pts === pts0, "환불된 카드를 나중에 처리해도 이중 처리 없음");
+  for (const v of vs) v.disconnect(); H2.disconnect();
+}
 console.log(`통과 ${pass} · 실패 ${fail}`); for (const s of [H, A, B]) s.disconnect(); server.close(); setTimeout(() => process.exit(fail ? 1 : 0), 200);
