@@ -173,7 +173,7 @@ export function registerMind(io, supabaseAdmin, app, { getOptionalUser } = {}) {
 
     // ---------- 플듀 종합 능력 프로필: 세 진단소 결과를 내 것만 모아서 ----------
     on("ability:overview", async (_p, reply) => {
-      const out = { ok: true, isGuest: !!me.isGuest, clinic: null, iq: null, mind: null, sense: null, know: null, rep: null, titles: [] };
+      const out = { ok: true, isGuest: !!me.isGuest, clinic: null, iq: null, mind: null, sense: null, know: null, feel: null, rep: null, titles: [] };
       if (!sb) return reply(out);
       const mp = await memberProfile(sb, me); out.member = mp;
       try { const { data } = await sb.from("clinic_results").select("id, mode, total, phys, diag, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(50);
@@ -191,6 +191,11 @@ export function registerMind(io, supabaseAdmin, app, { getOptionalUser } = {}) {
         const data = (raw || []).filter((r) => r.mode !== "weak");
         if (data?.length) { const ok = data.filter((r) => !r.flagged), best = [...(ok.length ? ok : data)].sort((a, b) => b.total - a.total)[0]; const pub = (r) => ({ id: r.id, mode: r.mode, area: r.area, total: r.total, lv: r.lv, type: r.type?.name || null, typeId: r.type_id, at: r.created_at }); out.know = { count: data.length, latest: pub(data[0]), best: pub(best) };
           for (const r of data) for (const t of r.titles || []) if (t?.name && !out.titles.some((x) => x.name === t.name)) out.titles.push({ name: t.name, from: "know" }); } } catch (e) { console.warn("[ability] know", e?.message); }
+      // 감각 진단소: 전체 검사만 종합 최고로 (개별 검사는 검사 하나라 비교 기준이 다름) · 의심 기록 제외 · 난이도 함께 표시
+      try { const { data } = await sb.from("feel_results").select("id, mode, diff, total, tier, style, done, flagged, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(60);
+        const full = (data || []).filter((r) => r.mode === "full");
+        if (full.length) { const ok = full.filter((r) => !r.flagged), DR = { expert: 3, hard: 2, normal: 1 }, best = [...(ok.length ? ok : full)].sort((a, b) => (DR[b.diff] || 0) - (DR[a.diff] || 0) || b.total - a.total)[0]; const pub = (r) => ({ id: r.id, mode: r.mode, diff: r.diff, total: r.total, tier: r.tier, style: r.style, done: r.done, flagged: !!r.flagged, at: r.created_at }); out.feel = { count: data.length, latest: pub(full[0]), best: pub(best) };
+          const DN = { normal: "보통", hard: "어려움", expert: "전문가" }; if (ok.length && ["SSS", "SS", "S"].includes(best.tier)) out.titles.push({ name: `감각 ${best.tier} (${DN[best.diff] || "보통"})`, from: "feel" }); } } catch (e) { console.warn("[ability] feel", e?.message); }
       try { const { data } = await sb.from("ability_profiles").select("rep_kind, rep_id, rep_title").eq("owner_key", key).maybeSingle(); out.rep = data || null; } catch {}
       out.titles = out.titles.slice(0, 40);
       reply(out);
@@ -198,7 +203,7 @@ export function registerMind(io, supabaseAdmin, app, { getOptionalUser } = {}) {
     // 대표 진단서·대표 칭호: 내 기록만 지정 가능
     on("ability:setRep", async (p, reply) => {
       if (!sb) return reply({ ok: false, error: "NO_DB" });
-      const kind = ["clinic", "iq", "mind", "sense", "know"].includes(p.kind) ? p.kind : null, id = kind ? String(p.id || "").slice(0, 16) : null;
+      const kind = ["clinic", "iq", "mind", "sense", "know", "feel"].includes(p.kind) ? p.kind : null, id = kind ? String(p.id || "").slice(0, 16) : null;
       if (kind) { const { data } = await sb.from(`${kind}_results`).select("id").eq("id", id).eq("owner_key", key).maybeSingle(); if (!data) return reply({ ok: false, error: "NOT_MINE" }); }
       const row = { owner_key: key, user_id: me.isGuest ? null : me.id, rep_kind: kind, rep_id: id, rep_title: p.title ? String(p.title).replace(/[<>]/g, "").slice(0, 30) : null, updated_at: new Date().toISOString() };
       const { error } = await sb.from("ability_profiles").upsert(row, { onConflict: "owner_key" });
