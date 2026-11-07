@@ -37,6 +37,8 @@ import { registerSense } from "./sense.js";
 import { registerSenseMulti } from "./sense-multi.js";
 import { registerSenseBroadcast } from "./sense-broadcast.js";
 import { registerFeel } from "./feel.js";
+import { registerFeelMulti } from "./feel-multi.js";
+import { registerFeelBroadcast } from "./feel-broadcast.js";
 import { registerKnow } from "./know.js";
 import { registerKnowMulti } from "./know-multi.js";
 import { registerKnowBroadcast } from "./know-broadcast.js";
@@ -10486,6 +10488,8 @@ registerSenseMulti(io, supabaseAdmin);
 registerSenseBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
 // 플듀 감각 진단소 — feel:* 이벤트 + /feel/* REST, 문제·채점은 서버가 답 기록으로 다시 계산
 registerFeel(io, supabaseAdmin, app, { getOptionalUser });
+registerFeelMulti(io, supabaseAdmin);
+registerFeelBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
 // 플듀 상식 레벨 진단소 — know:* 이벤트 + /know/* REST, 문제은행·정답은 서버만 (know-bank.js)
 registerKnow(io, supabaseAdmin, app, { getOptionalUser, requireAdmin });
 registerKnowMulti(io, supabaseAdmin);

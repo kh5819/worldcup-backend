@@ -11,21 +11,23 @@ import { memberProfile, sanitizeProfile, sanitizePrefs, userKey, device, resultI
 const SESS = new Map();
 const SESS_TTL = 3 * 60 * 60 * 1000, MAX_SESS = 4, LOG_MAX_BYTES = 40000, TIME_SLACK = 2500;
 const newSeed = () => (Math.floor(Math.random() * 0xffffffff) >>> 0) || 7;
+let hooks = { begin: null, play: null, finish: null, end: null };   // 스트리머 모드 연결 (feel-broadcast가 채움)
+export function setFeelHooks(h) { hooks = { ...hooks, ...h }; }
 const sweep = () => { const n = Date.now(); for (const [k, s] of SESS) if (n - s.createdAt > SESS_TTL) SESS.delete(k); };
 
 /** 제출 하나 채점 + 시간 검증 (멀티도 재사용) */
-export function judgeSubmit(tid, seed, diff, log, elapsedMs) {
+export function judgeSubmit(tid, seed, diff, log, elapsedMs, fixed = false) {
   let bytes = 0;
   try { bytes = JSON.stringify(log ?? {}).length; } catch { bytes = LOG_MAX_BYTES + 1; }
   if (bytes > LOG_MAX_BYTES) return { id: tid, score: 0, m: {}, flags: ["LOG_TOO_BIG"] };
-  const r = C.scoreTest(tid, C.genSpec(tid, seed, diff), log || {});
+  const r = C.scoreTest(tid, C.genSpec(tid, seed, diff, fixed), log || {});
   if (process.env.FEEL_DEV_TIME === "1") return r;   // 시험 서버 전용
   const cap = (f) => { r.flags = [...r.flags, f]; r.score = Math.min(r.score, 40); };
   if (Number.isFinite(elapsedMs) && C.logSpan(tid, log || {}) > elapsedMs + TIME_SLACK) cap("TIME");
   if (Number.isFinite(elapsedMs) && elapsedMs < C.nTrials(tid) * 250) cap("TOO_QUICK");
   return r;
 }
-export function buildRow({ id, key, me, prof, prefs, mode, diff, dev, plan, results, prev, rank, of, isPublic, avatarUrl }) {
+export function buildRow({ id, key, me, prof, prefs, mode, diff, dev, plan, results, prev, rank, of, isPublic, avatarUrl, groupId, bcId }) {
   const scores = {}, metrics = {};
   plan.forEach((it, i) => { const r = results[i]; if (!r || r.skipped) return; scores[it.id] = r.score; metrics[it.id] = { m: r.m, flags: r.flags }; });
   const flagged = plan.some((_, i) => results[i]?.flags?.length);
@@ -34,6 +36,7 @@ export function buildRow({ id, key, me, prof, prefs, mode, diff, dev, plan, resu
     id, owner_key: key, user_id: me.isGuest ? null : me.id, nickname: prof.nick, age: prof.age, avatar: prof.avatar, avatar_url: avatarUrl || null,
     mode, diff, set_ver: C.SET_VERSION, device: dev, scores, metrics, total: diag.total, areas: diag.areas, tier: diag.tier.id, style: diag.style.id, diag, done: diag.done,
     is_public: isPublic !== false, flagged, show_age: !!prefs.showAge, is_streamer: !!prefs.streamer, rank: rank || null, rank_of: of || null, created_at: new Date().toISOString(),
+    ...(groupId ? { group_id: groupId } : {}), ...(bcId ? { bc_id: bcId } : {}),   // 멀티·방송 결과에만 (칸이 없는 예전 DB에서도 혼자 검사는 저장되게)
   };
 }
 export function publicRow(row, { owner = false } = {}) {
@@ -41,10 +44,10 @@ export function publicRow(row, { owner = false } = {}) {
   return {
     id: row.id, nick: row.nickname, age: owner || row.show_age ? row.age : null, avatar: row.avatar, avatarUrl: row.avatar_url || null, mode: row.mode, diff: row.diff, setVer: row.set_ver, device: row.device,
     scores: row.scores, metrics: row.metrics, total: row.total, areas: row.areas, tier: row.tier, style: row.style, diag: row.diag, done: row.done, isPublic: row.is_public, flagged: row.flagged,
-    rank: row.rank, of: row.rank_of, createdAt: row.created_at, isGuest: !row.user_id, mine: owner, isStreamer: !!row.is_streamer,
+    rank: row.rank, of: row.rank_of, groupId: row.group_id || null, bcId: row.bc_id || null, createdAt: row.created_at, isGuest: !row.user_id, mine: owner, isStreamer: !!row.is_streamer,
   };
 }
-const insertRow = async (sb, row) => { const { error } = await sb.from("feel_results").insert(row); return { error }; };
+export const insertRow = async (sb, row) => { const { error } = await sb.from("feel_results").insert(row); return { error }; };
 async function prevResult(sb, key, mode, diff) {
   if (!sb) return null;
   try { const { data } = await sb.from("feel_results").select("total, tier, scores, created_at").eq("owner_key", key).eq("mode", mode).eq("diff", diff).order("created_at", { ascending: false }).limit(1).maybeSingle(); return data; } catch { return null; }
@@ -87,11 +90,14 @@ export function registerFeel(io, supabaseAdmin, app, { getOptionalUser } = {}) {
       if (p.mode === "single") { if (!C.TESTS[p.test]?.ready) return reply({ ok: false, error: "BAD_TEST" }); tests = [p.test]; }
       else if (p.mode === "full") tests = [...C.READY];
       else return reply({ ok: false, error: "BAD_MODE" });
+      let bcId = null;
+      if (p.bc && p.mode === "full" && hooks.begin) { const g = await hooks.begin(p.bc, diff); if (!g.ok) return reply({ ok: false, error: g.error }); bcId = g.bc; }
       const mine = [...SESS.entries()].filter(([, s]) => s.key === key).sort((a, b) => a[1].createdAt - b[1].createdAt);
       while (mine.length >= MAX_SESS) SESS.delete(mine.shift()[0]);
       const id = "f" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-      const s = { key, mode: p.mode, diff, device: device(p.device), createdAt: Date.now(), plan: tests.map((t) => ({ id: t, seed: newSeed() })), started: {}, results: {}, finished: null };
+      const s = { key, mode: p.mode, diff, device: device(p.device), createdAt: Date.now(), plan: tests.map((t) => ({ id: t, seed: newSeed() })), started: {}, results: {}, finished: null, bcId };
       SESS.set(id, s);
+      if (bcId) { s.bcNick = String(p.bcNick || "").slice(0, 12); s.bcShow = p.bcShowName !== false; hooks.play?.(bcId, key, { nick: s.bcNick, showName: s.bcShow, total: s.plan.length, done: 0, device: s.device }); }
       reply({ ok: true, sid: id, mode: s.mode, diff, plan: s.plan, device: s.device, setVer: C.SET_VERSION });
     });
     on("feel:resume", (p, reply) => {
@@ -108,6 +114,7 @@ export function registerFeel(io, supabaseAdmin, app, { getOptionalUser } = {}) {
       if (s.results[i]) return reply({ ok: false, error: "ALREADY_DONE" });
       if (s.plan.slice(0, i).some((_, j) => !s.results[j])) return reply({ ok: false, error: "BAD_ORDER" });
       s.started[i] = Date.now();   // 새로고침 뒤 다시 시작하면 시간도 새로 잼 (같은 문제)
+      if (s.bcId) hooks.play?.(s.bcId, key, { nick: s.bcNick, showName: s.bcShow, total: s.plan.length, done: i, device: s.device });
       reply({ ok: true });
     });
     on("feel:submit", (p, reply) => {
@@ -118,6 +125,7 @@ export function registerFeel(io, supabaseAdmin, app, { getOptionalUser } = {}) {
       if (s.plan.slice(0, i).some((_, j) => !s.results[j])) return reply({ ok: false, error: "BAD_ORDER" });
       if (p.skip) { if (s.mode !== "full") return reply({ ok: false, error: "BAD_MODE" }); s.results[i] = { id: item.id, skipped: true, score: null, m: {}, flags: [] }; }
       else { if (!s.started[i]) return reply({ ok: false, error: "NOT_STARTED" }); s.results[i] = judgeSubmit(item.id, item.seed, s.diff, p.log, Date.now() - s.started[i]); }
+      if (s.bcId) hooks.play?.(s.bcId, key, { done: i + 1 });
       reply({ ok: true, result: resPub(s.results[i]), allDone: s.plan.every((_, j) => s.results[j]) });
     });
     on("feel:finish", async (p, reply) => {
@@ -130,7 +138,7 @@ export function registerFeel(io, supabaseAdmin, app, { getOptionalUser } = {}) {
       const prefs = sanitizePrefs(p.prefs), [prev, best] = await Promise.all([prevResult(sb, key, s.mode, s.diff), personalBest(sb, key, s.diff)]);
       const tmp = buildRow({ id: "", key, me, prof, prefs, mode: s.mode, diff: s.diff, dev: s.device, plan: s.plan, results: s.results, prev });
       const rk = tmp.flagged || s.mode !== "full" ? { rank: null, of: null } : await rankOf(sb, s.diff, tmp.total);
-      const row = buildRow({ id: resultId(), key, me, prof, prefs, mode: s.mode, diff: s.diff, dev: s.device, plan: s.plan, results: s.results, prev, ...rk, isPublic: p.isPublic !== false, avatarUrl: mp?.avatar_url });
+      const row = buildRow({ id: resultId(), key, me, prof, prefs, mode: s.mode, diff: s.diff, dev: s.device, plan: s.plan, results: s.results, prev, ...rk, isPublic: p.isPublic !== false, avatarUrl: mp?.avatar_url, bcId: s.bcId });
       const newBest = Object.entries(row.scores).filter(([t, v]) => !row.flagged && v > (best[t] ?? -1) && best[t] != null).map(([t]) => t);
       let saved = null;
       if (sb) { const { error } = await insertRow(sb, row); if (error) console.error("[feel] save", error.message); else saved = row.id; }
@@ -140,6 +148,8 @@ export function registerFeel(io, supabaseAdmin, app, { getOptionalUser } = {}) {
         sb.from("streamer_chat_log").insert({ platform: "feel", channel_id: saved, nickname: prof.nick, content_id: null, content_title: title, content_mode: s.mode, room_code: saved, host_user_id: me.isGuest ? null : me.id, host_nick: me.isGuest ? null : mp?.nickname || null }).then(({ error: le }) => { if (le) console.error("[feel] streamer log", le.message); }, () => {});
       }
       s.finished = { id: saved, result: publicRow(row, { owner: true }), prev: prev ? { total: prev.total, tier: prev.tier, scores: prev.scores, at: prev.created_at } : null, best, newBest };
+      if (s.bcId && (saved || !sb) && hooks.finish) { try { s.finished.bc = { id: s.bcId, ...(await hooks.finish(s.bcId, { key, me, row, sessStarted: s.createdAt, showName: p.bcShowName !== false })) }; } catch (e) { console.error("[feel bc]", e); s.finished.bc = { id: s.bcId, counted: false, reason: "BC_ERROR" }; } }
+      if (s.bcId) hooks.end?.(s.bcId, key);
       reply({ ok: true, ...s.finished });
     });
     on("feel:setPublic", async (p, reply) => {
