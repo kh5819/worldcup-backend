@@ -68,6 +68,10 @@ ok((await onP)?.hostOnline === true, "참가자에게 방장 복귀 알림");
 // 내보내기 · 나가기 · 닫기
 const kicked = once(P2, "lbm:closed"); ok((await emit(H2, "lbm:kick", { code: CODE, seat: 2 })).ok, "내보내기"); ok((await kicked)?.reason === "KICKED", "내보내진 사람에게 알림");
 ok((await emit(P1, "lbm:kick", { code: CODE, seat: 0 })).error === "NOT_HOST", "참가자는 못 내보냄");
+ok((await emit(P2, "lbm:join", { code: CODE, nick: "다시옴" })).error === "BANNED", "내보낸 사람은 다시 못 들어옴");
+{ const HT = await conn("guest_mh"); const r = await emit(HT, "lbm:join", { code: CODE, nick: "방장", asGuest: 1 }); ok(r.error === "IS_HOST", "방장 계정이 참가자로 들어오면 거절");
+  const still = once(P1, "lbm:snap"); H2.emit("lbm:snap", { code: CODE, k: "fast", d: "{\"t\":\"f2\"}" }); ok((await still)?.d === "{\"t\":\"f2\"}", "그래도 방은 그대로 (방장 연결 유지)");
+  const act = once(H2, "lbm:act"); await emit(P1, "lbm:act", { code: CODE, type: "resync" }); ok((await act)?.type === "resync", "행동은 원래 방장 창으로 감"); HT.close(); }
 const bye = once(H2, "lbm:act"); ok((await emit(P1, "lbm:leave", { code: CODE })).ok, "참가자 나가기"); ok((await bye)?.type === "bye", "방장에게 나감 알림");
 const P4 = await conn("guest_p4"); await emit(P4, "lbm:join", { code: CODE, nick: "참가4" }); const closed = once(P4, "lbm:closed");
 ok((await emit(H2, "lbm:leave", { code: CODE })).ok, "방장 나가기 = 방 닫기"); ok((await closed)?.reason === "HOST_CLOSED", "참가자에게 방 닫힘 알림");

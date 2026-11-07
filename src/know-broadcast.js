@@ -197,3 +197,5 @@ export function registerKnowBroadcast(io, supabaseAdmin, app) {
   });
 }
 export const _kbcTest = { BC };
+// 관리자 화면용: 진행 중인 방송의 참여 시청자 수 (메모리에 없으면 null)
+export function kbcLivePlayers(id) { const b = BC.get(String(id || "")); if (!b) return null; return b.final?.players ?? [...b.viewers.keys()].filter((k) => k !== b.hostKey).length; }

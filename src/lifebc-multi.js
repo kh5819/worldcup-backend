@@ -52,6 +52,8 @@ export function registerLifeMulti(io) {
     on("lbm:join", (p, reply) => {
       const r = roomOf(p.code); if (!r || r.closed) return reply({ ok: false, error: "NOT_FOUND" });
       let pl = r.players.get(key);
+      if (pl && pl.seat === 0 && p.asGuest) return reply({ ok: false, error: "IS_HOST" });
+      if (!pl && r.banned?.has(key)) return reply({ ok: false, error: "BANNED" });
       if (!pl) {
         const nick = clean(p.nick, 16); if (!nick) return reply({ ok: false, error: "NEED_NICK" }); if (!nickOk(nick)) return reply({ ok: false, error: "BAD_NICK" });
         if (r.players.size >= r.max) return reply({ ok: false, error: "FULL" });
@@ -76,7 +78,7 @@ export function registerLifeMulti(io) {
     on("lbm:kick", (p, reply) => {
       const r = asHost(p.code); if (!r) return reply({ ok: false, error: "NOT_HOST" });
       const pl = [...r.players.values()].find((x) => x.seat === (p.seat | 0) && x.seat !== 0); if (!pl) return reply({ ok: false, error: "NO_PLAYER" });
-      r.players.delete(pl.key); io.to(pl.sock).emit("lbm:closed", { code: r.code, reason: "KICKED" }); io.sockets.sockets.get(pl.sock)?.leave(rk(r.code));
+      r.players.delete(pl.key); (r.banned = r.banned || new Set()).add(pl.key); io.to(pl.sock).emit("lbm:closed", { code: r.code, reason: "KICKED" }); io.sockets.sockets.get(pl.sock)?.leave(rk(r.code));
       emitPlayers(io, r); reply({ ok: true });
     });
 

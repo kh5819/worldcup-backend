@@ -41,7 +41,7 @@ import { registerFeelMulti } from "./feel-multi.js";
 import { registerFeelBroadcast } from "./feel-broadcast.js";
 import { registerKnow } from "./know.js";
 import { registerKnowMulti } from "./know-multi.js";
-import { registerKnowBroadcast } from "./know-broadcast.js";
+import { registerKnowBroadcast, kbcLivePlayers } from "./know-broadcast.js";
 import { registerLifeBroadcast, lbcChatVote, lbcChatCard, CHAT_CARD, lbcExists } from "./lifebc-broadcast.js";
 import { registerLifeMulti } from "./lifebc-multi.js";
 import { registerLifeSave } from "./lifebc-save.js";
@@ -4953,9 +4953,36 @@ app.get("/admin/streamer-log", requireAdmin, async (req, res) => {
       uniqueStreamers = seen.size;
     } catch { uniqueStreamers = 0; }
 
+    // ── 감각(방송 진단소)·상식 진단소 방송: 참여한 시청자 수 (이 페이지 행만, 실패해도 목록은 그대로) ──
+    const items = data || [];
+    try {
+      const feelIds = [...new Set(items.filter((r) => r.platform === "feel" && r.content_mode === "bc" && r.channel_id).map((r) => r.channel_id))];
+      const knowIds = [...new Set(items.filter((r) => r.platform === "know" && r.channel_id).map((r) => r.channel_id))];
+      const viewers = {};
+      if (feelIds.length) {
+        const { data: fb } = await supabaseAdmin.from("feel_broadcasts").select("id, status, final_stats").in("id", feelIds);
+        const fin = new Map((fb || []).filter((r) => r.status === "final" && r.final_stats?.count != null).map((r) => [r.id, r.final_stats.count]));
+        await Promise.all(feelIds.map(async (id) => {
+          if (fin.has(id)) { viewers["feel:" + id] = fin.get(id); return; }
+          const { count: c, error: e } = await supabaseAdmin.from("feel_bc_entries").select("bc_id", { count: "exact", head: true }).eq("bc_id", id).eq("flagged", false).eq("is_streamer", false);
+          if (!e && c != null) viewers["feel:" + id] = c;
+        }));
+      }
+      if (knowIds.length) {
+        const { data: kb } = await supabaseAdmin.from("know_broadcasts").select("id, summary").in("id", knowIds);
+        const saved = new Map((kb || []).map((r) => [r.id, r]));
+        for (const id of knowIds) {
+          const s = saved.get(id)?.summary?.players;
+          const n = kbcLivePlayers(id) ?? (typeof s === "number" ? s : null);
+          if (n != null) viewers["know:" + id] = n;
+        }
+      }
+      for (const r of items) { const v = viewers[r.platform + ":" + r.channel_id]; if (v != null) r.viewer_count = v; }
+    } catch (e) { console.warn("[streamer-log] viewer count", e?.message); }
+
     return res.json({
       ok: true,
-      items: data || [],
+      items,
       total: count || 0,
       uniqueStreamers,
       page: pageNum,
