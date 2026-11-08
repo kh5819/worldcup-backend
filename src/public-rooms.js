@@ -55,7 +55,9 @@ export function registerPublicRooms(app, io) {
     socket.on("pub:set", async (d, cb) => { try {
       const game = String(d?.game || ""), r = myLobby(game, me.id); if (!r) return reply(cb, { ok: false, error: "NOT_HOST" });
       const t = Date.now(); if (t - lastSet < 700) return reply(cb, { ok: false, error: "TOO_FAST", isPublic: !!r.isPublic }); lastSet = t;
-      const on = !!d?.isPublic, check = SOURCES.get(game)?.check, seq = (r._pubSeq = (r._pubSeq || 0) + 1);
+      const on = !!d?.isPublic, check = SOURCES.get(game)?.check;
+      if (on && check) { if (t - (r._pubCheckAt || 0) < 1500) return reply(cb, { ok: false, error: "TOO_FAST", isPublic: !!r.isPublic }); r._pubCheckAt = t; }   // 창을 여러 개 열어 연타해도 방 하나당 1.5초에 DB 확인 1번
+      const seq = (r._pubSeq = (r._pubSeq || 0) + 1);
       if (on && check) { const c = await check(r); if (!c?.ok) return reply(cb, { ok: false, error: c?.error || "NOT_ALLOWED", isPublic: !!r.isPublic });
         if (r._pubSeq !== seq) return reply(cb, { ok: false, error: "TOO_FAST", isPublic: !!r.isPublic }); }   // 검사하는 사이 다른 창에서 끄거나 다시 누름 → 나중 것이 이김
       r.isPublic = on; cache = null; reply(cb, { ok: true, isPublic: r.isPublic });
