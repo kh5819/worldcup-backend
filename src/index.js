@@ -1730,16 +1730,28 @@ function _buildI18nUrl(path, lastmod, changefreq, priority) {
 }
 const I18N_URLSET_OPEN = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">`;
 
+// PostgREST는 한 번에 최대 1000행만 돌려줌 → 1000개씩 끊어서 전부 가져오기 (사이트맵 잘림 방지)
+async function _sitemapFetchAll(build, max = 50000) {
+  const out = [];
+  for (let from = 0; from < max; from += 1000) {
+    const { data, error } = await build().range(from, from + 999);
+    if (error) return { data: out, error };
+    out.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return { data: out, error: null };
+}
+
 app.get("/sitemap-content.xml", async (req, res) => {
   try {
     const xml = await _withSitemapCache("content", async () => {
-      const { data: rows, error } = await supabaseAdmin
+      const { data: rows, error } = await _sitemapFetchAll(() => supabaseAdmin
         .from("contents")
         .select("id, mode, updated_at")
         .eq("is_hidden", false)
         .eq("visibility", "public")
         .order("updated_at", { ascending: false })
-        .limit(50000);
+        .order("id", { ascending: true }));
       if (error) { console.error("[sitemap-content query]", error); }
       const items = (rows || [])
         .filter(r => r && _isValidId(r.id) && (r.mode === "worldcup" || r.mode === "quiz" || r.mode === "balance"))
@@ -1765,15 +1777,18 @@ app.get("/sitemap-content.xml", async (req, res) => {
 app.get("/sitemap-tier.xml", async (req, res) => {
   try {
     const xml = await _withSitemapCache("tier", async () => {
-      const { data: rows, error } = await supabaseAdmin
+      // tier_templates엔 visibility 컬럼이 없음 (예전엔 이것 때문에 쿼리 실패 → 티어 0개). 공개 = is_public
+      const { data: rows, error } = await _sitemapFetchAll(() => supabaseAdmin
         .from("tier_templates")
-        .select("id, updated_at, visibility")
+        .select("id, updated_at")
         .eq("is_hidden", false)
+        .eq("is_public", true)
+        .is("deleted_at", null)
         .order("updated_at", { ascending: false })
-        .limit(50000);
+        .order("id", { ascending: true }));
       if (error) { console.error("[sitemap-tier query]", error); }
       const items = (rows || [])
-        .filter(r => r && _isValidId(r.id) && (!r.visibility || r.visibility === "public"))
+        .filter(r => r && _isValidId(r.id))
         .map(r => {
           const lastmod = _formatLastmod(r.updated_at);
           return _buildI18nUrl(`/t/${escapeXml(r.id)}`, lastmod, "weekly", "0.6");
@@ -1985,12 +2000,12 @@ app.get("/cm/:id", async (req, res) => {
 // /sitemap-community.xml — 커뮤니티 글 (삭제·숨김·너무 짧은 글 제외). 캐시 없음 → 새 글 즉시 포함, 삭제 즉시 제외
 app.get("/sitemap-community.xml", async (req, res) => {
   try {
-    const { data: rows, error } = await supabaseAdmin
+    const { data: rows, error } = await _sitemapFetchAll(() => supabaseAdmin
       .from("community_posts")
       .select("id, title, body, image_urls, comment_count, created_at")
       .eq("is_deleted", false)
       .order("created_at", { ascending: false })
-      .limit(50000);
+      .order("id", { ascending: true }));
     if (error) { console.error("[sitemap-community query]", error); }
     const items = (rows || [])
       .filter(r => r && _isValidId(r.id) && _communityIndexable(r))
