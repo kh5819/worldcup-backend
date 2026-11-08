@@ -51,7 +51,7 @@ import { registerGolf } from "./golf.js";
 import { registerAppleMulti } from "./apple-multi.js";
 import { registerBlockBlastMulti } from "./blockblast-multi.js";
 import { registerBlockRoyale } from "./blockroyale-multi.js";
-import { registerPublicRooms } from "./public-rooms.js";
+import { registerPublicRooms, addPublicList } from "./public-rooms.js";
 import { installLobbyBurstGuard } from "./lobby-burst-guard.js";
 import { registerRaisingPvp } from "./raising-pvp.js";
 
@@ -2331,6 +2331,8 @@ app.get("/api/og-thumb", async (req, res) => {
     }
 
     _ogThumbCache.set(url, { thumb, ts: Date.now() });
+    // 최대 2000개까지만 기억 (예전엔 지우지 않아 서버를 다시 켤 때까지 계속 쌓임) — 오래된 것부터 정리
+    if (_ogThumbCache.size > 2000) { const now = Date.now(); for (const [k, v] of _ogThumbCache) { if (_ogThumbCache.size <= 1800) break; if (now - v.ts > OG_THUMB_TTL || _ogThumbCache.size > 2000) _ogThumbCache.delete(k); } }
 
     if (thumb) {
       res.setHeader("Cache-Control", "public, max-age=3600");
@@ -10506,6 +10508,49 @@ registerAppleMulti(io, supabaseAdmin);
 registerBlockBlastMulti(io, supabaseAdmin);
 registerBlockRoyale(io, supabaseAdmin, app);
 registerPublicRooms(app, io);
+
+// ── 공개방: 월드컵·퀴즈·티어·밸런스 대기실 (방장이 🌐 켠 방만, 공개 콘텐츠만) ──
+// 방 데이터는 읽기만 함. 켤 때 한 번 콘텐츠를 확인하고 제목·썸네일을 room.pubInfo에 보관
+const DUO_PUB_MODES = new Set(["worldcup", "quiz", "tier", "balance"]);
+function _duoPubWaiting(r) {
+  if (r.mode === "tier") return !r.tier || (r.tier.tierPhase || "lobby") === "lobby";
+  if (r.mode === "quiz") return !r.quiz || r.quiz.phase === "lobby";
+  return !r.phase || r.phase === "lobby";
+}
+addPublicList("duo", () => {
+  const out = [];
+  for (const r of rooms.values()) {
+    if (!r.isPublic || !r.pubInfo || !r.inviteCode || !DUO_PUB_MODES.has(r.mode) || !_duoPubWaiting(r) || r.disconnected?.has(r.hostUserId)) continue;   // 방장이 잠깐 끊긴 동안은 숨김
+    const n = r.players?.size || 0, max = r.maxPlayers || MAX_PLAYERS; if (n >= max) continue;
+    out.push({ game: r.mode, code: r.inviteCode, host: r.players.get(r.hostUserId)?.name || "", n, max, title: r.pubInfo.title, thumb: r.pubInfo.thumb, auto: r.pubInfo.auto, autoType: r.pubInfo.autoType });
+  }
+  return out;
+}, {
+  lobbyOf(uid) {
+    const r = rooms.get(userRoomMap.get(uid));
+    return r && r.hostUserId === uid && r.inviteCode && DUO_PUB_MODES.has(r.mode) && _duoPubWaiting(r) ? r : null;
+  },
+  async check(r) {
+    if (!r.contentId) return { ok: false, error: "NO_CONTENT" };
+    if (r.mode === "tier") {
+      const { data, error } = await supabaseAdmin.from("tier_templates").select("title, thumbnail_url, is_public, is_hidden, deleted_at").eq("id", r.contentId).maybeSingle();
+      if (error || !data) return { ok: false, error: "CONTENT_NOT_FOUND" };
+      if (!data.is_public || data.is_hidden || data.deleted_at) return { ok: false, error: "CONTENT_NOT_PUBLIC" };
+      let thumb = data.thumbnail_url || "";
+      if (!thumb) {   // 썸네일 없을 때만 카드 목록을 받아 첫 사진 사용 (메인 목록과 같은 방식) — 카드 목록은 클 수 있어 필요할 때만
+        const { data: c } = await supabaseAdmin.from("tier_templates").select("cards").eq("id", r.contentId).maybeSingle();
+        thumb = (Array.isArray(c?.cards) && c.cards.find((x) => x?.image_url)?.image_url) || "";
+      }
+      r.pubInfo = { title: data.title || "", thumb };
+      return { ok: true };
+    }
+    const { data, error } = await supabaseAdmin.from("contents").select("title, thumbnail_url, auto_thumbnail_url, auto_thumb_media_type, visibility, is_hidden").eq("id", r.contentId).maybeSingle();
+    if (error || !data) return { ok: false, error: "CONTENT_NOT_FOUND" };
+    if (data.visibility !== "public" || data.is_hidden) return { ok: false, error: "CONTENT_NOT_PUBLIC" };
+    r.pubInfo = { title: data.title || "", thumb: data.thumbnail_url || "", auto: data.auto_thumbnail_url || "", autoType: data.auto_thumb_media_type || "" };
+    return { ok: true };
+  },
+});
 installLobbyBurstGuard(io);
 // 플듀 키우기 친구 대전(1대1) — rpvp:* 이벤트, 서버는 시계·지시 중계만
 registerRaisingPvp(io, supabaseAdmin);
@@ -10785,7 +10830,7 @@ io.on("connection", (socket) => {
       socket.emit("room:sync", buildSyncPayload(room, me.id));
     }
 
-    cb?.({ ok: true, roomId, inviteCode: room.inviteCode || null, mode: room.mode || "worldcup" });
+    cb?.({ ok: true, roomId, inviteCode: room.inviteCode || null, mode: room.mode || "worldcup", contentId: room.contentId || null }); // contentId: 코드로 들어온 사람(공개방 탭 등)이 예전 콘텐츠 번호를 쓰지 않게
   });
 
   // 방 나가기 (나가기 버튼 · 새 방 만들 때 이전 방 정리 공용)
@@ -11005,10 +11050,20 @@ io.on("connection", (socket) => {
   // =========================
 
   safeOn(socket, "game:start", async (payload, cb) => {
+    // 시작 버튼을 빠르게 두 번 눌러도 한 번만 시작 (콘텐츠 불러오는 동안 잠금)
+    const _startRoom = rooms.get(payload?.roomId);
+    if (_startRoom?._starting) return cb?.({ ok: false, error: "STARTING" });
+    if (_startRoom) _startRoom._starting = true;
     try {
       const room = rooms.get(payload?.roomId);
       if (!room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" });
       if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+      // 이미 진행 중인 게임은 다시 시작하지 않음 (시작 버튼 연타로 게임이 처음부터 다시 시작되던 문제) — 끝난 뒤 다시 하기는 그대로 허용
+      const _inProgress =
+           (room.mode === "tier" && room.tier && !["lobby", "completed"].includes(room.tier.tierPhase || "lobby"))
+        || (room.mode === "quiz" && room.quiz && !["lobby", "finished"].includes(room.quiz.phase || "lobby"))
+        || ((room.mode === "worldcup" || room.mode === "balance") && ["playing", "revealed", "revoting"].includes(room.phase));
+      if (_inProgress) return cb?.({ ok: false, error: "GAME_IN_PROGRESS" });
 
       const contentId = room.contentId;
       if (!contentId) return cb?.({ ok: false, error: "NO_CONTENT_ID" });
@@ -11139,6 +11194,8 @@ io.on("connection", (socket) => {
     } catch (err) {
       console.error("[game:start] error:", err);
       cb?.({ ok: false, error: "INTERNAL_ERROR" });
+    } finally {
+      if (_startRoom) _startRoom._starting = false;
     }
   });
 

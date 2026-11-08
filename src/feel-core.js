@@ -57,7 +57,7 @@ export const TESTS = {
   spatial: T({ name: "공간 기억", en: "Spatial Memory", icon: "grid", area: "space", stage: 4, ready: true, desc: "켜진 위치(와 순서) 기억하기", how: ["칸이 하나씩 켜졌다 꺼져요. 위치를 기억하세요.", "다 꺼지면 켜졌던 칸을 모두 누르세요. 4번 해요.", "전문가는 켜진 순서대로 눌러야 해요."], ctl: "칸 누르기" }),
   speed: T({ name: "속도 감각", en: "Speed Sense", icon: "wind", area: "timing", stage: 5, ready: true, desc: "두 물체 중 더 빠른 쪽 고르기", how: ["두 물체가 동시에 움직여요. 더 빠른 쪽을 고르세요.", "멀리 간 쪽이 빠른 게 아니에요. 움직인 시간이 달라요.", "5번 해요. 갈수록 속도 차이가 작아져요."], ctl: "위·아래 버튼 · ↑↓ 키" }),
   pattern: T({ name: "패턴 감지", en: "Pattern", icon: "shapes", area: "space", stage: 5, ready: true, desc: "도형 배열의 규칙 찾기", how: ["도형이 규칙에 따라 바뀌어요. 모양·색·회전·크기를 보세요.", "다음에 올 도형을 4개 중에서 고르세요. 4번 해요.", "어려울수록 여러 규칙이 함께 바뀌어요."], ctl: "보기 누르기 · 1~4 키" }),
-  balance: T({ name: "균형 감각", en: "Level", icon: "level", area: "sight", stage: 5, ready: true, desc: "기울어진 선을 수평으로", how: ["기울어진 막대를 수평으로 맞추고 ‘확인’을 누르세요. 4번 해요.", "막대 끝을 잡고 위아래로 끌거나, 아래 슬라이더·마우스 휠로 돌려요. ◀ ▶는 꾹 누르면 계속 돌아가요.", "배경이 기울어져 있어도 속지 마세요. (실제 평형 기관 검사가 아니에요)"], ctl: "막대 끝 끌기 · 슬라이더 · 마우스 휠 · ◀▶ / A·D · 확인(Enter)" }),
+  balance: T({ name: "균형 감각", en: "Level", icon: "level", area: "sight", stage: 5, ready: true, desc: "기울어진 선을 수평으로", how: ["기울어진 막대를 수평으로 맞추고 ‘확인’을 누르세요. 4번 해요.", "막대 끝을 잡고 위아래로 끌거나, 마우스 휠로 돌려요. ◀ ▶는 꾹 누르면 계속 돌아가요.", "배경이 기울어져 있어도 속지 마세요. (실제 평형 기관 검사가 아니에요)"], ctl: "막대 끝 끌기 · 마우스 휠 · ◀▶ / A·D · 확인(Enter)" }),
 };
 export const TEST_IDS = Object.keys(TESTS);
 export const READY = TEST_IDS.filter((t) => TESTS[t].ready);
