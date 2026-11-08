@@ -40,6 +40,9 @@ import { registerFeel } from "./feel.js";
 import { registerFeelMulti } from "./feel-multi.js";
 import { registerFeelBroadcast } from "./feel-broadcast.js";
 import { registerKnow } from "./know.js";
+import { registerLingo } from "./lingo.js";
+import { registerLingoBroadcast, lbcLivePlayers } from "./lingo-broadcast.js";
+import { registerLingoMulti } from "./lingo-multi.js";
 import { registerKnowMulti } from "./know-multi.js";
 import { registerKnowBroadcast, kbcLivePlayers } from "./know-broadcast.js";
 import { registerLifeBroadcast, lbcChatVote, lbcChatCard, CHAT_CARD, lbcExists } from "./lifebc-broadcast.js";
@@ -4975,6 +4978,7 @@ app.get("/admin/streamer-log", requireAdmin, async (req, res) => {
     try {
       const feelIds = [...new Set(items.filter((r) => r.platform === "feel" && r.content_mode === "bc" && r.channel_id).map((r) => r.channel_id))];
       const knowIds = [...new Set(items.filter((r) => r.platform === "know" && r.channel_id).map((r) => r.channel_id))];
+      const lingoIds = [...new Set(items.filter((r) => r.platform === "lingo" && r.content_mode === "bc" && r.channel_id).map((r) => r.channel_id))];   // 언어 진단소 방송
       const viewers = {};
       if (feelIds.length) {
         const { data: fb } = await supabaseAdmin.from("feel_broadcasts").select("id, status, final_stats").in("id", feelIds);
@@ -4993,6 +4997,11 @@ app.get("/admin/streamer-log", requireAdmin, async (req, res) => {
           const n = kbcLivePlayers(id) ?? (typeof s === "number" ? s : null);
           if (n != null) viewers["know:" + id] = n;
         }
+      }
+      if (lingoIds.length) {
+        const { data: lb } = await supabaseAdmin.from("lingo_broadcasts").select("id, summary").in("id", lingoIds);
+        const saved = new Map((lb || []).map((r) => [r.id, r]));
+        for (const id of lingoIds) { const s = saved.get(id)?.summary?.players; const n = lbcLivePlayers(id) ?? (typeof s === "number" ? s : null); if (n != null) viewers["lingo:" + id] = n; }
       }
       for (const r of items) { const v = viewers[r.platform + ":" + r.channel_id]; if (v != null) r.viewer_count = v; }
     } catch (e) { console.warn("[streamer-log] viewer count", e?.message); }
@@ -10575,6 +10584,9 @@ registerSenseMulti(io, supabaseAdmin);
 registerSenseBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
 // 플듀 감각 진단소 — feel:* 이벤트 + /feel/* REST, 문제·채점은 서버가 답 기록으로 다시 계산
 registerFeel(io, supabaseAdmin, app, { getOptionalUser });
+registerLingo(io, supabaseAdmin, app, { getOptionalUser });
+registerLingoBroadcast(io, supabaseAdmin, app);
+registerLingoMulti(io, supabaseAdmin);
 registerFeelMulti(io, supabaseAdmin);
 registerFeelBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
 // 플듀 상식 레벨 진단소 — know:* 이벤트 + /know/* REST, 문제은행·정답은 서버만 (know-bank.js)

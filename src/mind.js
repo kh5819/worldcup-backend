@@ -173,7 +173,7 @@ export function registerMind(io, supabaseAdmin, app, { getOptionalUser } = {}) {
 
     // ---------- 플듀 종합 능력 프로필: 세 진단소 결과를 내 것만 모아서 ----------
     on("ability:overview", async (_p, reply) => {
-      const out = { ok: true, isGuest: !!me.isGuest, clinic: null, iq: null, mind: null, sense: null, know: null, feel: null, rep: null, titles: [] };
+      const out = { ok: true, isGuest: !!me.isGuest, clinic: null, iq: null, mind: null, sense: null, know: null, feel: null, lingo: null, rep: null, titles: [] };
       if (!sb) return reply(out);
       const mp = await memberProfile(sb, me); out.member = mp;
       try { const { data } = await sb.from("clinic_results").select("id, mode, total, phys, diag, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(50);
@@ -196,6 +196,19 @@ export function registerMind(io, supabaseAdmin, app, { getOptionalUser } = {}) {
         const full = (data || []).filter((r) => r.mode === "full");
         if (full.length) { const ok = full.filter((r) => !r.flagged), DR = { expert: 3, hard: 2, normal: 1 }, best = [...(ok.length ? ok : full)].sort((a, b) => (DR[b.diff] || 0) - (DR[a.diff] || 0) || b.total - a.total)[0]; const pub = (r) => ({ id: r.id, mode: r.mode, diff: r.diff, total: r.total, tier: r.tier, style: r.style, done: r.done, flagged: !!r.flagged, at: r.created_at }); out.feel = { count: data.length, latest: pub(full[0]), best: pub(best) };
           const DN = { normal: "보통", hard: "어려움", expert: "전문가" }; if (ok.length && ["SSS", "SS", "S"].includes(best.tier)) out.titles.push({ name: `감각 ${best.tier} (${DN[best.diff] || "보통"})`, from: "feel" }); } } catch (e) { console.warn("[ability] feel", e?.message); }
+      // 언어 진단소: 언어마다 문제가 달라 점수를 서로 비교하지 않음 → 언어별 최고(종합 진단만, 연습·친구 도전·대결 기록 제외) + 그중 하나를 대표로
+      try { const { data } = await sb.from("lingo_results").select("id, lang, mode, diff, total, grade, type_id, diag->titles, flagged, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(80);
+        const rows = data || [], ok = rows.filter((r) => !r.flagged && r.mode === "full");
+        if (rows.length) {
+          const DR = { expert: 3, hard: 2, normal: 1 }, pick = (a) => [...a].sort((x, y) => (DR[y.diff] || 0) - (DR[x.diff] || 0) || y.total - x.total)[0];
+          const pub = (r) => ({ id: r.id, lang: r.lang, mode: r.mode, diff: r.diff, total: r.total, grade: r.grade, typeId: r.type_id, flagged: !!r.flagged, at: r.created_at });
+          const langs = {}; for (const L of ["ko", "ja", "en"]) { const b = pick(ok.filter((r) => r.lang === L)); if (b) langs[L] = pub(b); }
+          const best = pick(ok) || pick(rows.filter((r) => !r.flagged)) || rows[0];
+          out.lingo = { count: rows.length, best: pub(best), langs, official: ok.length > 0 };
+          const LN = { ko: "한국어", ja: "일본어", en: "영어" }, DN = { normal: "보통", hard: "어려움", expert: "전문가" };
+          for (const b of Object.values(langs)) if (["SSS", "SS", "S"].includes(b.grade)) out.titles.push({ name: `${LN[b.lang]} ${b.grade} (${DN[b.diff] || "보통"})`, from: "lingo" });
+          for (const r of ok) for (const t of r.titles || []) if (t?.name && !out.titles.some((x) => x.name === t.name)) out.titles.push({ name: t.name, from: "lingo" });
+        } } catch (e) { console.warn("[ability] lingo", e?.message); }
       try { const { data } = await sb.from("ability_profiles").select("rep_kind, rep_id, rep_title").eq("owner_key", key).maybeSingle(); out.rep = data || null; } catch {}
       out.titles = out.titles.slice(0, 40);
       reply(out);
@@ -203,7 +216,7 @@ export function registerMind(io, supabaseAdmin, app, { getOptionalUser } = {}) {
     // 대표 진단서·대표 칭호: 내 기록만 지정 가능
     on("ability:setRep", async (p, reply) => {
       if (!sb) return reply({ ok: false, error: "NO_DB" });
-      const kind = ["clinic", "iq", "mind", "sense", "know", "feel"].includes(p.kind) ? p.kind : null, id = kind ? String(p.id || "").slice(0, 16) : null;
+      const kind = ["clinic", "iq", "mind", "sense", "know", "feel", "lingo"].includes(p.kind) ? p.kind : null, id = kind ? String(p.id || "").slice(0, 16) : null;
       if (kind) { const { data } = await sb.from(`${kind}_results`).select("id").eq("id", id).eq("owner_key", key).maybeSingle(); if (!data) return reply({ ok: false, error: "NOT_MINE" }); }
       const row = { owner_key: key, user_id: me.isGuest ? null : me.id, rep_kind: kind, rep_id: id, rep_title: p.title ? String(p.title).replace(/[<>]/g, "").slice(0, 30) : null, updated_at: new Date().toISOString() };
       const { error } = await sb.from("ability_profiles").upsert(row, { onConflict: "owner_key" });

@@ -8,7 +8,7 @@ export function makeFakeSb(DB = {}) {
     update(v) { this.op = "update"; this.val = v; return this; }
     upsert(r, o = {}) { this.op = "upsert"; this.rows = Array.isArray(r) ? r : [r]; this.conf = (o.onConflict || "id").split(","); return this; }
     delete() { this.op = "delete"; return this; }
-    eq(c, v) { this.f.push((r) => r[c] === v); return this; } not(c, op, v) { const [x, y] = c.split(/->>?/); const g = (r) => (y ? r[x]?.[y] : r[c]); if (op === "is" && v === null) this.f.push((r) => g(r) != null); return this; } gte(c, v) { this.f.push((r) => r[c] >= v); return this; } gt(c, v) { this.f.push((r) => r[c] > v); return this; }
+    eq(c, v) { this.f.push((r) => r[c] === v); return this; } neq(c, v) { this.f.push((r) => r[c] !== v); return this; } not(c, op, v) { const [x, y] = c.split(/->>?/); const g = (r) => (y ? r[x]?.[y] : r[c]); if (op === "is" && v === null) this.f.push((r) => g(r) != null); return this; } gte(c, v) { this.f.push((r) => r[c] >= v); return this; } gt(c, v) { this.f.push((r) => r[c] > v); return this; }
     order(c, o = {}) { this.ord.push([c, o.ascending !== false]); return this; } limit(n) { this.lim = n; return this; } maybeSingle() { this.one = "maybe"; return this; } single() { this.one = "single"; return this; }
     run() {
       const T = DB[this.t] || (DB[this.t] = []); const match = (r) => this.f.every((fn) => fn(r));
