@@ -314,6 +314,7 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
           } catch {}
         }
         const playerName = nick || (me.isGuest ? "게스트" : "유저");
+        if (bbRooms.get(roomId) !== room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" }); if (room.players.has(me.id)) return cb?.({ ok: true, roomId, inviteCode: room.inviteCode, playerId: me.id, room: publicRoom(room), rejoined: true }); if (room.status !== "lobby") return cb?.({ ok: false, error: "GAME_ALREADY_STARTED" }); if (room.players.size >= room.maxPlayers) return cb?.({ ok: false, error: "ROOM_FULL" }); // 프로필 읽는 사이 동시에 들어온 사람 다시 확인
         room.players.set(me.id, newPlayerState(playerName, !!me.isGuest, avatar, socket.id));
         room.playerOrder.push(me.id);
         bbUserRoom.set(me.id, roomId);

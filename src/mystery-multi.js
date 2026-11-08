@@ -366,6 +366,7 @@ export function registerMysteryMulti(io, supabaseAdmin) {
         if (room.status === "ended") return cb?.({ ok: false, error: "ROOM_ENDED" });
         const old = myRoom(); if (old && old !== room) removePlayer(io, old, me.id);
         const p = newPlayer(me, await profileOf(me, payload?.nickname), socket);
+        if (rooms.get(invites.get(code)) !== room) return cb?.({ ok: false, error: "NO_ROOM" }); if (room.players.has(me.id)) return cb?.(joinPayload(room, me.id, true)); if (room.players.size >= room.maxPlayers) return cb?.({ ok: false, error: "ROOM_FULL" }); // 프로필 읽는 사이 동시에 들어온 사람 다시 확인
         room.players.set(me.id, p);
         attachSocket(socket, room, p);
         // 진행 중에 들어오면: 협동은 공용 상태를 그대로 받고, 경쟁은 자기 세션을 새로 시작

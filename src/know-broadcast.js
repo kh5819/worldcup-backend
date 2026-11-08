@@ -159,7 +159,7 @@ export function registerKnowBroadcast(io, supabaseAdmin, app) {
       const b = BC.get(String(p.id || "")); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" });
       if (b.phase === "final") return reply({ ok: false, error: "BC_CLOSED" });
       let v = b.viewers.get(key);
-      if (!v) { if (b.viewers.size >= MAX_VIEWERS) return reply({ ok: false, error: "ROOM_FULL" }); const mp = !me.isGuest ? await memberProfile(sb, me) : null; const nick = clean(mp?.nickname || p.nick, 12) || "시청자"; v = { nick, pts: 0, ok: 0, no: ++b.seq }; b.viewers.set(key, v); emitState(io, b); }
+      if (!v) { if (b.viewers.size >= MAX_VIEWERS) return reply({ ok: false, error: "ROOM_FULL" }); const mp = !me.isGuest ? await memberProfile(sb, me) : null; v = b.viewers.get(key); if (!v) { if (b.viewers.size >= MAX_VIEWERS) return reply({ ok: false, error: "ROOM_FULL" }); const nick = clean(mp?.nickname || p.nick, 12) || "시청자"; v = { nick, pts: 0, ok: 0, no: ++b.seq }; b.viewers.set(key, v); } emitState(io, b); }
       socket.join(room(b.id)); reply({ ok: true, nick: v.nick, pts: v.pts, state: pubState(b) });
     });
     // 답: 문항당 1회, 마감 후 무효. 보기별 수는 메모리에서 바로 셈(공개는 결과 때)

@@ -1996,7 +1996,7 @@ app.get("/sitemap-community.xml", async (req, res) => {
       .filter(r => r && _isValidId(r.id) && _communityIndexable(r))
       .map(r => `<url><loc>${SITE_URL}/cm/${escapeXml(r.id)}</loc><lastmod>${_formatLastmod(r.created_at)}</lastmod><changefreq>weekly</changefreq><priority>0.5</priority></url>`)
       .join("");
-    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE_URL}/community.html</loc><changefreq>hourly</changefreq><priority>0.7</priority></url>${items}</urlset>`;
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${SITE_URL}/community</loc><changefreq>hourly</changefreq><priority>0.7</priority></url>${items}</urlset>`;
     res.setHeader("Content-Type", "application/xml; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");
     res.send(xml);

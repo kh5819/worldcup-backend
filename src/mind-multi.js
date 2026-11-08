@@ -248,6 +248,7 @@ export function registerMindMulti(io, supabaseAdmin) {
         r.specs.add(me.id); attach(r); reply({ ok: true, me: me.id, room: pubRoom(r), spectator: true }); return emitRoom(io, r);
       }
       const pl = newPlayer(p.profile?.nick, !!me.isGuest, socket.id, dev(p)); await applyMember(pl, p);
+      if (ROOMS.get(r.id) !== r) return reply({ ok: false, error: "NOT_FOUND" }); if (r.players.has(me.id)) return reply({ ok: true, me: me.id, room: pubRoom(r), you: personal(r, me.id), rejoined: true }); if (r.phase !== "lobby") return reply({ ok: false, error: "ALREADY_STARTED" }); if (r.order.length >= r.maxPlayers) return reply({ ok: false, error: "ROOM_FULL" }); // 프로필 읽는 사이 동시에 들어온 사람 다시 확인
       r.players.set(me.id, pl); r.order.push(me.id); attach(r); checkEmpty(io, r);
       reply({ ok: true, me: me.id, room: pubRoom(r) }); emitRoom(io, r);
     });

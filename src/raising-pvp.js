@@ -421,6 +421,7 @@ export function registerRaisingPvp(io, supabaseAdmin) {
         const old = myRoom();
         if (old) leavePlayer(io, old, me.id);
         const { nick, avatar } = await profileOf(supabaseAdmin, me, payload?.nickname);
+        if (rooms.get(invites.get(code)) !== room) return cb?.({ ok: false, error: "ROOM_NOT_FOUND" }); if (room.players.has(me.id)) return cb?.({ ok: true, roomId: room.id, inviteCode: room.inviteCode, playerId: me.id, room: publicRoom(room), rejoined: true }); if (room.playerOrder.length >= 2) return cb?.({ ok: false, error: "ROOM_FULL" }); if (room.status !== "lobby" && room.status !== "ended") return cb?.({ ok: false, error: "GAME_ALREADY_STARTED" }); // 프로필 읽는 사이 동시에 들어온 사람 다시 확인
         room.players.set(me.id, newPlayer(nick, !!me.isGuest, avatar, socket.id));
         room.playerOrder.push(me.id);
         room.score[me.id] = 0;
