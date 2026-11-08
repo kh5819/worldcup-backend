@@ -1,5 +1,5 @@
 // =========================
-// 플듀 언어 진단소 — 스트리머 방송 모드 (lbc:*)  ※ 상식 진단소 퀴즈쇼(know-broadcast.js) 흐름을 그대로 따름
+// 플듀 언어 진단소 — 스트리머 방송 모드 (lgb:*)  ※ 이름 주의: 인생방송국이 lbc:*를 씀 — 같은 이름이면 두 서버 기능이 같이 반응함(11-08 사고)  ※ 상식 진단소 퀴즈쇼(know-broadcast.js) 흐름을 그대로 따름
 // 스트리머(방장)가 문제를 열면 시청자 누구나(링크·QR, 게스트 가능) 동시에 답함. 스트리머도 같이 풂
 // 방송 언어·난이도는 스트리머가 정하고 끝까지 고정. 공개 권한: 마감 전엔 제출 "인원"만 → 공개 버튼을 눌러야 정답·보기별 비율·TOP10
 // 방송에 맞는 방식만: 4지선다·O/X·오류 찾기·문장 배열 (타자는 기기 차이가 커서 뺌)
@@ -17,7 +17,7 @@ const MAX_VIEWERS = Number(process.env.LINGO_BC_MAX || 5000);
 const GUEST_OPEN = 1, MEMBER_OPEN = 3, BC_TTL = 6 * 3600e3;
 const ipMakes = new Map();
 const now = () => Date.now();
-const room = (id) => `lbc:${id}`;
+const room = (id) => `lgb:${id}`;
 const bcId = () => { const a = "abcdefghjkmnpqrstuvwxyz23456789"; let s = ""; for (let i = 0; i < 8; i++) s += a[Math.floor(Math.random() * a.length)]; return s; };
 const clean = (s, n) => String(s ?? "").replace(/[\u0000-\u001f<>]/g, "").trim().slice(0, n);
 const sockIp = (s) => String(s.handshake.headers["x-forwarded-for"] || s.handshake.address || "").split(",")[0].trim();
@@ -50,7 +50,7 @@ function pubState(b) {
 function emitState(io, b, force = false) {
   const t = now();
   if (!force && t - b.emitAt < 500) { if (!b.emitT) b.emitT = setTimeout(() => { b.emitT = null; emitState(io, b, true); }, 500 - (t - b.emitAt)); return; }
-  b.emitAt = t; io.to(room(b.id)).emit("lbc:state", pubState(b));
+  b.emitAt = t; io.to(room(b.id)).emit("lgb:state", pubState(b));
 }
 function boardOf(b) {
   const arr = [...b.viewers.entries()].filter(([k]) => k !== b.hostKey).map(([k, v]) => ({ k, nick: b.hideNicks ? `시청자 ${String(v.no).padStart(3, "0")}` : v.nick, pts: v.pts, ok: v.ok }));
@@ -107,7 +107,8 @@ const sanitizeAns = (a) => (typeof a === "number" || typeof a === "boolean" ? a 
 
 export function registerLingoBroadcast(io, supabaseAdmin, app) {
   const sb = supabaseAdmin;
-  setInterval(() => { const t = now(); for (const [id, b] of BC) if (t - b.createdAt > BC_TTL) { clearTimeout(b.timer); BC.delete(id); } }, 10 * 60e3).unref?.();
+  // 6시간 지난 방송 정리 — 끝내지 않은 방송도 지금까지 결과로 마감해 저장한 뒤 지움 (나중에 링크로 결과를 볼 수 있게)
+  setInterval(() => { const t = now(); for (const [id, b] of BC) if (t - b.createdAt > BC_TTL) { clearTimeout(b.timer); if (b.phase !== "final") finish(io, b, sb).catch(() => {}); BC.delete(id); } }, 10 * 60e3).unref?.();
   io.on("connection", (socket) => {
     const me = socket.user; if (!me) return;
     const key = userKey(me);
@@ -116,11 +117,11 @@ export function registerLingoBroadcast(io, supabaseAdmin, app) {
     const on = (ev, fn) => socket.on(ev, async (p, cb) => { const reply = typeof cb === "function" ? cb : () => {}; if (limited()) return reply({ ok: false, error: "RATE_LIMITED" }); try { await fn(p && typeof p === "object" ? p : {}, reply); } catch (e) { console.error(`[${ev}]`, e); reply({ ok: false, error: "INTERNAL" }); } });
     const myBc = (id) => { const b = BC.get(String(id || "")); return b && b.hostKey === key ? b : null; };
     const mineOf = () => [...BC.values()].filter((b) => b.hostKey === key && b.phase !== "final").sort((a, c) => c.createdAt - a.createdAt).map((b) => ({ id: b.id, title: b.title, lang: b.lang, diff: b.diff, n: b.plan.length, done: b.rounds.length, phase: b.phase, viewers: Math.max(0, b.viewers.size - 1), createdAt: b.createdAt }));
-    on("lbc:mine", (_p, reply) => reply({ ok: true, rows: mineOf() }));
+    on("lgb:mine", (_p, reply) => reply({ ok: true, rows: mineOf() }));
 
     // 방송 만들기: 게스트도 가능(닉네임 필수, 동시 1개·같은 IP 10분 5개), 회원 동시 3개
-    on("lbc:create", async (p, reply) => {
-      { const _f = createFlight("lbc", me?.id, reply); if (!_f) return; reply = _f; }
+    on("lgb:create", async (p, reply) => {
+      { const _f = createFlight("lgb", me?.id, reply); if (!_f) return; reply = _f; }
       const mp = !me.isGuest ? await memberProfile(sb, me) : null;
       const nick = clean(p.nick || mp?.nickname, 16);
       if (!nick) return reply({ ok: false, error: "NEED_NICK" });
@@ -141,8 +142,8 @@ export function registerLingoBroadcast(io, supabaseAdmin, app) {
       }
       reply({ ok: true, id, state: pubState(b) });
     });
-    on("lbc:watch", (p, reply) => { const b = BC.get(String(p.id || "")); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" }); socket.join(room(b.id)); const v = b.viewers.get(key); reply({ ok: true, host: b.hostKey === key, state: pubState(b), me: v ? { pts: v.pts } : null }); });
-    on("lbc:join", async (p, reply) => {
+    on("lgb:watch", (p, reply) => { const b = BC.get(String(p.id || "")); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" }); socket.join(room(b.id)); const v = b.viewers.get(key); reply({ ok: true, host: b.hostKey === key, state: pubState(b), me: v ? { pts: v.pts } : null }); });
+    on("lgb:join", async (p, reply) => {
       const b = BC.get(String(p.id || "")); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" });
       if (b.phase === "final") return reply({ ok: false, error: "BC_CLOSED" });
       let v = b.viewers.get(key);
@@ -155,7 +156,7 @@ export function registerLingoBroadcast(io, supabaseAdmin, app) {
       socket.join(room(b.id)); reply({ ok: true, nick: v.nick, pts: v.pts, state: pubState(b) });
     });
     // 답: 문항당 1회, 마감 후 무효. 보기별 수는 메모리에서 바로 셈(공개는 결과 때)
-    on("lbc:answer", (p, reply) => {
+    on("lgb:answer", (p, reply) => {
       const b = BC.get(String(p.id || "")); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" });
       const r = b.cur; if (b.phase !== "open" || !r || (p.round | 0) !== r.i) return reply({ ok: false, error: "BC_CLOSED" });
       if (!b.viewers.has(key)) return reply({ ok: false, error: "NOT_JOINED" });
@@ -168,12 +169,12 @@ export function registerLingoBroadcast(io, supabaseAdmin, app) {
       if (ans != null && r.q.kind !== "order") { const k = String(ans); r.dist[k] = (r.dist[k] || 0) + 1; }
       reply({ ok: true, submitted: true }); emitState(io, b);
     });
-    on("lbc:me", (p, reply) => { const b = BC.get(String(p.id || "")); const v = b && b.viewers.get(key); if (!v) return reply({ ok: false, error: "NOT_JOINED" }); const all = [...b.viewers.entries()].filter(([k]) => k !== b.hostKey).map(([, x]) => x.pts).sort((a, c) => c - a); reply({ ok: true, nick: v.nick, pts: v.pts, correct: v.ok, last: v.last || null, rank: key === b.hostKey ? null : all.indexOf(v.pts) + 1, of: all.length }); });
-    on("lbc:next", (p, reply) => { const b = myBc(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); if (b.phase === "open" || b.phase === "closed") return reply({ ok: false, error: "IN_ROUND" }); if (b.done || b.phase === "final") return reply({ ok: false, error: "NO_MORE" }); openRound(io, b, b.cur ? b.cur.i + 1 : 0); reply({ ok: true }); });
-    on("lbc:close", (p, reply) => { const b = myBc(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); closeRound(io, b); reply({ ok: true }); });
-    on("lbc:reveal", (p, reply) => { const b = myBc(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); if (b.phase === "open") closeRound(io, b); if (b.phase !== "closed") return reply({ ok: false, error: "NOT_CLOSED" }); revealRound(io, b); reply({ ok: true }); });
-    on("lbc:finish", async (p, reply) => { const b = myBc(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); await finish(io, b, sb); reply({ ok: true }); });
-    on("lbc:hideNicks", (p, reply) => { const b = myBc(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); b.hideNicks = !!p.on; if (b.board) b.board = boardOf(b); emitState(io, b, true); reply({ ok: true }); });
+    on("lgb:me", (p, reply) => { const b = BC.get(String(p.id || "")); const v = b && b.viewers.get(key); if (!v) return reply({ ok: false, error: "NOT_JOINED" }); const all = [...b.viewers.entries()].filter(([k]) => k !== b.hostKey).map(([, x]) => x.pts).sort((a, c) => c - a); reply({ ok: true, nick: v.nick, pts: v.pts, correct: v.ok, last: v.last || null, rank: key === b.hostKey ? null : all.indexOf(v.pts) + 1, of: all.length }); });
+    on("lgb:next", (p, reply) => { const b = myBc(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); if (b.phase === "open" || b.phase === "closed") return reply({ ok: false, error: "IN_ROUND" }); if (b.done || b.phase === "final") return reply({ ok: false, error: "NO_MORE" }); openRound(io, b, b.cur ? b.cur.i + 1 : 0); reply({ ok: true }); });
+    on("lgb:close", (p, reply) => { const b = myBc(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); closeRound(io, b); reply({ ok: true }); });
+    on("lgb:reveal", (p, reply) => { const b = myBc(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); if (b.phase === "open") closeRound(io, b); if (b.phase !== "closed") return reply({ ok: false, error: "NOT_CLOSED" }); revealRound(io, b); reply({ ok: true }); });
+    on("lgb:finish", async (p, reply) => { const b = myBc(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); await finish(io, b, sb); reply({ ok: true }); });
+    on("lgb:hideNicks", (p, reply) => { const b = myBc(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); b.hideNicks = !!p.on; if (b.board) b.board = boardOf(b); emitState(io, b, true); reply({ ok: true }); });
   });
   if (!app) return;
   app.get("/lingo/bc/:id", async (req, res) => {

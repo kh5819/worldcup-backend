@@ -7,7 +7,8 @@ import { registerLingo, _lingoTest } from "../src/lingo.js";
 import { registerLingoBroadcast, _lbcTest } from "../src/lingo-broadcast.js";
 import { registerLingoMulti, _lgmTest } from "../src/lingo-multi.js";
 import { registerPublicRooms } from "../src/public-rooms.js";
-import { registerMind } from "../src/mind.js";   // 종합 능력 프로필(ability:overview) 시험용
+import { registerMind } from "../src/mind.js";
+import { registerLifeBroadcast } from "../src/lifebc-broadcast.js";   // 운영처럼 인생방송국도 같이 — 신호 이름 겹침 시험   // 종합 능력 프로필(ability:overview) 시험용
 import { makeFakeSb } from "./mind-fake-sb.mjs";
 const ROOT = path.resolve("../홈페이지 제작"), PORT = Number(process.env.PORT || 5198);
 const sb = makeFakeSb({ profiles: [] });
@@ -20,7 +21,10 @@ registerLingoBroadcast(io, sb, app);
 registerLingoMulti(io, sb);
 registerPublicRooms(app, io);
 registerMind(io, sb, app, {});
+registerLifeBroadcast(io, sb, app);
 app.get("/__lgmans", (q, r) => { const id = _lgmTest.CODES.get(String(q.query.code)); const x = id && _lgmTest.ROOMS.get(id); r.json(x?.served ? { kind: x.served.pub.kind, key: x.served.key, phase: x.phase, round: x.round } : null); });
+app.get("/__log", (_q, r) => r.json((sb.DB.streamer_chat_log || []).map((x) => x.platform)));
+app.get("/__bcdrop", (q, r) => r.json({ ok: _lbcTest.BC.delete(String(q.query.id)) }));   // 서버 재시작 흉내 (메모리에서만 지움, 가짜 DB 기록은 남음)
 app.get("/__bcans", (q, r) => { const b = _lbcTest.BC.get(String(q.query.id)); r.json(b?.cur ? { kind: b.cur.sv.pub.kind, key: b.cur.sv.key } : null); });
 const { SESS, BY_ID } = _lingoTest;
 app.get("/__ans", (q, r) => { const s = SESS.get(String(q.query.sid)); const i = Number(q.query.i); const sv = s?.served?.[i]; const qq = s && BY_ID.get(s.plan[i]?.id); r.json(sv ? { kind: sv.pub.kind, key: sv.key, text: qq?.text } : null); });
