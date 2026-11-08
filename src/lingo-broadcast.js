@@ -12,7 +12,8 @@ import { STORE, poolOf, serve, revealOf, judgeServed } from "./lingo.js";
 import { memberProfile, userKey } from "./iq.js";
 
 const BC = new Map();
-const SHOW_KINDS = new Set(["mcq", "ox", "spot", "order"]);
+const SHOW_KINDS = new Set(["mcq", "ox", "spot", "order", "link", "sort"]);   // 타자는 기기 차이가 커서 방송에서 뺌
+const PICK_KINDS = new Set(["mcq", "ox", "spot"]);   // 보기 하나를 고르는 방식만 보기별 비율 막대를 보여 줌 (배열·연결·분류는 정답률만)
 const MAX_VIEWERS = Number(process.env.LINGO_BC_MAX || 5000);
 const GUEST_OPEN = 1, MEMBER_OPEN = 3, BC_TTL = 6 * 3600e3;
 const ipMakes = new Map();
@@ -26,15 +27,19 @@ const sockIp = (s) => String(s.handshake.headers["x-forwarded-for"] || s.handsha
 export function showPlan(seed, n = 10, lang = "ko", diff = "normal") {
   const pool = poolOf(lang).filter((q) => SHOW_KINDS.has(q.kind));
   if (pool.length < n) throw Object.assign(new Error("NOT_ENOUGH_ITEMS"), { detail: { need: n, have: pool.length } });
-  const r = C.rng(seed), need = C.diffNeed(diff, n), used = new Set(), out = [], areaN = {}, cap = Math.ceil(n / 6) + 1;
+  const r = C.rng(seed), need = C.diffNeed(diff, n), used = new Set(), out = [], areaN = {}, kindN = {}, cap = Math.ceil(n / 6) + 1;
+  // 문제 종류 골고루: 4지선다는 절반까지, 다른 방식은 아직 안 나온 것을 먼저 · 같은 방식이 너무 몰리지 않게
+  const kindCap = (k) => (k === "mcq" ? Math.ceil(n / 2) : Math.max(1, Math.ceil(n / 5)));
   for (let i = 0; i < n; i++) {
     let best = null, bs = Infinity;
     for (const q of pool) {
       if (used.has(q.id)) continue;
-      const s = (C.inBand(diff, q.d) ? (need[q.d] > 0 ? 0 : 3) : 15) + ((areaN[q.area] || 0) >= cap ? 8 : 0) + r() * 3;
+      const kn = kindN[q.kind] || 0;
+      const s = (C.inBand(diff, q.d) ? (need[q.d] > 0 ? 0 : 3) : 15) + ((areaN[q.area] || 0) >= cap ? 8 : 0)
+        + (kn >= kindCap(q.kind) ? 9 : 0) + (q.kind !== "mcq" && !kn ? -4 : 0) + r() * 3;
       if (s < bs) { bs = s; best = q; }
     }
-    used.add(best.id); if (need[best.d] > 0) need[best.d]--; areaN[best.area] = (areaN[best.area] || 0) + 1; out.push(best);
+    used.add(best.id); if (need[best.d] > 0) need[best.d]--; areaN[best.area] = (areaN[best.area] || 0) + 1; kindN[best.kind] = (kindN[best.kind] || 0) + 1; out.push(best);
   }
   return C.shuffle(out, r).map((q, i) => ({ id: q.id, seed: C.hashSeed(`${seed}:bc:${i}:${q.id}`) >>> 0 }));
 }
@@ -79,7 +84,7 @@ function revealRound(io, b) {
   const host = r.ans.get(b.hostKey);
   b.rounds.push({ i: r.i, acc: n ? Math.round((100 * ok) / n) : null, n, streamer: host ? host.part >= 1 : null });
   b.board = boardOf(b);
-  b.lastPub = { round: r.i, item: r.sv.pub, reveal: rv, dist: q.kind === "order" ? null : r.dist, total: n, correct: ok, acc: n ? Math.round((100 * ok) / n) : null, streamer: host ? { part: host.part, bp: host.bp } : { none: true } };
+  b.lastPub = { round: r.i, item: r.sv.pub, reveal: rv, dist: PICK_KINDS.has(q.kind) ? r.dist : null, total: n, correct: ok, acc: n ? Math.round((100 * ok) / n) : null, streamer: host ? { part: host.part, bp: host.bp } : { none: true } };
   b.phase = "reveal"; b.done = r.i + 1 >= b.plan.length;
   emitState(io, b, true);
 }
@@ -166,7 +171,7 @@ export function registerLingoBroadcast(io, supabaseAdmin, app) {
       const res = judgeServed(r.q, r.sv, ans, { at: r.at });
       res.bp = C.battlePoints(res.part, res.d, res.game, res.ms, res.lim);
       r.ans.set(key, res); r.count++;
-      if (ans != null && r.q.kind !== "order") { const k = String(ans); r.dist[k] = (r.dist[k] || 0) + 1; }
+      if (ans != null && PICK_KINDS.has(r.q.kind)) { const k = String(ans); r.dist[k] = (r.dist[k] || 0) + 1; }
       reply({ ok: true, submitted: true }); emitState(io, b);
     });
     on("lgb:me", (p, reply) => { const b = BC.get(String(p.id || "")); const v = b && b.viewers.get(key); if (!v) return reply({ ok: false, error: "NOT_JOINED" }); const all = [...b.viewers.entries()].filter(([k]) => k !== b.hostKey).map(([, x]) => x.pts).sort((a, c) => c - a); reply({ ok: true, nick: v.nick, pts: v.pts, correct: v.ok, last: v.last || null, rank: key === b.hostKey ? null : all.indexOf(v.pts) + 1, of: all.length }); });
