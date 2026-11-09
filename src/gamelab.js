@@ -5,7 +5,14 @@ import { randomBytes } from "crypto";
 import * as C from "./gamelab-core.js";
 import { memberProfile } from "./clinic.js";
 
+let HOOKS = null;
+export const setGamelabHooks = (h) => { HOOKS = h; };
 const newId = () => randomBytes(6).toString("base64url").replace(/[-_]/g, "x").slice(0, 10);
+export const newResultId = () => newId();
+/** 요청한 사람의 기록 주인 키 (회원 u: / 게스트 g:) */
+export async function ownerOf(req, getOptionalUser) { const user = getOptionalUser ? await getOptionalUser(req) : null; if (user) return `u:${user.id}`; const g = String(req.headers["x-iq-guest"] || "").slice(0, 64); return /^guest_[a-z0-9]{4,40}$/i.test(g) ? `g:${g}` : null; }
+/** gamelab_results 한 행 (혼자·대결·방송 공용) */
+export function buildRow({ id, key, userId, nickname, mode, diff, plan, sum, raws, flags, isPublic, isStreamer, durationMs, groupId = null, bcId = null }) { return { id, owner_key: key, user_id: userId || null, nickname: cleanNick(nickname), mode, diff, ver: C.VER, plan, scores: sum.scores, raws, flags, total: sum.total, tier: sum.tier, type: sum.type, areas: sum.areas, done: sum.done, of_count: sum.of, is_public: isPublic !== false, is_streamer: !!isStreamer, flagged: Object.keys(flags || {}).length > 0, verified: false, duration_ms: Math.max(0, Math.min(1e8, Number(durationMs) || 0)), group_id: groupId, bc_id: bcId }; }
 const cleanNick = (s) => String(s || "").replace(/[<>\u0000-\u001f]/g, "").trim().slice(0, 14) || "플레이어";
 const planOk = (mode, plan) => {
   if (!Array.isArray(plan)) return false;
@@ -43,16 +50,19 @@ export function registerGamelab(app, sb, { getOptionalUser } = {}) {
       const sum = C.summarize(b.plan, results);
       if (!sum.done) return res.status(400).json({ ok: false, error: "NOTHING_MEASURED" });
       const mp = user && sb ? await memberProfile(sb, { id: user.id, isGuest: false }) : null;   // 회원은 프로필 닉네임이 우선
-      const id = newId(), nickname = cleanNick(mp?.nickname || b.nick), isStreamer = !!b.streamer, flagged = Object.keys(flags).length > 0;
-      const row = { id, owner_key: key, user_id: user?.id || null, nickname, mode, diff, ver: C.VER, plan: b.plan, scores: sum.scores, raws, flags, total: sum.total, tier: sum.tier, type: sum.type, areas: sum.areas, done: sum.done, of_count: sum.of, is_public: b.isPublic !== false, is_streamer: isStreamer, flagged, verified: false, duration_ms: Math.max(0, Math.min(1e8, Number(b.durationMs) || 0)) };
+      const bcId = b.bc ? String(b.bc).slice(0, 16) : null; let bcGate = null;
+      if (bcId) { if (!HOOKS) return res.json({ ok: false, error: "BC_NOT_FOUND" }); bcGate = await HOOKS.check(bcId, key, { mode, diff, plan: b.plan }, b.startedAt); if (!bcGate.ok) return res.json({ ok: false, error: bcGate.error }); }
+      const id = newId(), nickname = cleanNick(mp?.nickname || b.nick), isStreamer = bcId ? !!bcGate.isOwner : !!b.streamer, flagged = Object.keys(flags).length > 0;
+      const row = { id, owner_key: key, user_id: user?.id || null, nickname, mode, diff, ver: C.VER, plan: b.plan, scores: sum.scores, raws, flags, total: sum.total, tier: sum.tier, type: sum.type, areas: sum.areas, done: sum.done, of_count: sum.of, is_public: b.isPublic !== false, is_streamer: isStreamer, flagged, verified: false, duration_ms: Math.max(0, Math.min(1e8, Number(b.durationMs) || 0)), bc_id: bcId };
       if (!sb) return res.json({ ok: false, error: "NO_DB" });
       const { error } = await sb.from("gamelab_results").insert(row);
-      if (error) { console.error("[gamelab] save", error.message); return res.json({ ok: false, error: "SAVE_FAIL" }); }
-      if (isStreamer) {
+      if (error) { if (bcId && String(error.code) === "23505") return res.json({ ok: false, error: "ALREADY" }); console.error("[gamelab] save", error.message); return res.json({ ok: false, error: "SAVE_FAIL" }); }
+      const bcInfo = bcId ? HOOKS.done(bcId, { ...row, created_at: new Date().toISOString() }) : null;
+      if (isStreamer && !bcId) {
         const names = { quick: "빠른 검사", full: "전체 검사", single: `${C.byId[b.plan[0]]?.name} 도전` };
         sb.from("streamer_chat_log").insert({ platform: "gamelab", channel_id: id, nickname, content_id: null, content_title: `게임 종합 진단소 · ${names[mode]} · ${C.DIFF_NAME[diff]} · ${sum.total}점 ${sum.tier}`, content_mode: mode, room_code: id, host_user_id: user?.id || null, host_nick: user ? nickname : null }).then(({ error: le }) => { if (le) console.error("[gamelab] streamer log", le.message); }, () => {});
       }
-      res.json({ ok: true, id, total: sum.total, tier: sum.tier, flagged });
+      res.json({ ok: true, id, total: sum.total, tier: sum.tier, flagged, bc: bcInfo });
     } catch (e) { console.error("[gamelab/result]", e); res.status(500).json({ ok: false, error: "INTERNAL" }); }
   });
   // 로그인하면 이 기기의 게스트 기록을 내 계정으로 (다른 진단소의 mergeGuest와 같은 규칙)
@@ -66,6 +76,18 @@ export function registerGamelab(app, sb, { getOptionalUser } = {}) {
       if (error) return res.json({ ok: false, error: "UPDATE_FAIL" });
       res.json({ ok: true, moved: moved?.length || 0 });
     } catch (e) { console.error("[gamelab/merge]", e); res.status(500).json({ ok: false, error: "INTERNAL" }); }
+  });
+  // 랭킹: 전체·빠른 검사 × 난이도. 모든 미션을 측정한 공개 기록, 한 사람 최고 1개. verified=true 기록은 board=verified 로만
+  app.get("/gamelab/ranking", async (req, res) => {
+    try {
+      if (!sb) return res.json({ ok: true, rows: [] });
+      const mode = req.query.mode === "quick" ? "quick" : "full", diff = C.DIFFS.includes(req.query.diff) ? req.query.diff : "normal", verified = req.query.board === "verified";
+      const { data, error } = await sb.from("gamelab_results").select("id, owner_key, nickname, total, tier, type, done, of_count, is_streamer, created_at").eq("mode", mode).eq("diff", diff).eq("is_public", true).eq("flagged", false).eq("verified", verified).order("total", { ascending: false }).limit(500);
+      if (error) return res.json({ ok: false, error: "LOAD_FAIL" });
+      const seen = new Set(), rows = [];
+      for (const r of data || []) { if (r.tier === C.UNRATED || r.done < r.of_count || seen.has(r.owner_key)) continue; seen.add(r.owner_key); rows.push({ rank: rows.length + 1, id: r.id, nick: r.nickname, total: r.total, tier: r.tier, type: r.type, streamer: !!r.is_streamer }); if (rows.length >= 50) break; }
+      res.set("Cache-Control", "public, max-age=15"); res.json({ ok: true, mode, diff, board: verified ? "verified" : "normal", rows });
+    } catch (e) { console.error("[gamelab/ranking]", e); res.status(500).json({ ok: false, error: "INTERNAL" }); }
   });
   app.get("/gamelab/result/:id", async (req, res) => {
     try {

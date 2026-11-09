@@ -17,8 +17,8 @@ export const AREAS = {
 // server: 승패를 서버가 판정하는 미션
 export const MISSIONS = [
   { id: "dodge", name: "피해피해", icon: "🔫", col: "#ff6078", page: "dodge.html", kind: "survive", area: "physical", quick: 1,
-    goalText: (c) => `${c.goal}초 버티기`, rule: "쏟아지는 탄막을 피해 끝까지 살아남으세요. 공격은 자동이에요. 많이 움직이고 체력을 많이 남길수록 점수가 높아요.", ctl: "PC: WASD·방향키 / 폰: 화면 조이스틱",
-    diff: { normal: { goal: 30, limit: 30 }, hard: { goal: 45, limit: 45 }, expert: { goal: 60, limit: 60 } } },
+    goalText: (c) => `${c.goal}초 버티고 보스 잡기`, rule: "탄막을 피하며 끝까지 살아남고, 중간에 나오는 보스를 쓰러뜨리세요. 공격은 자동이에요. 보스를 못 잡으면 입힌 피해만큼만 점수를 받아요.", ctl: "PC: WASD·방향키 / 폰: 화면 조이스틱",
+    diff: { normal: { goal: 30, limit: 30, bossHp: 200, bossIdx: 0 }, hard: { goal: 45, limit: 45, bossHp: 340, bossIdx: 1 }, expert: { goal: 60, limit: 60, bossHp: 520, bossIdx: 3 } } },
   { id: "apple", name: "사과게임", icon: "🍎", col: "#ff8a5c", page: "apple.html", kind: "reach", area: "puzzle", quick: 1,
     goalText: (c) => `${c.limit}초 안에 ${c.goal}점`, rule: "사과를 드래그로 묶어 합을 10으로 만들면 사라져요. 빨리 목표를 넘길수록 점수가 높아요.", ctl: "마우스·손가락 드래그",
     diff: { normal: { goal: 30, limit: 60 }, hard: { goal: 50, limit: 60 }, expert: { goal: 80, limit: 60 } } },
@@ -30,7 +30,7 @@ export const MISSIONS = [
     diff: { normal: { goal: 5, limit: 120 }, hard: { goal: 8, limit: 120 }, expert: { goal: 12, limit: 120 } } },
   { id: "merge", name: "수라상", icon: "🍚", col: "#f4c76a", page: "merge.html", kind: "reach", area: "puzzle", quick: 1,
     goalText: (c) => `${c.limit}초 안에 ${c.goal}점`, rule: "같은 음식을 부딪쳐 합치세요. 넘치지 않게 쌓으면서 목표 점수를 빨리 넘기세요.", ctl: "좌우로 움직여 떨어뜨리기",
-    diff: { normal: { goal: 8000, limit: 60 }, hard: { goal: 12000, limit: 60 }, expert: { goal: 18000, limit: 60 } } },   // 아무 데나 떨어뜨리기 60초 ≈ 6800점(11-09 측정)
+    diff: { normal: { goal: 5000, limit: 60 }, hard: { goal: 8000, limit: 60 }, expert: { goal: 12000, limit: 60 } } },   // 측정: 1.1초에 한 개 2600점 · 0.7초 6300점 · 0.65초 연타 6800점
   { id: "golf", name: "굴려굴려", icon: "⛳", col: "#46e08a", page: "golf.html", kind: "golf", area: "precision",
     goalText: (c) => `${c.holes}홀을 적은 타수로`, rule: "공을 당겨 쏴서 3개 홀에 넣으세요. 기준 타수보다 적게 칠수록 점수가 높아요.", ctl: "공을 드래그해 쏘기",
     diff: { normal: { holes: 3, limit: 180, mode: "normal" }, hard: { holes: 3, limit: 180, mode: "hard" }, expert: { holes: 3, limit: 180, mode: "extreme" } } },
@@ -44,13 +44,17 @@ export const MISSIONS = [
     goalText: () => "AI와 1:1 카드 대결", rule: "카드로 공격·방어·역전을 주고받아 상대 체력을 0으로 만드세요. 시간이 다 되면 체력 차이로 채점해요.", ctl: "카드를 눌러 사용 (한 턴 30초)",
     diff: { normal: { ai: "easy", limit: 300, turn: 30 }, hard: { ai: "normal", limit: 300, turn: 30 }, expert: { ai: "hard", limit: 300, turn: 30 } } },
   { id: "raising", name: "플듀 키우기", icon: "🐲", col: "#ffdf7a", page: "gamelab-raising.html", kind: "ai", area: "strategy",
-    goalText: () => "라인업을 짜서 1경기", rule: "몬스터 8마리 중 5마리를 골라 AI 감독과 겨뤄요. 저장된 키우기 기록에는 아무 영향이 없어요.", ctl: "5마리 고르기 → 경기 중 작전 지시",
-    diff: { normal: { lv: 8, speed: 4 }, hard: { lv: 10, speed: 4 }, expert: { lv: 12, speed: 4 } } },
+    goalText: () => "라인업을 짜서 1경기", rule: "몬스터 40종 중 5마리를 골라 AI 감독과 겨뤄요. 저장된 키우기 기록에는 아무 영향이 없어요.", ctl: "5마리 고르기 → 경기 중 작전 지시",
+    diff: { normal: { lv: 9, speed: 4 }, hard: { lv: 14, speed: 4 }, expert: { lv: 20, speed: 4 } } },   // 내 팀 Lv10. 측정 승률: 상대 Lv8~10 50~90% · 13~16 38% · 20 25%
 ];
 export const byId = Object.fromEntries(MISSIONS.map((m) => [m.id, m]));
 export const QUICK = MISSIONS.filter((m) => m.quick).map((m) => m.id);
 export const FULL = MISSIONS.map((m) => m.id);
+export const plan = (mode) => (mode === "full" ? [...FULL] : mode === "quick" ? [...QUICK] : []);
 export const cfgOf = (id, diff) => (byId[id]?.diff[DIFFS.includes(diff) ? diff : "normal"]) || null;
+/** 방장이 정한 제한시간 배율을 적용한 설정 (피해피해는 버티기 목표라 그대로). 키우기는 제한시간 없음 */
+export const TIME_SCALES = { short: 0.75, normal: 1, long: 1.25 };
+export function liveCfg(id, diff, scale = 1) { const c = cfgOf(id, diff); if (!c || !c.limit || scale === 1 || byId[id]?.kind === "survive") return c; return { ...c, limit: Math.round(c.limit * scale) }; }
 export const TIERS = [
   { id: "SSS", min: 950, col: "#ffdf7a", emb: "challenger" },
   { id: "SS", min: 880, col: "#ff6078", emb: "grandmaster" },
@@ -68,12 +72,12 @@ const c01 = (v) => Math.max(0, Math.min(1, Number(v) || 0));
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
 /** raw(게임이 보고한 값) → { score, status } · status: clear 성공 | fail 실패 | win 승 | lose 패 | timeout 미결 | quit 포기 */
-export function scoreMission(id, diff, raw) {
-  const m = byId[id], c = cfgOf(id, diff); if (!m || !c || !raw) return { score: 0, status: "fail" };
+export function scoreMission(id, diff, raw, cfg = null) {
+  const m = byId[id], c = cfg || cfgOf(id, diff); if (!m || !c || !raw) return { score: 0, status: "fail" };
   let score = 0, status = "fail";
   if (m.kind === "survive") {
-    const t = num(raw.t), ok = !!raw.ok && t >= c.goal - 0.5;
-    score = ok ? 60 + 40 * c01(raw.hp) : 59 * c01(t / c.goal); status = ok ? "clear" : "fail";
+    const t = num(raw.t), lived = !!raw.survived && t >= c.goal - 0.5, ok = !!raw.ok && t >= c.goal - 0.5 && raw.boss === true;   // 성공 = 끝까지 생존 + 보스 처치
+    score = ok ? 60 + 40 * c01(raw.hp) : lived ? 40 + 19 * c01(raw.bossDmg) : 39 * c01(t / c.goal) + (raw.boss === true ? 10 : 10 * c01(raw.bossDmg)); status = ok ? "clear" : "fail";
     if (c01(raw.moved) < 0.25) score = Math.min(score, 40);   // 가만히 서서 버틴 경우
   } else if (m.kind === "reach") {
     const v = num(raw.value), t = num(raw.t), ok = !!raw.ok && v >= c.goal;
