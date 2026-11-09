@@ -37,6 +37,7 @@ import { registerSense } from "./sense.js";
 import { registerSenseMulti } from "./sense-multi.js";
 import { registerSenseBroadcast } from "./sense-broadcast.js";
 import { registerFeel } from "./feel.js";
+import { registerGamelab } from "./gamelab.js";
 import { registerFeelMulti } from "./feel-multi.js";
 import { registerFeelBroadcast } from "./feel-broadcast.js";
 import { registerKnow } from "./know.js";
@@ -10584,6 +10585,8 @@ registerSenseMulti(io, supabaseAdmin);
 registerSenseBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
 // 플듀 감각 진단소 — feel:* 이벤트 + /feel/* REST, 문제·채점은 서버가 답 기록으로 다시 계산
 registerFeel(io, supabaseAdmin, app, { getOptionalUser });
+// 플듀 게임 종합 진단소 — /gamelab/* REST (기존 게임 기록과 분리)
+registerGamelab(app, supabaseAdmin, { getOptionalUser });
 registerLingo(io, supabaseAdmin, app, { getOptionalUser });
 registerLingoBroadcast(io, supabaseAdmin, app);
 registerLingoMulti(io, supabaseAdmin);
