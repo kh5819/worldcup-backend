@@ -4981,9 +4981,9 @@ app.get("/admin/streamer-log", requireAdmin, async (req, res) => {
       const feelIds = [...new Set(items.filter((r) => r.platform === "feel" && r.content_mode === "bc" && r.channel_id).map((r) => r.channel_id))];
       const knowIds = [...new Set(items.filter((r) => r.platform === "know" && r.channel_id).map((r) => r.channel_id))];
       const gamelabIds = [...new Set(items.filter((r) => r.platform === "gamelab" && r.content_mode === "bc" && r.channel_id).map((r) => r.channel_id))];   // 게임 종합 방송
-      await Promise.all(gamelabIds.map(async (id) => { const { count: c, error: e } = await supabaseAdmin.from("gamelab_results").select("id", { count: "exact", head: true }).eq("bc_id", id).eq("is_streamer", false); if (!e && c != null) viewers["gamelab:" + id] = c; }));
       const lingoIds = [...new Set(items.filter((r) => r.platform === "lingo" && r.content_mode === "bc" && r.channel_id).map((r) => r.channel_id))];   // 언어 진단소 방송
       const viewers = {};
+      await Promise.all(gamelabIds.map(async (id) => { const { count: c, error: e } = await supabaseAdmin.from("gamelab_results").select("id", { count: "exact", head: true }).eq("bc_id", id).eq("is_streamer", false); if (!e && c != null) viewers["gamelab:" + id] = c; }));
       if (feelIds.length) {
         const { data: fb } = await supabaseAdmin.from("feel_broadcasts").select("id, status, final_stats").in("id", feelIds);
         const fin = new Map((fb || []).filter((r) => r.status === "final" && r.final_stats?.count != null).map((r) => [r.id, r.final_stats.count]));

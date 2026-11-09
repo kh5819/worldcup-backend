@@ -290,8 +290,8 @@ export function registerGamelabLive(io, supabaseAdmin, app, { memberProfile, get
   app.post("/gamelab/bc/:id/play", async (req, res) => {
     try {
       const b = BC.get(String(req.params.id || "").slice(0, 16)) || (await loadBc(req.params.id)); if (!b || b.row.status === "final") return res.json({ ok: false });
-      const key = await ownerOf(req, getOptionalUser); if (!key) return res.status(400).json({ ok: false }); const n = now(); if (n - (playHits.get(key) || 0) < 2000) return res.json({ ok: true, skip: true }); playHits.set(key, n);
-      const x = req.body || {}, cur = b.playing.get(key); if (x.end) { if (b.playing.delete(key)) markDirty(b); return res.json({ ok: true }); }
+      const key = await ownerOf(req, getOptionalUser); if (!key) return res.status(400).json({ ok: false }); const x = req.body || {}, cur = b.playing.get(key), n = now(); if (x.end) { if (b.playing.delete(key)) markDirty(b); return res.json({ ok: true }); }
+      if (n - (playHits.get(key) || 0) < 2000) return res.json({ ok: true, skip: true }); playHits.set(key, n);
       if (b.entries.has(key)) return res.json({ ok: true });
       b.playing.set(key, { key, since: cur?.since || n, at: n, nick: clean(x.nick, 12) || "시청자", idx: Math.max(0, Math.min(10, x.idx | 0)), of: Math.max(1, Math.min(10, x.of | 0)), mission: C.byId[x.mission] ? x.mission : null, text: clean(x.text, 24), streamer: b.row.owner_key === key });
       if (b.playing.size > 3000) { const old = [...b.playing.entries()].sort((p, q) => p[1].at - q[1].at)[0]; if (old) b.playing.delete(old[0]); }

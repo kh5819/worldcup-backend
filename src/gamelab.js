@@ -72,9 +72,11 @@ export function registerGamelab(app, sb, { getOptionalUser } = {}) {
       if (!sb) return res.json({ ok: false, error: "NO_DB" });
       const gid = String(req.headers["x-iq-guest"] || ""); if (!/^guest_[a-z0-9]{4,40}$/i.test(gid)) return res.status(400).json({ ok: false, error: "BAD_GUEST" });
       const mp = await memberProfile(sb, { id: user.id, isGuest: false });
-      const { data: moved, error } = await sb.from("gamelab_results").update({ owner_key: `u:${user.id}`, user_id: user.id, ...(mp?.nickname ? { nickname: cleanNick(mp.nickname) } : {}) }).eq("owner_key", `g:${gid}`).select("id");
-      if (error) return res.json({ ok: false, error: "UPDATE_FAIL" });
-      res.json({ ok: true, moved: moved?.length || 0 });
+      const patch = { owner_key: `u:${user.id}`, user_id: user.id, ...(mp?.nickname ? { nickname: cleanNick(mp.nickname) } : {}) };
+      // 한 줄씩: 같은 방송에 회원 기록이 이미 있으면 그 줄만 건너뜀 (방송당 한 사람 1개 제한)
+      const { data: rows, error } = await sb.from("gamelab_results").select("id").eq("owner_key", `g:${gid}`).limit(200); if (error) return res.json({ ok: false, error: "UPDATE_FAIL" });
+      let moved = 0; for (const r of rows || []) { const { error: e2 } = await sb.from("gamelab_results").update(patch).eq("id", r.id); if (!e2) moved++; }
+      res.json({ ok: true, moved });
     } catch (e) { console.error("[gamelab/merge]", e); res.status(500).json({ ok: false, error: "INTERNAL" }); }
   });
   // 랭킹: 전체·빠른 검사 × 난이도. 모든 미션을 측정한 공개 기록, 한 사람 최고 1개. verified=true 기록은 board=verified 로만
