@@ -10568,7 +10568,7 @@ addPublicList("duo", () => {
 installLobbyBurstGuard(io);
 // 플듀 키우기 친구 대전(1대1) — rpvp:* 이벤트, 서버는 시계·지시 중계만
 registerRaisingPvp(io, supabaseAdmin);
-registerMafia(io);   // 플듀 마피아 — 시청자 마을 (DB 없음, 메모리 방)
+registerMafia(io, supabaseAdmin);   // 플듀 마피아 — 시청자 마을 (DB 없음, 메모리 방)
 // 플듀 미스터리 — mys:* 이벤트, 사건 진행·정답 판정 전부 서버
 registerMystery(io, supabaseAdmin);
 registerMysteryMulti(io, supabaseAdmin);

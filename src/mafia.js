@@ -669,7 +669,16 @@ const EVENT_OPTS = [{ id: "more_talk", label: "토론 30초 연장" }, { id: "qu
 const QUESTIONS = ["어젯밤 가장 의심스러웠던 사람은?", "지금 가장 믿는 사람 한 명은?", "당신의 직업을 한 단어 힌트로 말한다면?", "오늘 투표에서 건너뛰기를 해야 할까?", "사건 증거 중 가장 중요한 것은?"];
 
 // ---------- 등록 ----------
-export function registerMafia(io) {
+let SB = null;
+function logStreamer(room) {
+  if (!SB || !room.streamer || room.logged) return; room.logged = true;
+  const hostP = room.players.get(room.hostId), nick = room.mcNick || hostP?.nick || "방장", guest = String(room.hostId).startsWith("guest_");
+  const mode = room.hostMode === "mc" ? "사회자" : room.hostMode === "watch" ? "관전" : "참가자";
+  Promise.resolve(SB.from("streamer_chat_log").insert({ platform: "mafia", channel_id: room.code, nickname: nick, content_id: null, content_title: `플듀 마피아 (${room.max}명·${mode})`, content_mode: room.hostMode, room_code: room.code, host_user_id: guest ? null : room.hostId, host_nick: guest ? `게스트 ${nick}` : nick }))
+    .then((r) => r?.error && console.error("[mafia] streamer log", r.error.message), () => {});
+}
+export function registerMafia(io, supabaseAdmin) {
+  SB = supabaseAdmin || null;
   setInterval(() => { for (const r of rooms.values()) if (r._dirty) { r._dirty = false; if (r._fx) { fx(io, r, r._fx.type); r._fx = null; } const pub = publicState(r); io.to(sr(r.code)).emit("mf:pub", pub); io.to(srObs(r.code)).emit("mf:obs", obsView(pub)); } }, 800).unref?.();
 
   io.on("connection", (socket) => {
@@ -687,7 +696,7 @@ export function registerMafia(io) {
         const old = myRoom(); if (old) { if (old.hostId === me.id) { old.mcSocket = null; removePlayer(io, old, me.id, "left"); if (!passHost(old)) deleteRoom(io, old, "HOST_LEFT"); else emitState(io, old); } else { removePlayer(io, old, me.id, "left"); emitState(io, old); } socket.leave(sr(old.code)); }
         const room = createRoom(me, nick, { ...pl, socketId: socket.id });
         socket.join(sr(room.code));
-        cb?.({ ok: true, code: room.code, obsKey: room.obsKey }); emitState(io, room);
+        cb?.({ ok: true, code: room.code, obsKey: room.obsKey }); emitState(io, room); logStreamer(room);
       } catch (e) { console.error("[mf:create]", e); cb?.({ ok: false, error: "INTERNAL" }); }
     });
 
@@ -745,7 +754,7 @@ export function registerMafia(io) {
       room.settings = sanitizeSettings(pl?.settings, room.settings);
       if (MF_ALLOWED_MAX.includes(Number(pl?.max)) && Number(pl.max) >= room.players.size) room.max = Number(pl.max);
       if (pl?.streamer != null) room.streamer = !!pl.streamer;
-      done(cb, room);
+      done(cb, room); logStreamer(room);
     });
 
     socket.on("mf:bots", (pl, cb) => {
