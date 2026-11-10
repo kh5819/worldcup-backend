@@ -49,6 +49,7 @@ import { registerKnowMulti } from "./know-multi.js";
 import { registerKnowBroadcast, kbcLivePlayers } from "./know-broadcast.js";
 import { registerLifeBroadcast, lbcChatVote, lbcChatCard, CHAT_CARD, lbcExists } from "./lifebc-broadcast.js";
 import { registerLifeMulti } from "./lifebc-multi.js";
+import { registerLifeSurvival } from "./lifebc-sv.js";
 import { registerLifeSave } from "./lifebc-save.js";
 import { createFlight } from "./create-flight.js";
 import { registerDodge } from "./dodge.js";
@@ -10602,6 +10603,7 @@ registerKnowMulti(io, supabaseAdmin);
 registerKnowBroadcast(io, supabaseAdmin, app);
 registerLifeBroadcast(io, supabaseAdmin, app);
 registerLifeMulti(io);
+registerLifeSurvival(io);
 registerLifeSave(io, supabaseAdmin);
 
 // ============= 그려봐 신고 admin =============
