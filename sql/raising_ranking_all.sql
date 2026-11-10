@@ -1,7 +1,7 @@
 -- 플듀 키우기 랭킹: 우승자만 → 대회를 끝낸 모든 사람(우승·탈락)을 최고 성적 순으로 (2026-11-10)
 -- 순서: 우승 > 결승 > 4강 > 8강 > 스위스, 같으면 승수 많은 순, 그다음 서버가 잰 시간이 짧은 순. 1인(로그인 계정 또는 기기) 최고 기록 1개.
 -- 기존 우승 기록·함수 시그니처(raising_run_start / raising_run_finish)는 그대로 → 옛 화면도 계속 동작.
--- 새로 만드는 것: 열 2개(stage, losses), 함수 raising_run_end(탈락 기록), raising_claim_runs(화면이 이미 부르는데 DB에 없던 것).
+-- 새로 만드는 것: 열 2개(stage, losses), 함수 raising_run_end(탈락 기록), raising_rank_rows(내부용). raising_claim_runs는 이미 있던 것을 탈락 기록까지 연결하도록 넓힘.
 -- raising_ranking은 돌려주는 열이 늘어서 DROP 후 다시 만듦.
 
 begin;
@@ -99,7 +99,7 @@ create function public.raising_ranking(p_limit integer default 50, p_client text
   order by x.rk;
 $function$;
 
--- 로그인 전에 이 기기에서 올린 기록을 내 계정에 연결 (화면이 이미 부르고 있었는데 DB에 없던 함수)
+-- 로그인 전에 이 기기에서 올린 기록을 내 계정에 연결 (기존 함수: 우승만 → 우승·탈락 모두)
 create or replace function public.raising_claim_runs(p_client text)
  returns integer language plpgsql security definer set search_path to 'public' as $function$
 declare n int;
