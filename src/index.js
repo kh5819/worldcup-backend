@@ -36,6 +36,8 @@ import { registerSenseMulti } from "./sense-multi.js";
 import { registerSenseBroadcast } from "./sense-broadcast.js";
 import { registerFeel } from "./feel.js";
 import { registerFeelMulti } from "./feel-multi.js";
+import { registerBtlabMulti } from "./btlab-multi.js";
+import { registerBtlabBroadcast } from "./btlab-broadcast.js";
 import { registerFeelBroadcast } from "./feel-broadcast.js";
 import { registerKnow } from "./know.js";
 import { registerLingo } from "./lingo.js";
@@ -10587,6 +10589,8 @@ registerLingo(io, supabaseAdmin, app, { getOptionalUser });
 registerLingoBroadcast(io, supabaseAdmin, app);
 registerLingoMulti(io, supabaseAdmin);
 registerFeelMulti(io, supabaseAdmin);
+registerBtlabMulti(io);   // 플듀 비밀 진단소 친구와 함께 2~8인 (DB 없음)
+registerBtlabBroadcast(io, supabaseAdmin);   // 플듀 비밀 진단소 방송 진단소 (상태는 메모리, 방송 열 때 streamer_chat_log 한 줄)
 registerFeelBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
 // 플듀 상식 레벨 진단소 — know:* 이벤트 + /know/* REST, 문제은행·정답은 서버만 (know-bank.js)
 registerKnow(io, supabaseAdmin, app, { getOptionalUser, requireAdmin });
@@ -13274,6 +13278,8 @@ class ChatBridge {
 
     // ── 인생 방송국 스트리머 모드: !1 ~ !6 투표 (폰 투표와 같은 집계에 합침) ──
     if (this.mode === "lifebc") { this._processLifebcMsg(senderChannelId, nickname, content); return; }
+    // ── 비밀 진단소 스트리머 모드: !1 ~ !6 선택지 투표 ──
+    if (this.mode === "btlab") { this._processBtlabMsg(senderChannelId, nickname, content); return; }
     // ── 오목 스트리머 모드: !a1 좌표 투표 (월드컵·퀴즈와 분리, 오목 방송 방에서만 켜짐) ──
     if (this.mode === "omok") {
       this._processOmokMsg(senderChannelId, nickname, content, messageTime);   // 스트리머 채팅도 셈 (SOOP·씨미와 같게, 혼자 시험할 때 헷갈림 방지)
@@ -13672,6 +13678,7 @@ class SoopChatBridge {
       const nickname = fields[6] || fields[3] || "익명";
       const id = userId || nickname;
       if (this.mode === "lifebc") this._processLifebcMsg(id, nickname, message);
+      else if (this.mode === "btlab") this._processBtlabMsg(id, nickname, message);
       else if (this.mode === "omok") this._processOmokMsg(id, nickname, message, Date.now());
       else if (this.mode === "quiz") this._processQuizMsg(id, nickname, message, Date.now(), "viewer");
       else this._processVoteMsg(id, nickname, message, Date.now());
@@ -13879,6 +13886,31 @@ const LifebcVoteMixin = {
 Object.assign(ChatBridge.prototype, LifebcVoteMixin);
 Object.assign(SoopChatBridge.prototype, LifebcVoteMixin);
 
+// ── 플듀 비밀 진단소 스트리머 모드: 채팅 "!1" ~ "!6" → 지금 열린 선택지에 1표 (한 사람 한 표, 바꾸면 마지막 것) ──
+const BtlabVoteMixin = {
+  setBtlabRound(roundKey, n) {
+    this.mode = "btlab"; this.currentRoundKey = roundKey; this.btN = Math.max(2, Math.min(6, n | 0));
+    this.btVotes = new Map(); this.btCounts = new Array(this.btN).fill(0); this.btRecent = []; this.btCollecting = true;
+    this.btParticipants = this.btParticipants || new Set();
+  },
+  closeBtlabRound() { this.btCollecting = false; },
+  _processBtlabMsg(senderId, nickname, content) {
+    if (!this.btCollecting || !this.btVotes) return;
+    const m = String(content == null ? "" : content).normalize("NFKC").trim().match(/^[!！]\s*([1-6])\s*$/); if (!m) return;
+    const k = Number(m[1]) - 1; if (k >= this.btN) return;
+    const id = senderId || `anon_${nickname || "익명"}`, prev = this.btVotes.get(id); if (prev === k) return;
+    if (prev != null) this.btCounts[prev] = Math.max(0, this.btCounts[prev] - 1);
+    this.btCounts[k]++; this.btVotes.set(id, k); if (this.btParticipants.size < 100000) this.btParticipants.add(id);
+    this.btRecent.push({ nickname: String(nickname || "익명").slice(0, 16), n: k + 1 }); if (this.btRecent.length > 8) this.btRecent.shift();
+  },
+  getBtlabVotes() {
+    return { mode: "btlab", roundKey: this.currentRoundKey, collecting: !!this.btCollecting, counts: (this.btCounts || []).slice(), total: this.btVotes ? this.btVotes.size : 0,
+      recent: (this.btRecent || []).slice().reverse(), participants: this.btParticipants ? this.btParticipants.size : 0, chatMsgs: this.totalMessagesProcessed || 0 };
+  },
+};
+Object.assign(ChatBridge.prototype, BtlabVoteMixin);
+Object.assign(SoopChatBridge.prototype, BtlabVoteMixin);
+
 // roomCode → ChatBridge / SoopChatBridge 인스턴스
 // ============================================================
 // CimeChatBridge — 씨미(ci.me) OpenAPI 채팅 연결
@@ -13998,7 +14030,7 @@ const chatBridges = new Map();
 
 // 스트리머 채팅연동 사용 로그 (운영자 admin 탭에서 확인) — 실패해도 게임 흐름엔 영향 없음
 // 콘텐츠(DB) 없이 쓰는 스트리머 모드(예: 그려봐)는 종류만 프론트가 알려 줌 — 허용 목록만 저장
-const STREAMER_LOG_MODES = { draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", mafia: "플듀 마피아 스트리머 모드" };
+const STREAMER_LOG_MODES = { draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", mafia: "플듀 마피아 스트리머 모드", btlab: "플듀 비밀 진단소 스트리머 모드" };
 async function _logStreamerChat({ platform, channelId, nickname, contentId, roomCode, hostUserId, hostNick, contentMode }) {
   try {
     if (!platform || !channelId) return; // 식별자 없으면 기록 안 함
@@ -14459,6 +14491,28 @@ app.post("/chat-audience/omok-close", optionalAuth, async (req, res) => {
     console.error("[CHAT_AUD] /omok-close 예외:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
+});
+// --- 비밀 진단소 스트리머 모드 ---
+//  POST /chat-audience/btlab-round { roomCode, roundKey, n } → 선택지 n개(2~6) 투표 시작 (이전 표 초기화)
+//  POST /chat-audience/btlab-close { roomCode } → 투표 마감
+//  GET  /chat-audience/btlab-votes?room= → 선택지별 표 수
+app.post("/chat-audience/btlab-round", optionalAuth, async (req, res) => {
+  try {
+    const { roomCode, roundKey } = req.body || {}; const n = Number(req.body?.n);
+    if (!roomCode || !roundKey || !Number.isInteger(n) || n < 2 || n > 6) return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
+    const bridge = chatBridges.get(roomCode); if (!bridge) return res.status(404).json({ ok: false, error: "NO_BRIDGE", message: "채팅 연결이 없습니다" });
+    bridge.setBtlabRound(String(roundKey).slice(0, 64), n);
+    return res.json({ ok: true, bridgeStatus: bridge.status });
+  } catch (err) { console.error("[CHAT_AUD] /btlab-round 예외:", err); return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" }); }
+});
+app.post("/chat-audience/btlab-close", optionalAuth, async (req, res) => {
+  const bridge = chatBridges.get(req.body?.roomCode); if (!bridge) return res.status(404).json({ ok: false, error: "NO_BRIDGE" });
+  if (bridge.closeBtlabRound) bridge.closeBtlabRound(); return res.json({ ok: true, votes: bridge.getBtlabVotes ? bridge.getBtlabVotes() : null });
+});
+app.get("/chat-audience/btlab-votes", (req, res) => {
+  const bridge = chatBridges.get(req.query.room);
+  if (!bridge) return res.json({ ok: true, status: "no_bridge", counts: [], total: 0 });
+  return res.json({ ok: true, status: bridge.status, errorCode: bridge.errorCode || null, ...(bridge.getBtlabVotes ? bridge.getBtlabVotes() : {}) });
 });
 app.get("/chat-audience/omok-votes", (req, res) => {
   const bridge = chatBridges.get(req.query.room);
