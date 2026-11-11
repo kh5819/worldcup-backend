@@ -13276,6 +13276,8 @@ class ChatBridge {
 
     // ── 인생 방송국 스트리머 모드: !1 ~ !6 투표 (폰 투표와 같은 집계에 합침) ──
     if (this.mode === "lifebc") { this._processLifebcMsg(senderChannelId, nickname, content); return; }
+    // ── 빙고 시청자 참여: !a1 !b3 좌표로 '나도 해당' 칸 투표 (오목과 같은 좌표 방식) ──
+    if (this.mode === "bingo") { this._processBingoMsg(senderChannelId, nickname, content); return; }
     // ── 오목 스트리머 모드: !a1 좌표 투표 (월드컵·퀴즈와 분리, 오목 방송 방에서만 켜짐) ──
     if (this.mode === "omok") {
       this._processOmokMsg(senderChannelId, nickname, content, messageTime);   // 스트리머 채팅도 셈 (SOOP·씨미와 같게, 혼자 시험할 때 헷갈림 방지)
@@ -13677,6 +13679,7 @@ class SoopChatBridge {
       const nickname = fields[6] || fields[3] || "익명";
       const id = userId || nickname;
       if (this.mode === "lifebc") this._processLifebcMsg(id, nickname, message);
+      else if (this.mode === "bingo") this._processBingoMsg(id, nickname, message);
       else if (this.mode === "omok") this._processOmokMsg(id, nickname, message, Date.now());
       else if (this.mode === "quiz") this._processQuizMsg(id, nickname, message, Date.now(), "viewer");
       else this._processVoteMsg(id, nickname, message, Date.now());
@@ -13886,6 +13889,39 @@ const LifebcVoteMixin = {
 Object.assign(ChatBridge.prototype, LifebcVoteMixin);
 Object.assign(SoopChatBridge.prototype, LifebcVoteMixin);
 
+// ── 빙고 시청자 참여: 채팅 "!a1 !b3 c4" → 그 시청자가 '나도 해당'이라고 고른 칸들 (한 사람 한 칸에 1표, 여러 칸 가능)
+//    "!취소" / "!초기화" → 그 시청자가 고른 칸 전부 지움. 좌표는 오목과 같음: 글자 = 열(a=왼쪽), 숫자 = 행(1=위). 한글 자판 상태로 쳐도 됨
+const BingoVoteMixin = {
+  setBingoRound(roundKey, grid) {
+    this.mode = "bingo"; this.currentRoundKey = roundKey; this.bgGrid = Math.max(3, Math.min(5, grid | 0));
+    this.bgVotes = new Map(); this.bgCounts = new Array(this.bgGrid * this.bgGrid).fill(0); this.bgRecent = []; this.bgCollecting = true; this.bgSeen = 0;
+  },
+  closeBingoRound() { this.bgCollecting = false; },
+  _processBingoMsg(senderId, nickname, content) {
+    if (!this.bgCollecting || !this.bgVotes) return;
+    let t = String(content == null ? "" : content).replace(/[ㄱ-ㅣ]/g, (c) => OMOK_KO_KEYS[c] || c).normalize("NFKC").trim();
+    if (!/^[!！]/.test(t)) return;
+    const id = senderId || `anon_${nickname || "익명"}`, g = this.bgGrid;
+    if (/^[!！]\s*(취소|초기화|reset)\s*$/i.test(t)) { const prev = this.bgVotes.get(id); if (prev) { for (const i of prev) this.bgCounts[i]--; this.bgVotes.delete(id); } return; }
+    const cells = [];
+    for (const tok of t.toLowerCase().replace(/[!！,]/g, " ").split(/\s+/).filter(Boolean).slice(0, 30)) {
+      let m = tok.match(/^([a-e])([1-5])$/), col, row; if (m) { col = OMOK_COLS.indexOf(m[1]); row = +m[2]; } else { m = tok.match(/^([1-5])([a-e])$/); if (!m) continue; col = OMOK_COLS.indexOf(m[2]); row = +m[1]; }
+      if (col < g && row <= g) cells.push((row - 1) * g + col);
+    }
+    if (!cells.length) return;
+    this.bgSeen++;
+    let set = this.bgVotes.get(id); if (!set) { set = new Set(); this.bgVotes.set(id, set); }
+    const added = []; for (const i of cells) if (!set.has(i)) { set.add(i); this.bgCounts[i]++; added.push(i); }
+    if (added.length) { this.bgRecent.push({ nickname: String(nickname || "익명").slice(0, 16), cells: added.map((i) => OMOK_COLS[i % g].toUpperCase() + (Math.floor(i / g) + 1)) }); if (this.bgRecent.length > 8) this.bgRecent.shift(); }
+  },
+  getBingoVotes() {
+    return { mode: "bingo", roundKey: this.currentRoundKey, collecting: !!this.bgCollecting, grid: this.bgGrid || null, counts: (this.bgCounts || []).slice(), participants: this.bgVotes ? this.bgVotes.size : 0,
+      recent: (this.bgRecent || []).slice().reverse(), seen: this.bgSeen || 0, chatMsgs: this.totalMessagesProcessed || 0 };
+  },
+};
+Object.assign(ChatBridge.prototype, BingoVoteMixin);
+Object.assign(SoopChatBridge.prototype, BingoVoteMixin);
+
 
 // roomCode → ChatBridge / SoopChatBridge 인스턴스
 // ============================================================
@@ -14011,7 +14047,11 @@ async function _logStreamerChat({ platform, channelId, nickname, contentId, room
   try {
     if (!platform || !channelId) return; // 식별자 없으면 기록 안 함
     let content_title = null, content_mode = null;
-    if (contentId) {
+    // 심리테스트·빙고 시청자 참여: 그 콘텐츠 제목을 남김 (admin 「📺 스트리머」에서 무슨 테스트였는지 보이게)
+    if ((contentMode === "ptest" || contentMode === "bingo") && contentId) {
+      content_mode = contentMode; content_title = STREAMER_LOG_MODES[contentMode];
+      try { const { data: c } = await supabaseAdmin.from(contentMode === "ptest" ? "personality_tests" : "bingos").select("title").eq("id", contentId).maybeSingle(); if (c?.title) content_title = String(c.title).slice(0, 120); } catch (_) {}
+    } else if (contentId) {
       try {
         const { data: c } = await supabaseAdmin
           .from("contents").select("title, mode").eq("id", contentId).maybeSingle();
@@ -14467,6 +14507,25 @@ app.post("/chat-audience/omok-close", optionalAuth, async (req, res) => {
     console.error("[CHAT_AUD] /omok-close 예외:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
+});
+// --- 빙고 시청자 참여: !a1 좌표 투표 ---
+//  POST /chat-audience/bingo-round { roomCode, roundKey, grid(3~5) } → 시작(이전 표 지움) · POST /chat-audience/bingo-close { roomCode } → 마감
+//  GET  /chat-audience/bingo-votes?room= → 칸별 표 수·참여자 수
+app.post("/chat-audience/bingo-round", optionalAuth, async (req, res) => {
+  try {
+    const { roomCode, roundKey } = req.body || {}; const grid = Number(req.body?.grid);
+    if (!roomCode || !roundKey || !Number.isInteger(grid) || grid < 3 || grid > 5) return res.status(400).json({ ok: false, error: "MISSING_PARAMS" });
+    const bridge = chatBridges.get(roomCode); if (!bridge) return res.status(404).json({ ok: false, error: "NO_BRIDGE", message: "채팅 연결이 없습니다" });
+    bridge.setBingoRound(String(roundKey).slice(0, 64), grid); return res.json({ ok: true, bridgeStatus: bridge.status });
+  } catch (err) { console.error("[CHAT_AUD] /bingo-round 예외:", err); return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" }); }
+});
+app.post("/chat-audience/bingo-close", optionalAuth, async (req, res) => {
+  const bridge = chatBridges.get(req.body?.roomCode); if (!bridge) return res.status(404).json({ ok: false, error: "NO_BRIDGE" });
+  bridge.closeBingoRound?.(); return res.json({ ok: true, votes: bridge.getBingoVotes ? bridge.getBingoVotes() : null });
+});
+app.get("/chat-audience/bingo-votes", (req, res) => {
+  const bridge = chatBridges.get(req.query.room); if (!bridge) return res.json({ ok: true, status: "no_bridge", counts: [], participants: 0 });
+  return res.json({ ok: true, status: bridge.status, errorCode: bridge.errorCode || null, ...(bridge.getBingoVotes ? bridge.getBingoVotes() : {}) });
 });
 app.get("/chat-audience/omok-votes", (req, res) => {
   const bridge = chatBridges.get(req.query.room);

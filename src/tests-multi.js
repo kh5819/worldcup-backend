@@ -25,11 +25,11 @@ function cleanResult(kind, p) {
   if (kind === "ptest") return { resultIdx: Math.max(0, Math.min(99, parseInt(p?.resultIdx, 10) || 0)), title: cleanTxt(p?.title, 40), answers: intList(p?.answers, 9, 200) };
   return { checked: [...new Set(intList(p?.checked, 48, 49))], half: [...new Set(intList(p?.half, 48, 49))], lines: Math.max(0, Math.min(20, parseInt(p?.lines, 10) || 0)) };
 }
-const newPlayer = (name, isGuest, socketId) => ({ name: cleanTxt(name, 12) || "참가자", isGuest, socketId, connected: true, ready: false, progress: 0, result: null, dropTimer: null });
+const newPlayer = (name, isGuest, socketId) => ({ name: cleanTxt(name, 12) || "참가자", isGuest, socketId, connected: true, ready: false, progress: 0, live: null, result: null, dropTimer: null });
 
 function pubRoom(r) {
   return { id: r.id, code: r.code, kind: r.kind, contentId: r.contentId, title: r.title, host: r.host, maxPlayers: r.maxPlayers, phase: r.phase, isPublic: !!r.isPublic, round: r.round, startedAt: r.startedAt,
-    players: r.order.map((u) => { const p = r.players.get(u); return p && { id: u, nick: p.name, connected: p.connected, ready: p.ready, host: r.host === u, progress: p.progress, done: !!p.result }; }).filter(Boolean),
+    players: r.order.map((u) => { const p = r.players.get(u); return p && { id: u, nick: p.name, connected: p.connected, ready: p.ready, host: r.host === u, progress: p.progress, done: !!p.result, live: r.phase === "play" ? p.live : null }; }).filter(Boolean),
     results: r.phase === "result" ? r.order.map((u) => { const p = r.players.get(u); return p?.result ? { id: u, nick: p.name, ...p.result } : null; }).filter(Boolean) : null, serverNow: now() };
 }
 const emitRoom = (io, r) => io.to(sockRoom(r.id)).emit("tm:room", pubRoom(r));
@@ -81,11 +81,15 @@ export function registerTestsMulti(io) {
       const live = r.order.filter((u) => r.players.get(u).connected); if (live.length < 2) return reply({ ok: false, error: "NEED_TWO" });
       if (live.some((u) => u !== r.host && !r.players.get(u).ready)) return reply({ ok: false, error: "NOT_READY" });
       for (const u of [...r.order]) if (!r.players.get(u).connected) { r.players.delete(u); r.order = r.order.filter((x) => x !== u); USER_ROOM.delete(u); }
-      for (const p of r.players.values()) { p.result = null; p.progress = 0; p.ready = false; }
+      for (const p of r.players.values()) { p.result = null; p.progress = 0; p.ready = false; p.live = null; }
       r.phase = "play"; r.round++; r.startedAt = now(); clearT(r); r.timer = setTimeout(() => finish(io, r), PLAY_MS);
       reply({ ok: true }); emitRoom(io, r);
     });
-    on("tm:progress", (p) => { const r = myRoom(); if (!r || r.phase !== "play") return; const pl = r.players.get(me.id); if (!pl || pl.result) return; const v = Math.max(0, Math.min(100, Math.round(Number(p.v) || 0))); if (v === pl.progress) return; pl.progress = v; emitRoom(io, r); });
+    // 진행 상황: 심리 = 몇 번 문항(q/total) · 빙고 = 지금 체크한 칸 (답·결과는 끝날 때까지 안 보냄)
+    on("tm:progress", (p) => { const r = myRoom(); if (!r || r.phase !== "play") return; const pl = r.players.get(me.id); if (!pl) return;
+      const v = Math.max(0, Math.min(100, Math.round(Number(p.v) || 0)));
+      const live = r.kind === "ptest" ? { q: Math.max(0, Math.min(500, parseInt(p.q, 10) || 0)), total: Math.max(0, Math.min(500, parseInt(p.total, 10) || 0)) } : { checked: [...new Set(intList(p.checked, 48, 49))], half: [...new Set(intList(p.half, 48, 49))] };
+      const changed = v !== pl.progress || JSON.stringify(live) !== JSON.stringify(pl.live); if (!changed) return; if (!pl.result) pl.progress = v; pl.live = live; emitRoom(io, r); });
     on("tm:submit", (p, reply) => {
       const r = myRoom(); if (!r) return reply({ ok: false, error: "NOT_IN_ROOM" }); if (r.phase !== "play" || (p.round | 0) !== r.round) return reply({ ok: false, error: "NOT_PLAYING" });
       const pl = r.players.get(me.id); if (!pl) return reply({ ok: false, error: "NOT_IN_ROOM" }); if (pl.result) return reply({ ok: true, dup: true });
