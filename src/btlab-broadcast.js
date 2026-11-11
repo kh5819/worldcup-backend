@@ -10,7 +10,7 @@ const BC = new Map(), OWNER = new Map();
 const LABS = { perv: "변태력 진단실", psycho: "사이코패스 진단실" };   // 진단실 열릴 때 여기 추가
 const TTL_MS = 12 * 3600 * 1000, MAX_VIEWERS = 5000, EMIT_GAP = 800;
 const now = () => Date.now();
-const cleanTxt = (s, n) => String(s ?? "").replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, n);
+const cleanTxt = (s, n) => String(s ?? "").replace(/<[^>]*>/g, "").replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, n);
 const clampN = (v) => Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
 const newId = () => { for (let i = 0; i < 50; i++) { const id = Math.random().toString(36).slice(2, 8); if (!BC.has(id)) return id; } return now().toString(36); };
 const room = (id) => `bb:${id}`;

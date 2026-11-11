@@ -16,7 +16,7 @@ const JOIN_FAIL_MAX = 8, JOIN_FAIL_WIN = 60000, JOIN_BLOCK_MS = 60000; const joi
 const now = () => Date.now();
 const sockRoom = (id) => `bl:${id}`;
 const newSeed = () => (Math.floor(Math.random() * 0xffffffff) >>> 0) || 7;
-const cleanTxt = (s, n) => String(s ?? "").replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, n);
+const cleanTxt = (s, n) => String(s ?? "").replace(/<[^>]*>/g, "").replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, n);
 const clampN = (v) => Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
 function genCode() { for (let i = 0; i < 60; i++) { const c = String(Math.floor(Math.random() * 1e6)).padStart(6, "0"); if (!CODES.has(c)) return c; } return String(Math.floor(Math.random() * 1e7)).padStart(7, "0"); }
 // 화면이 보낸 미니게임 결과 정리 (지표 이름은 영문 소문자만, 값 0~100)
