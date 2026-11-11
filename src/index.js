@@ -30,15 +30,11 @@ import { memberProfile as clinicMemberProfile } from "./clinic.js";
 import { registerIq, memberProfile as iqMemberProfile } from "./iq.js";
 import { registerIqMulti } from "./iq-multi.js";
 import { registerIqBroadcast } from "./iq-broadcast.js";
-import { registerMind } from "./mind.js";
-import { registerMindMulti } from "./mind-multi.js";
-import { registerMindBroadcast } from "./mind-broadcast.js";
+import { registerAbility } from "./ability.js";
 import { registerSense } from "./sense.js";
 import { registerSenseMulti } from "./sense-multi.js";
 import { registerSenseBroadcast } from "./sense-broadcast.js";
 import { registerFeel } from "./feel.js";
-import { registerGamelab } from "./gamelab.js";
-import { registerGamelabLive } from "./gamelab-live.js";
 import { registerFeelMulti } from "./feel-multi.js";
 import { registerFeelBroadcast } from "./feel-broadcast.js";
 import { registerKnow } from "./know.js";
@@ -59,7 +55,6 @@ import { registerBlockRoyale } from "./blockroyale-multi.js";
 import { registerPublicRooms, addPublicList } from "./public-rooms.js";
 import { installLobbyBurstGuard } from "./lobby-burst-guard.js";
 import { registerRaisingPvp } from "./raising-pvp.js";
-import { registerMafia, mfChatCommand, mfExists } from "./mafia.js";
 
 // ── 전역 크래시 가드 ──
 // 처리 안 된 예외/Promise 거부가 서버 프로세스 전체를 죽이는 것 방지.
@@ -10568,7 +10563,6 @@ addPublicList("duo", () => {
 installLobbyBurstGuard(io);
 // 플듀 키우기 친구 대전(1대1) — rpvp:* 이벤트, 서버는 시계·지시 중계만
 registerRaisingPvp(io, supabaseAdmin);
-registerMafia(io, supabaseAdmin);   // 플듀 마피아 — 시청자 마을 (DB 없음, 메모리 방)
 // 플듀 미스터리 — mys:* 이벤트, 사건 진행·정답 판정 전부 서버
 registerMystery(io, supabaseAdmin);
 registerMysteryMulti(io, supabaseAdmin);
@@ -10581,9 +10575,7 @@ registerIq(io, supabaseAdmin, app, { getOptionalUser });
 registerIqMulti(io, supabaseAdmin);
 registerIqBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
 // 플듀 심리전 능력 진단소 — mind:* / mm:* / mbc:* / ability:* 이벤트 + /mind/* REST, 상태·정답·AI는 서버만
-registerMind(io, supabaseAdmin, app, { getOptionalUser });
-registerMindMulti(io, supabaseAdmin);
-registerMindBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
+registerAbility(io, supabaseAdmin);   // 플듀 종합 능력 프로필 (심리전 진단소 삭제 11-11 — 프로필만 남김)
 // 플듀 게임 센스 진단소 — sense:* 이벤트 + /sense/* REST, 채점은 서버가 기록을 다시 계산
 registerSense(io, supabaseAdmin, app, { getOptionalUser });
 registerSenseMulti(io, supabaseAdmin);
@@ -10591,8 +10583,6 @@ registerSenseBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile 
 // 플듀 감각 진단소 — feel:* 이벤트 + /feel/* REST, 문제·채점은 서버가 답 기록으로 다시 계산
 registerFeel(io, supabaseAdmin, app, { getOptionalUser });
 // 플듀 게임 종합 진단소 — /gamelab/* REST (기존 게임 기록과 분리)
-registerGamelab(app, supabaseAdmin, { getOptionalUser });
-registerGamelabLive(io, supabaseAdmin, app, { memberProfile: iqMemberProfile, getOptionalUser });
 registerLingo(io, supabaseAdmin, app, { getOptionalUser });
 registerLingoBroadcast(io, supabaseAdmin, app);
 registerLingoMulti(io, supabaseAdmin);
@@ -13284,7 +13274,6 @@ class ChatBridge {
 
     // ── 인생 방송국 스트리머 모드: !1 ~ !6 투표 (폰 투표와 같은 집계에 합침) ──
     if (this.mode === "lifebc") { this._processLifebcMsg(senderChannelId, nickname, content); return; }
-    if (this.mode === "mafia") { this._processMafiaMsg(senderChannelId, nickname, content); return; }
     // ── 오목 스트리머 모드: !a1 좌표 투표 (월드컵·퀴즈와 분리, 오목 방송 방에서만 켜짐) ──
     if (this.mode === "omok") {
       this._processOmokMsg(senderChannelId, nickname, content, messageTime);   // 스트리머 채팅도 셈 (SOOP·씨미와 같게, 혼자 시험할 때 헷갈림 방지)
@@ -13683,7 +13672,6 @@ class SoopChatBridge {
       const nickname = fields[6] || fields[3] || "익명";
       const id = userId || nickname;
       if (this.mode === "lifebc") this._processLifebcMsg(id, nickname, message);
-      else if (this.mode === "mafia") this._processMafiaMsg(id, nickname, message);
       else if (this.mode === "omok") this._processOmokMsg(id, nickname, message, Date.now());
       else if (this.mode === "quiz") this._processQuizMsg(id, nickname, message, Date.now(), "viewer");
       else this._processVoteMsg(id, nickname, message, Date.now());
@@ -13889,19 +13877,6 @@ const LifebcVoteMixin = {
   },
 };
 Object.assign(ChatBridge.prototype, LifebcVoteMixin);
-// ── 플듀 마피아: 채팅 !예측·!승리·!번호(배심원)·!사건·!이벤트·!봉인 → mafia.js (참가자 처형 투표와 분리) ──
-const MafiaChatMixin = {
-  setMafia(code, platform) { this.mode = "mafia"; this.mfCode = String(code).toUpperCase(); this.mfPlatform = platform || "chat"; this.mfSeen = 0; this.mfOk = 0; },
-  _processMafiaMsg(senderId, nickname, content) {
-    if (!/^\s*[!！]/.test(String(content || ""))) return;
-    this.mfSeen = (this.mfSeen || 0) + 1;
-    const id = senderId || `anon_${nickname || "익명"}`;
-    const r = mfChatCommand(this.mfCode, `c:${this.mfPlatform}:${id}`, String(nickname || "익명").slice(0, 16), content);
-    if (r?.ok && !r.dup) this.mfOk = (this.mfOk || 0) + 1;
-  },
-};
-Object.assign(ChatBridge.prototype, MafiaChatMixin);
-Object.assign(SoopChatBridge.prototype, MafiaChatMixin);
 Object.assign(SoopChatBridge.prototype, LifebcVoteMixin);
 
 // roomCode → ChatBridge / SoopChatBridge 인스턴스
@@ -14452,23 +14427,6 @@ app.post("/chat-audience/lifebc-link", optionalAuth, async (req, res) => {
     console.error("[CHAT_AUD] /lifebc-link 예외:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
-});
-// --- 플듀 마피아 스트리머 모드: 채팅을 마피아 방에 묶기 ---
-app.post("/chat-audience/mafia-link", optionalAuth, async (req, res) => {
-  try {
-    const { roomCode, code } = req.body || {};
-    const bridge = chatBridges.get(roomCode);
-    if (!bridge) return res.status(404).json({ ok: false, error: "NO_BRIDGE" });
-    if (!mfExists(code)) return res.status(404).json({ ok: false, error: "ROOM_NOT_FOUND" });
-    const plat = ["chzzk", "soop", "cime"].includes(req.body.platform) ? req.body.platform : "chat";
-    bridge.setMafia(String(code).slice(0, 8), plat);
-    return res.json({ ok: true, bridgeStatus: bridge.status });
-  } catch (err) { console.error("[CHAT_AUD] /mafia-link 예외:", err); return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" }); }
-});
-app.get("/chat-audience/mafia-stat", (req, res) => {
-  const bridge = chatBridges.get(req.query.room);
-  if (!bridge) return res.json({ ok: true, status: "no_bridge" });
-  return res.json({ ok: true, status: bridge.status, errorCode: bridge.errorCode || null, linked: bridge.mode === "mafia", seen: bridge.mfSeen || 0, counted: bridge.mfOk || 0, chatMsgs: bridge.totalMessagesProcessed || 0 });
 });
 app.get("/chat-audience/lifebc-stat", (req, res) => {
   const bridge = chatBridges.get(req.query.room);
