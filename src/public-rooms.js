@@ -31,7 +31,7 @@ function rowsOf(src) {
 export function collectPublicRooms() {
   const rows = [];
   for (const [game, src] of SOURCES) {
-    try { for (const r of rowsOf(src)) rows.push({ game: r.game || game, code: r.code, host: String(r.host || "").slice(0, 20), n: r.n, max: r.max, playing: !!r.playing, locked: !!r.locked, ...(r.title ? { title: String(r.title).slice(0, 60) } : {}), ...(r.thumb ? { thumb: String(r.thumb).slice(0, 500) } : {}), ...(r.auto ? { auto: String(r.auto).slice(0, 500), autoType: String(r.autoType || "").slice(0, 20) } : {}) }); }
+    try { for (const r of rowsOf(src)) rows.push({ game: r.game || game, code: r.code, host: String(r.host || "").slice(0, 20), n: r.n, max: r.max, playing: !!r.playing, locked: !!r.locked, ...(r.title ? { title: String(r.title).slice(0, 60) } : {}), ...(r.thumb ? { thumb: String(r.thumb).slice(0, 500) } : {}), ...(r.auto ? { auto: String(r.auto).slice(0, 500), autoType: String(r.autoType || "").slice(0, 20) } : {}), ...(r.cid ? { cid: String(r.cid).slice(0, 64) } : {}) }); }
     catch (e) { console.error("[public-rooms]", game, e); } // 한 게임이 실패해도 나머지는 보여 줌
   }
   // 대기 중인 방 먼저, 그다음 사람이 많은 방
