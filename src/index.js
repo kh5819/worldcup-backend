@@ -5422,10 +5422,57 @@ app.patch("/admin/users/:userId/avatar", requireAdmin, async (req, res) => {
 // =========================
 // 관리자 운영 알림 발송
 // =========================
+// 운영 알림 첨부 사진 업로드 (한 장씩) → public URL 반환
+//   저장: ugc-media/admin-notice/{adminId}/... (storage-cleanup은 본인 경로만 지우므로 유저가 못 지움)
+const NOTI_IMAGE_MAX = 4;
+const NOTI_IMAGE_PREFIX_RE = /^https:\/\/[a-z0-9]+\.supabase\.co\/storage\/v1\/object\/public\/ugc-media\/admin-notice\/[^?#\s]+$/i;
+app.post("/admin/notify-image", requireAdmin, async (req, res) => {
+  try {
+    const { imageBase64, mimeType } = req.body || {};
+    const MIME_EXT = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif" };
+    let ext = MIME_EXT[mimeType];
+    if (!imageBase64 || typeof imageBase64 !== "string" || !ext) {
+      return res.status(400).json({ ok: false, error: "INVALID_IMAGE", reason: "PNG, JPG, WebP, GIF만 지원합니다." });
+    }
+    let buffer = Buffer.from(imageBase64, "base64");
+    if (!buffer.length || buffer.length > 3.5 * 1024 * 1024) {
+      return res.status(400).json({ ok: false, error: "TOO_LARGE", reason: "사진은 3.5MB 이하여야 합니다." });
+    }
+    let contentType = mimeType;
+    const cmp = await _compressProxyImage(buffer);
+    if (cmp) { buffer = cmp.buffer; ext = cmp.ext; contentType = cmp.contentType; }
+
+    const adminId = req.user.id || req.user.sub || "admin";
+    const storagePath = `admin-notice/${adminId}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const { error: upErr } = await supabaseAdmin.storage
+      .from("ugc-media")
+      .upload(storagePath, buffer, { contentType, cacheControl: "public, max-age=31536000", upsert: false });
+    if (upErr) {
+      console.error("[notify-image] upload error:", upErr.message);
+      return res.status(500).json({ ok: false, error: "UPLOAD_ERROR", reason: "사진 업로드 실패" });
+    }
+    const { data: urlData } = supabaseAdmin.storage.from("ugc-media").getPublicUrl(storagePath);
+    if (!urlData?.publicUrl) return res.status(500).json({ ok: false, error: "URL_ERROR", reason: "사진 주소 생성 실패" });
+    return res.json({ ok: true, url: urlData.publicUrl });
+  } catch (err) {
+    console.error("POST /admin/notify-image:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
 app.post("/admin/users/:userId/notify", requireAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
     const { title, message, type, related_url } = req.body;
+    // 첨부 사진 (선택, 최대 4장, 우리 저장소 admin-notice 경로만)
+    let imageUrls = [];
+    if (req.body.image_urls != null) {
+      if (!Array.isArray(req.body.image_urls) || req.body.image_urls.length > NOTI_IMAGE_MAX
+        || !req.body.image_urls.every(u => typeof u === "string" && u.length <= 500 && NOTI_IMAGE_PREFIX_RE.test(u))) {
+        return res.status(400).json({ ok: false, error: "INVALID_IMAGES", reason: `사진은 최대 ${NOTI_IMAGE_MAX}장, 이 창에서 올린 것만 가능합니다.` });
+      }
+      imageUrls = req.body.image_urls;
+    }
 
     // 유효성 검사: 제목
     if (!title || typeof title !== "string" || title.trim().length < 1 || title.trim().length > 200) {
@@ -5474,6 +5521,7 @@ app.post("/admin/users/:userId/notify", requireAdmin, async (req, res) => {
         message: message.trim(),
         type,
         related_url: related_url ? related_url.trim() : null,
+        ...(imageUrls.length ? { image_urls: imageUrls } : {}),
         sent_by_admin_id: req.user.id,
       })
       .select("id")
@@ -5494,6 +5542,7 @@ app.post("/admin/users/:userId/notify", requireAdmin, async (req, res) => {
         notification_id: noti.id,
         title: title.trim(),
         type,
+        image_count: imageUrls.length,
         recipient_nickname: recipient.nickname,
       }),
     });
