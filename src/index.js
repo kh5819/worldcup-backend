@@ -4063,9 +4063,11 @@ app.delete("/admin/comments/:commentTable/:commentId", requireAdmin, async (req,
 app.post("/admin/ip-bans", requireAdmin, async (req, res) => {
   try {
     let { ip, comment_table, comment_id, days, reason, delete_comment } = req.body || {};
-    if (comment_table && !["content_comments", "tier_instance_comments"].includes(comment_table)) {
+    if (comment_table && !["content_comments", "tier_instance_comments", "community_comments", "community_posts"].includes(comment_table)) {
       return res.status(400).json({ ok: false, error: "INVALID_TABLE" });
     }
+    // 커뮤니티 글·댓글은 여기서 지우지 않음 (커뮤니티 탭의 삭제 버튼 사용)
+    const canDelete = comment_table === "content_comments" || comment_table === "tier_instance_comments";
     if (!ip && comment_table && comment_id) {
       const { data: meta } = await supabaseAdmin.from("guest_comment_meta")
         .select("ip").eq("comment_table", comment_table).eq("comment_id", comment_id).maybeSingle();
@@ -4132,7 +4134,7 @@ app.post("/admin/ip-bans", requireAdmin, async (req, res) => {
     }
 
     let deleted = false;
-    if (delete_comment && comment_table && comment_id) {
+    if (delete_comment && canDelete && comment_table && comment_id) {
       const { error: dErr } = await supabaseAdmin.from(comment_table).delete().eq("id", comment_id);
       if (!dErr) {
         deleted = true;
@@ -4443,7 +4445,7 @@ app.get("/admin/all-comments", requireAdmin, async (req, res) => {
     }
 
     // 비회원(게스트) 댓글 표시 + IP (월드컵·퀴즈·밸런스 / 티어)
-    const SRC_TABLE = { content: "content_comments", tier: "tier_instance_comments" };
+    const SRC_TABLE = { content: "content_comments", tier: "tier_instance_comments", community: "community_comments" };
     const guestRows = items.filter(it => !it.user_id && SRC_TABLE[it.source]);
     if (guestRows.length) {
       const ipMap = await fetchGuestCommentIps(guestRows.map(it => [SRC_TABLE[it.source], it.id]));
@@ -4451,7 +4453,7 @@ app.get("/admin/all-comments", requireAdmin, async (req, res) => {
         it.is_guest = true;
         it.comment_table = SRC_TABLE[it.source];
         it.guest_ip = ipMap.get(`${it.comment_table}::${it.id}`) || null;
-        it.author_name = `${it.author_name || "익명"} (게스트)`;
+        if (it.source !== "community") it.author_name = `${it.author_name || "익명"} (게스트)`; // 커뮤니티는 이미 "(비회원)" 표시
       }
     }
 
@@ -4778,7 +4780,7 @@ app.get("/admin/contents/:id/reports", requireAdmin, async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
       .from("reports")
-      .select("id, reason, detail, reporter_user_id, created_at")
+      .select("id, reason, detail, reporter_user_id, reporter_ip, created_at")
       .eq("content_id", req.params.id)
       .order("created_at", { ascending: false });
 
@@ -5032,12 +5034,21 @@ app.delete("/admin/contents/:id", requireAdmin, async (req, res) => {
 app.post("/admin/users/:userId/ban", requireAdmin, async (req, res) => {
   try {
     const { reason, expires_at } = req.body;
+    // (2026-11-12) IP 차단 종류: all(기본·기존) / write / play / none, 댓글 일괄 삭제
+    const ipScope = ["all", "write", "play", "none"].includes(req.body?.ip_scope) ? req.body.ip_scope : "all";
+    const purge = !!req.body?.purge_comments;
+    if (req.params.userId === req.user.id) return res.status(400).json({ ok: false, error: "CANNOT_BAN_SELF", reason: "자기 자신은 차단할 수 없어요." });
+    const { data: target } = await supabaseAdmin.from("profiles").select("id, role").eq("id", req.params.userId).maybeSingle();
+    if (target?.role === "admin") return res.status(400).json({ ok: false, error: "CANNOT_BAN_ADMIN", reason: "관리자 계정은 차단할 수 없어요." });
     // 기존 밴 제거 후 새로 생성 (중복 방지)
     await supabaseAdmin.from("bans").delete().eq("user_id", req.params.userId);
+    // 이전 차단 때 걸었던 IP 차단도 정리 후 새 종류로 다시 검
+    try { await supabaseAdmin.rpc("admin_ip_unban_user", { p_user: req.params.userId }); } catch (_) {}
     const { error } = await supabaseAdmin.from("bans").insert({
       user_id: req.params.userId,
       reason: reason || null,
       expires_at: expires_at || null,
+      ip_scope: ipScope,
     });
     if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
 
@@ -5046,7 +5057,7 @@ app.post("/admin/users/:userId/ban", requireAdmin, async (req, res) => {
       action_type: "ban",
       target_type: "user",
       target_id: req.params.userId,
-      detail: reason || null,
+      detail: JSON.stringify({ reason: reason || null, expires_at: expires_at || null, ip_scope: ipScope, purge }),
     });
 
     // 차단 회원의 기록된 IP 도 차단 (관리자가 쓴 IP 는 DB 함수가 제외)
@@ -5059,14 +5070,23 @@ app.post("/admin/users/:userId/ban", requireAdmin, async (req, res) => {
       console.error("[IPBAN] ban ip error:", e?.message || e);
     }
 
-    // 이미 연결된 소켓(멀티·채팅)도 끊기
+    // 이미 연결된 소켓(멀티·채팅)도 끊기 — 본인 계정은 항상, IP는 전체/플레이 차단일 때만
     try {
       for (const sock of io.sockets.sockets.values()) {
-        if (sock.user?.id === req.params.userId || isIpBanned(sock.handshake.headers, sock.handshake.address)) sock.disconnect(true);
+        if (sock.user?.id === req.params.userId
+            || ((ipScope === "all" || ipScope === "play") && isIpBannedFor("play", sock.handshake.headers, sock.handshake.address))) sock.disconnect(true);
       }
     } catch (_) {}
 
-    return res.json({ ok: true, ip_count: ipCount });
+    // 댓글 일괄 삭제
+    let purged = null;
+    if (purge) {
+      const { data: pr, error: pErr } = await supabaseAdmin.rpc("admin_purge_user_comments", { p_user: req.params.userId });
+      if (pErr) console.error("[BAN] purge error:", pErr.message);
+      else purged = pr;
+    }
+
+    return res.json({ ok: true, ip_count: ipCount, ip_scope: ipScope, purged });
   } catch (err) {
     console.error("POST /admin/users/:userId/ban:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
@@ -5109,9 +5129,87 @@ app.get("/admin/bans", requireAdmin, async (req, res) => {
       .select("*")
       .order("created_at", { ascending: false });
     if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
-    return res.json({ ok: true, items: data || [] });
+    // 닉네임 + 걸린 IP 수 + 만료 여부
+    const ids = [...new Set((data || []).map(b => b.user_id).filter(Boolean))];
+    const nick = {}, ipCnt = {};
+    if (ids.length) {
+      const { data: profs } = await supabaseAdmin.from("profiles").select("id, nickname, avatar_url").in("id", ids);
+      for (const p of profs || []) nick[p.id] = p;
+      const { data: ipRows } = await supabaseAdmin.from("ip_bans").select("user_id")
+        .in("user_id", ids).or("expires_at.is.null,expires_at.gt." + new Date().toISOString());
+      for (const r of ipRows || []) ipCnt[r.user_id] = (ipCnt[r.user_id] || 0) + 1;
+    }
+    const nowMs = Date.now();
+    const items = (data || []).map(b => ({
+      ...b,
+      nickname: nick[b.user_id]?.nickname || null,
+      avatar_url: nick[b.user_id]?.avatar_url || null,
+      ip_ban_count: ipCnt[b.user_id] || 0,
+      expired: !!(b.expires_at && new Date(b.expires_at).getTime() <= nowMs),
+    }));
+    return res.json({ ok: true, items });
   } catch (err) {
     console.error("GET /admin/bans:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 회원이 쓴 IP + 같은 IP를 쓴 다른 계정(부계정 의심) — 2026-11-12
+app.get("/admin/users/:userId/ips", requireAdmin, async (req, res) => {
+  try {
+    const uid = req.params.userId;
+    const { data: mine, error } = await supabaseAdmin.from("user_ips")
+      .select("ip, first_seen, last_seen, hits").eq("user_id", uid).order("last_seen", { ascending: false }).limit(100);
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    const ipList = (mine || []).map(r => r.ip);
+    const nowIso = new Date().toISOString();
+    let bansByIp = {}, others = [];
+    if (ipList.length) {
+      const { data: bans } = await supabaseAdmin.from("ip_bans").select("ip, scopes, expires_at")
+        .in("ip", ipList).or("expires_at.is.null,expires_at.gt." + nowIso);
+      for (const b of bans || []) bansByIp[b.ip] = b;
+      const { data: alt } = await supabaseAdmin.from("user_ips").select("user_id, ip, last_seen")
+        .in("ip", ipList).neq("user_id", uid).order("last_seen", { ascending: false }).limit(300);
+      const byUser = new Map();
+      for (const a of alt || []) {
+        if (!byUser.has(a.user_id)) byUser.set(a.user_id, { user_id: a.user_id, ips: new Set(), last_seen: a.last_seen });
+        byUser.get(a.user_id).ips.add(a.ip);
+      }
+      const altIds = [...byUser.keys()];
+      if (altIds.length) {
+        const [{ data: profs }, { data: altBans }] = await Promise.all([
+          supabaseAdmin.from("profiles").select("id, nickname, role, created_at").in("id", altIds),
+          supabaseAdmin.from("bans").select("user_id, expires_at").in("user_id", altIds),
+        ]);
+        const pm = new Map((profs || []).map(p => [p.id, p]));
+        const bm = new Map((altBans || []).filter(b => !b.expires_at || b.expires_at > nowIso).map(b => [b.user_id, b]));
+        others = altIds.map(id => {
+          const u = byUser.get(id), p = pm.get(id);
+          return { user_id: id, nickname: p?.nickname || "(알 수 없음)", role: p?.role || null, created_at: p?.created_at || null,
+                   shared_ips: [...u.ips], last_seen: u.last_seen, is_banned: bm.has(id) };
+        });
+      }
+    }
+    return res.json({ ok: true,
+      ips: (mine || []).map(r => ({ ...r, ban: bansByIp[r.ip] ? { scopes: bansByIp[r.ip].scopes, expires_at: bansByIp[r.ip].expires_at } : null,
+                                    protected: isPrivateIp(r.ip) })),
+      others });
+  } catch (err) {
+    console.error("GET /admin/users/:userId/ips:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// 게스트 글·댓글 IP 조회 (관리자 커뮤니티 탭 등) { items: [{ table, id }] } → { map: { "table::id": ip } }
+app.post("/admin/guest-ips", requireAdmin, async (req, res) => {
+  try {
+    const OK = ["content_comments", "tier_instance_comments", "community_comments", "community_posts"];
+    const items = Array.isArray(req.body?.items) ? req.body.items.slice(0, 500) : [];
+    const pairs = items.filter(x => x && OK.includes(x.table) && typeof x.id === "string").map(x => [x.table, x.id]);
+    const map = await fetchGuestCommentIps(pairs);
+    return res.json({ ok: true, map: Object.fromEntries(map) });
+  } catch (err) {
+    console.error("POST /admin/guest-ips:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
 });
@@ -6007,7 +6105,7 @@ app.get("/admin/tier-templates/:id/reports", requireAdmin, async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
       .from("tier_reports")
-      .select("id, reason, detail, status, reporter_user_id, created_at")
+      .select("id, reason, detail, status, reporter_user_id, reporter_ip, created_at")
       .eq("target_type", "tier_template")
       .eq("target_id", req.params.id)
       .order("created_at", { ascending: false });
@@ -6032,7 +6130,7 @@ app.get("/admin/tier-templates/:id/reports", requireAdmin, async (req, res) => {
 
     const items = (data || []).map(r => ({
       ...r,
-      reporter_name: profilesMap[r.reporter_user_id] || r.reporter_user_id?.slice(0, 8) || "-",
+      reporter_name: r.reporter_user_id ? (profilesMap[r.reporter_user_id] || r.reporter_user_id.slice(0, 8)) : `게스트${r.reporter_ip ? " · " + r.reporter_ip : ""}`,
     }));
 
     return res.json({ ok: true, items });
@@ -6351,7 +6449,7 @@ app.get("/admin/tier-reports", requireAdmin, async (req, res) => {
       // 개별 신고에 닉네임 추가
       const reports = g.reports.map(r => ({
         ...r,
-        reporter_name: profilesMap[r.reporter_user_id] || r.reporter_user_id?.slice(0, 8) || "-",
+        reporter_name: r.reporter_user_id ? (profilesMap[r.reporter_user_id] || r.reporter_user_id.slice(0, 8)) : `게스트${r.reporter_ip ? " · " + r.reporter_ip : ""}`,
       }));
 
       // 그룹 상태: open이 하나라도 있으면 open
