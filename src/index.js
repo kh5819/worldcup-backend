@@ -14042,7 +14042,7 @@ const chatBridges = new Map();
 
 // 스트리머 채팅연동 사용 로그 (운영자 admin 탭에서 확인) — 실패해도 게임 흐름엔 영향 없음
 // 콘텐츠(DB) 없이 쓰는 스트리머 모드(예: 그려봐)는 종류만 프론트가 알려 줌 — 허용 목록만 저장
-const STREAMER_LOG_MODES = { draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", mafia: "플듀 마피아 스트리머 모드", ptest: "심리테스트 시청자 참여", bingo: "빙고 시청자 참여" };
+const STREAMER_LOG_MODES = { draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", mafia: "플듀 마피아 스트리머 모드", ptest: "심리테스트 시청자 참여", bingo: "빙고 시청자 참여", raising: "플듀 키우기 스트리머 모드" };
 async function _logStreamerChat({ platform, channelId, nickname, contentId, roomCode, hostUserId, hostNick, contentMode }) {
   try {
     if (!platform || !channelId) return; // 식별자 없으면 기록 안 함

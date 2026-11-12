@@ -172,9 +172,9 @@ const GEN = {
   qwer: (R) => {
     const combos = [];
     for (let i = 0; i < 90; i++) {
-      const L = i < 4 ? 3 : i < 10 ? 4 : R.int(4, 6);
+      const L = i < 3 ? 4 : i < 8 ? R.int(4, 5) : R.int(5, 6);      // 11-12: 더 어렵게(3키 콤보 없음, 5~6키 위주)
       const c = [];
-      while (c.length < L) { const k = R.int(0, 3); if (L <= 3 || k !== c[c.length - 1] || R() < 0.25) c.push(k); }
+      while (c.length < L) { const k = R.int(0, 3); if (k !== c[c.length - 1] || R() < 0.12) c.push(k); }
       combos.push(c);
     }
     return { dur: 20000, combos };
@@ -187,12 +187,12 @@ const GEN = {
       const hp0 = 100 + R.int(0, 10) * 6;
       const hits = [];
       let hp = hp0, t = at + 700 + R.int(0, 300);
-      while (hp > 0) { const d = R.int(9, 21); hits.push([t, d]); hp -= d; t += R.int(480, 820); }
+      while (hp > 0) { const d = R.int(13, 30); hits.push([t, d]); hp -= d; t += R.int(300, 560); }      // 11-12: 더 어렵게(아군 공격이 세고 잦아 막타 틈이 짧음)
       minions.push({ at, slot: i % 3, hp: hp0, hits, kind: R.int(0, 5) });
-      at += R.int(1450, 2050);
+      at += R.int(950, 1400);
     }
     const last = minions[minions.length - 1];
-    return { dmg: 32, cd: 420, minions, dur: last.hits[last.hits.length - 1][0] + 700 };
+    return { dmg: 28, cd: 600, minions, dur: last.hits[last.hits.length - 1][0] + 700 };
   },
 
   greenlight: (R) => {
@@ -256,15 +256,16 @@ const GEN = {
   },
 
   rhythm: (R) => {
-    const bpm = 104, beat = 60000 / bpm, start = 2200;
+    const bpm = 122, beat = 60000 / bpm, start = 2200;      // 11-12: 104→122 BPM + 촘촘한 패턴(더 어렵게)
     // 마디 패턴: 8칸(8분음표) — 0 없음, 1 왼쪽, 2 오른쪽
     const P = [
       [1, 0, 2, 0, 1, 0, 2, 0], [1, 0, 1, 0, 2, 0, 2, 0], [1, 0, 2, 0, 1, 2, 0, 0], [2, 0, 1, 0, 2, 0, 1, 1],
       [1, 0, 0, 2, 1, 0, 2, 0], [1, 2, 0, 0, 1, 2, 0, 0], [2, 0, 2, 1, 0, 1, 2, 0], [1, 0, 2, 2, 0, 1, 0, 2],
+      [1, 2, 1, 0, 2, 1, 2, 0], [2, 1, 0, 1, 2, 0, 1, 2], [1, 1, 2, 0, 2, 2, 1, 0], [1, 2, 1, 2, 0, 2, 1, 1],
     ];
     const notes = [];
     for (let bar = 0; bar < 8; bar++) {
-      const p = bar === 0 ? P[0] : bar < 3 ? R.pick(P.slice(0, 4)) : R.pick(P);
+      const p = bar === 0 ? P[0] : bar < 2 ? R.pick(P.slice(0, 4)) : bar < 5 ? R.pick(P.slice(0, 8)) : R.pick(P.slice(4));
       p.forEach((v, s) => { if (v) notes.push({ t: Math.round(start + (bar * 8 + s) * beat / 2), l: v - 1 }); });
     }
     return { bpm, beat, start, notes, dur: Math.round(start + 64 * beat / 2 + 900) };
@@ -276,10 +277,10 @@ const GEN = {
     for (let i = 0; i < 20; i++) {
       let x, y, n = 0;
       do { x = 0.09 + R() * 0.82; y = 0.1 + R() * 0.8; n++; } while (n < 30 && Math.hypot(x - px, y - py) < 0.28);
-      T.push({ x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000, r: Math.round((0.066 - i * 0.0015) * 1000) / 1000 });
+      T.push({ x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000, r: Math.round((0.062 - i * 0.0015) * 1000) / 1000 });      // 11-12: 약간 더 작게(0.066→0.062)
       px = x; py = y;
     }
-    return { first: 700, gap: 120, timeout: 1600, T };
+    return { first: 700, gap: 120, timeout: 1500, T };
   },
 
   stroop: (R) => {
@@ -297,12 +298,12 @@ const GEN = {
   },
 
   fly: (R) => {
-    const ax = [], ay = [];   // 11-01: 속도 1.3배 + 판정 0.085→0.09 (점수는 기존보다 낮아짐 — 운영자 결정)
+    const ax = [], ay = [];   // 11-01: 속도 1.3배 + 판정 0.085→0.09 / 11-12: 속도 약 1.18배 더 + 가속 ↑ (운영자 요청 "파리 더 빠르게")
     for (let k = 0; k < 3; k++) {
-      ax.push([0.24 / (k + 1.4), 0.00125 * (k + 1) * (0.8 + R() * 0.5), R() * 6.28]);
-      ay.push([0.24 / (k + 1.4), 0.0013 * (k + 1) * (0.8 + R() * 0.5), R() * 6.28]);
+      ax.push([0.24 / (k + 1.4), 0.00148 * (k + 1) * (0.8 + R() * 0.5), R() * 6.28]);
+      ay.push([0.24 / (k + 1.4), 0.00154 * (k + 1) * (0.8 + R() * 0.5), R() * 6.28]);
     }
-    return { dur: 20000, tick: 50, ax, ay, acc: 0.000022, hitR: 0.09, catchMs: 1000, escMs: 500 };
+    return { dur: 20000, tick: 50, ax, ay, acc: 0.000025, hitR: 0.09, catchMs: 1000, escMs: 500 };
   },
 
   // 가운데 얼굴(웃음/화남) + 바깥 8칸 중 ★ 위치. 맞히면 보여 주는 시간 짧게, 틀리면 길게 (계단식)
@@ -476,7 +477,7 @@ export function rhythmJudge(spec, hits, bias = 0) {
   }
   return { used, match, extra };
 }
-export function rhythmGrade(d) { return d <= 38 ? 3 : d <= 75 ? 2 : d <= 130 ? 1 : 0; }
+export function rhythmGrade(d) { return d <= 30 ? 3 : d <= 58 ? 2 : d <= 105 ? 1 : 0; }      // 11-12: 판정 구간 좁힘(38/75/130→30/58/105)
 
 // =========================================================
 // 2) 채점 — log는 클라 입력 기록, ctx = { device: "pc"|"mobile" }
@@ -554,8 +555,8 @@ const SCORE = {
     }
     const kps = ok / (spec.dur / 1000), acc = ok + bad ? ok / (ok + bad) : 0;
     const flags = fast > 10 ? ["MACRO_SPEED"] : [];
-    const speed = curve(kps, [[0, 0], [1, 15], [2, 38], [3, 58], [4, 74], [5, 86], [6, 94], [7.5, 100]]);
-    return { score: speed * Math.pow(acc, 1.5), m: { combos: done, kps: r1(kps), acc: Math.round(acc * 100), bad }, flags, line: `${done}콤보 · 정확도 ${Math.round(acc * 100)}%` };
+    const speed = curve(kps, [[0, 0], [1, 10], [2, 27], [3, 45], [4, 60], [5, 73], [6, 84], [7, 92], [8.5, 100]]);      // 11-12: 더 어렵게(같은 속도면 약 10~13점 낮게)
+    return { score: speed * Math.pow(acc, 2), m: { combos: done, kps: r1(kps), acc: Math.round(acc * 100), bad }, flags, line: `${done}콤보 · 정확도 ${Math.round(acc * 100)}%` };
   },
 
   lasthit(spec, log) {
