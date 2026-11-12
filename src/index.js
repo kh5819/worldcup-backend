@@ -4091,8 +4091,20 @@ app.post("/admin/ip-bans", requireAdmin, async (req, res) => {
     let scopes = Array.isArray(req.body?.scopes) ? [...new Set(req.body.scopes.filter(x => x === "write" || x === "play"))] : [];
     if (!scopes.length) return res.status(400).json({ ok: false, error: "NO_SCOPE", reason: "차단 종류를 골라주세요." });
     const scopeVal = scopes.length === 2 ? null : scopes;
-    const { error } = await supabaseAdmin.from("ip_bans")
-      .upsert(banKeys.map(k => ({ ip: k, user_id: null, reason: why, expires_at: expires, scopes: scopeVal })), { onConflict: "ip" });
+    // 이미 차단된 IP면 합침: 회원 연결 유지 · 더 긴 기간 · 더 넓은 종류 (짧은 차단으로 덮어써서 풀리는 일 방지)
+    const { data: existing } = await supabaseAdmin.from("ip_bans").select("ip, user_id, expires_at, scopes").in("ip", banKeys);
+    const exMap = new Map((existing || []).map(r => [r.ip, r]));
+    const rows = banKeys.map(k => {
+      const ex = exMap.get(k);
+      if (!ex) return { ip: k, user_id: null, reason: why, expires_at: expires, scopes: scopeVal };
+      const exExp = ex.expires_at ? new Date(ex.expires_at).getTime() : Infinity;
+      const mergedScopes = (ex.scopes == null || scopeVal == null) ? null
+        : ([...new Set([...ex.scopes, ...scopeVal])].length >= 2 ? null : [...new Set([...ex.scopes, ...scopeVal])]);
+      return { ip: k, user_id: ex.user_id || null, reason: why,
+        expires_at: exExp === Infinity ? null : new Date(Math.max(exExp, new Date(expires).getTime())).toISOString(),
+        scopes: mergedScopes };
+    });
+    const { error } = await supabaseAdmin.from("ip_bans").upsert(rows, { onConflict: "ip" });
     if (error) { console.error("POST /admin/ip-bans:", error); return res.status(500).json({ ok: false, error: "DB_ERROR" }); }
 
     // 그 IP가 최근 7일 쓴 게스트 댓글 한꺼번에 삭제 (도배 테러 정리)
@@ -10212,12 +10224,15 @@ function doQuizReveal(room) {
 // =========================
 
 // ── 멀티 테러 방지 (2026-11-12) ──
-//  1) IP당 동시 접속 수 상한 (창 여러 개 열기 방지)
-//  2) 같은 사람(회원ID·게스트ID)은 같은 종류 게임 방에 창 1개만
-//  3) IP당 같은 종류 게임 방 동시 참가 상한 (PC방 고려해 넉넉히)
-//  4) 플레이 차단 IP는 방 만들기·들어가기·관전 불가 (솔로·접속 자체는 허용)
-const SOCK_MAX_PER_IP = Number(process.env.SOCK_MAX_PER_IP || 12);
-const ROOM_MAX_PER_IP = Number(process.env.ROOM_MAX_PER_IP || 6);
+//  1) IP당 동시 접속 수 상한 (봇 대량 접속 방지 — 통신사 공유 IP 고려해 넉넉히)
+//  2) 게스트: 같은 IP에서 같은 종류 게임 방 동시 참가 상한 (시크릿 창·다른 브라우저로 인원 채우기 방지)
+//     · 같은 브라우저의 창 여러 개는 같은 게스트ID라 방 안에서 같은 사람 1명으로 처리됨(인원 안 늘어남)
+//     · 방송 모드(시청자 수천 명) 참가는 제외
+//  3) 플레이 차단 IP는 방 만들기·들어가기·관전 불가 (솔로·접속 자체는 허용)
+//  4) 방 만들기 도배 제한
+const SOCK_MAX_PER_IP = Number(process.env.SOCK_MAX_PER_IP || 60);
+const ROOM_MAX_PER_IP = Number(process.env.ROOM_MAX_PER_IP || 8);
+const BROADCAST_PREFIXES = new Set(["fbc", "kbc", "lbc", "lgb", "sbc"]); // 방송 모드 (시청자 참여)
 const _sockByIp = new Map();      // ip -> Set(socket)
 const ROOM_EVENT_RE = /^(room:(create|join)|[a-z]+:(createRoom|joinRoom|create|join|rejoin|watch))$/;
 function _roomPrefix(ev) { return ev.split(":")[0]; }
@@ -10282,27 +10297,20 @@ function _attachRoomGuard(socket) {
     const prefix = _roomPrefix(ev);
     const uid = socket.user?.id;
     if (/:watch$/.test(ev)) return next(); // 관전은 표시 안 함
-    // 같은 사람(같은 브라우저=같은 게스트ID / 같은 회원)이 다른 창으로 같은 종류 게임에 들어오면
-    // → 예전 창을 끊음 ("마지막 창만 유효"). 창 여러 개로 인원 채우기 불가 + 재접속은 그대로 됨
-    if (uid && !socket.user?.isAdmin) {
-      for (const other of io.of("/").sockets.values()) {
-        if (other !== socket && other.connected && other.user?.id === uid && other.data?._roomPrefixes?.has(prefix)) {
-          try { other.emit("duo:otherTab", { prefix }); } catch (_) {}
-          other.disconnect(true);
-        }
-      }
-    }
-    // 같은 IP에서 같은 종류 게임 방 동시 참가 상한
-    if (!priv && !socket.user?.isAdmin) {
+    const isBroadcast = BROADCAST_PREFIXES.has(prefix);
+    // 게스트: 같은 IP에서 같은 종류 게임 방 동시 참가 상한 (다른 게스트ID 기준 — 같은 ID는 같은 사람)
+    if (!priv && socket.user?.isGuest && !isBroadcast) {
       const set = _sockByIp.get(ip);
-      let n = 0;
-      if (set) for (const o of set) if (o !== socket && o.connected && o.data?._roomPrefixes?.has(prefix)) n++;
-      if (n >= ROOM_MAX_PER_IP) return deny("TOO_MANY_FROM_IP", "같은 곳에서 너무 많이 접속했어요.");
+      const ids = new Set();
+      if (set) for (const o of set) {
+        if (o !== socket && o.connected && o.user?.isGuest && o.user?.id !== uid && o.data?._roomPrefixes?.has(prefix)) ids.add(o.user.id);
+      }
+      if (ids.size >= ROOM_MAX_PER_IP) return deny("TOO_MANY_FROM_IP", "같은 곳에서 게스트로 너무 많이 들어왔어요. 로그인하면 들어갈 수 있어요.");
     }
     // 방 만들기 도배 막기: 게스트 IP당 10분 6개 / 회원 10분 15개
     if (/:(createRoom|create)$/.test(ev) && !socket.user?.isAdmin) {
       const key = socket.user?.isGuest ? `g:${ip}` : `u:${uid}`;
-      const lim = socket.user?.isGuest ? 6 : 15;
+      const lim = socket.user?.isGuest ? 10 : 15;
       const t = Date.now();
       const arr = (_roomCreateHits.get(key) || []).filter(x => t - x < 600_000);
       if (arr.length >= lim) return deny("RATE_LIMITED", "방을 너무 많이 만들었어요. 잠시 후 다시 해주세요.");
@@ -10851,7 +10859,7 @@ async function finishTierGame(room) {
   try {
     const { data: inserted, error } = await supabaseAdmin.from("tier_multi_results").insert({
       template_id: t.templateId,
-      host_user_id: room.hostUserId,
+      host_user_id: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(room.hostUserId || "")) ? room.hostUserId : null, // 게스트 방장은 NULL
       board: boardJson,
       history: t.history,
       players: playersJson,
