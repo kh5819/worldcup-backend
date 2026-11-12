@@ -14627,7 +14627,13 @@ function normalizeMergeSeason(v) {
   return MERGE_ALLOWED_SEASONS.has(s) ? s : "classic";
 }
 
-// 모드별 정렬 — 엔드리스: score DESC / 챌린지: max_stage=11 클리어만, duration_sec ASC, score DESC tiebreak
+// 모드별 정렬 — 엔드리스: score DESC / 챌린지: 도달 단계 DESC → (11 클리어끼리는 duration_sec ASC, 못 깬 기록끼리는 score DESC)
+// (예전엔 11단계 클리어만 보여서 챌린지 랭킹이 늘 비어 보였음 → 못 깬 기록도 단계순으로 표시)
+function mergeChallengeCmp(a, b) {
+  if ((b.max_stage || 0) !== (a.max_stage || 0)) return (b.max_stage || 0) - (a.max_stage || 0);
+  if (a.max_stage === 11) return ((a.duration_sec || 0) - (b.duration_sec || 0)) || ((b.score || 0) - (a.score || 0));
+  return ((b.score || 0) - (a.score || 0)) || ((a.duration_sec || 0) - (b.duration_sec || 0));
+}
 async function fetchMergeLeaderboard(supabase, { mode, limit, dailyOnly = false }) {
   const base = supabase
     .from("merge_scores")
@@ -14640,16 +14646,16 @@ async function fetchMergeLeaderboard(supabase, { mode, limit, dailyOnly = false 
     const today = new Date().toISOString().slice(0, 10);
     base.gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
   }
-  if (mode === "challenge") base.eq("max_stage", 11);
 
   // 더 많이 가져와서 user_id 기준 dedupe (best per user) — over-fetch 후 클라이언트 dedupe
-  const overFetch = Math.min(limit * 8, 200);
+  const overFetch = mode === "challenge" ? 1000 : Math.min(limit * 8, 200);
   const q = mode === "challenge"
-    ? base.order("duration_sec", { ascending: true }).order("score", { ascending: false }).limit(overFetch)
+    ? base.order("max_stage", { ascending: false }).order("score", { ascending: false }).limit(overFetch)
     : base.order("score", { ascending: false }).order("duration_sec", { ascending: true }).limit(overFetch);
 
   const { data, error } = await q;
   if (error) return { error };
+  if (mode === "challenge" && Array.isArray(data)) data.sort(mergeChallengeCmp);
 
   // user_id 기준 best 1개만 (이미 sorted 상태)
   const seen = new Set();
@@ -14709,10 +14715,9 @@ app.post("/merge/score", async (req, res) => {
     if (comboMax > 3.05 || comboMax < 1.0) flagged = true;
     if (score > durationSec * 200 + 5000) flagged = true;
     if (durationSec < 3) flagged = true;
-    // 챌린지 모드는 11단계 + 최소 60초 (너무 빠른 클리어 의심)
+    // 챌린지 모드: 11단계 클리어가 60초 미만이면 의심. 못 깬 기록도 랭킹에 단계순으로 올라감(보류하지 않음).
     if (mode === "challenge") {
-      if (maxStage !== 11) flagged = true;
-      if (durationSec < 60) flagged = true;
+      if (maxStage === 11 && durationSec < 60) flagged = true;
     }
 
     const insertPayload = {
@@ -14751,25 +14756,22 @@ app.post("/merge/score", async (req, res) => {
       official = true;
       // 챌린지: duration_sec 빠를수록 상위. 엔드리스: score 높을수록 상위.
       if (mode === "challenge") {
-        const dur = Math.round(durationSec);
-        const { count: g } = await supabaseAdmin
-          .from("merge_scores")
-          .select("user_id", { count: "exact", head: true })
-          .eq("mode", "challenge").eq("flagged", false).eq("max_stage", 11)
-          .not("user_id", "is", null)
-          .lt("duration_sec", dur);
-        globalRank = (g ?? 0) + 1;
-
+        // 나보다 위: 더 깊은 단계 + 같은 단계에서 (클리어면 더 빠름 / 아니면 점수 더 높음)
+        const st = Math.round(maxStage), dur = Math.round(durationSec), sc = Math.round(score);
         const today = new Date().toISOString().slice(0, 10);
-        const { count: d } = await supabaseAdmin
-          .from("merge_scores")
-          .select("user_id", { count: "exact", head: true })
-          .eq("mode", "challenge").eq("flagged", false).eq("max_stage", 11)
-          .not("user_id", "is", null)
-          .lt("duration_sec", dur)
-          .gte("created_at", today + "T00:00:00Z")
-          .lt("created_at", today + "T23:59:59Z");
-        dailyRank = (d ?? 0) + 1;
+        const countAbove = async (daily) => {
+          const mk = () => {
+            let q = supabaseAdmin.from("merge_scores").select("user_id", { count: "exact", head: true })
+              .eq("mode", "challenge").eq("flagged", false).not("user_id", "is", null);
+            if (daily) q = q.gte("created_at", today + "T00:00:00Z").lt("created_at", today + "T23:59:59Z");
+            return q;
+          };
+          const { count: deeper } = await mk().gt("max_stage", st);
+          const { count: same } = st === 11 ? await mk().eq("max_stage", 11).lt("duration_sec", dur) : await mk().eq("max_stage", st).gt("score", sc);
+          return (deeper ?? 0) + (same ?? 0);
+        };
+        globalRank = (await countAbove(false)) + 1;
+        dailyRank = (await countAbove(true)) + 1;
       } else {
         const { count: g } = await supabaseAdmin
           .from("merge_scores")
@@ -14845,10 +14847,11 @@ app.get("/merge/leaderboard/me", async (req, res) => {
       .eq("mode", mode).eq("flagged", false).eq("user_id", userId)
       .limit(1);
     q = mode === "challenge"
-      ? q.eq("max_stage", 11).order("duration_sec", { ascending: true }).order("score", { ascending: false })
+      ? q.order("max_stage", { ascending: false }).order("score", { ascending: false }).limit(200)
       : q.order("score", { ascending: false });
 
     const { data, error } = await q;
+    if (mode === "challenge" && Array.isArray(data)) data.sort(mergeChallengeCmp);
     if (error) {
       console.error("[merge/leaderboard/me]", error);
       return res.status(500).json({ ok: false, error: "QUERY_FAIL" });
