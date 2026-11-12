@@ -10230,11 +10230,11 @@ function doQuizReveal(room) {
 //     · 방송 모드(시청자 수천 명) 참가는 제외
 //  3) 플레이 차단 IP는 방 만들기·들어가기·관전 불가 (솔로·접속 자체는 허용)
 //  4) 방 만들기 도배 제한
-const SOCK_MAX_PER_IP = Number(process.env.SOCK_MAX_PER_IP || 60);
+const SOCK_MAX_PER_IP = Number(process.env.SOCK_MAX_PER_IP || 1500); // 봇 폭주 방지용 (방송 시청자·통신사 공유 IP 고려해 아주 넉넉히)
 const ROOM_MAX_PER_IP = Number(process.env.ROOM_MAX_PER_IP || 8);
 const BROADCAST_PREFIXES = new Set(["fbc", "kbc", "lbc", "lgb", "sbc"]); // 방송 모드 (시청자 참여)
 const _sockByIp = new Map();      // ip -> Set(socket)
-const ROOM_EVENT_RE = /^(room:(create|join)|[a-z]+:(createRoom|joinRoom|create|join|rejoin|watch))$/;
+const ROOM_EVENT_RE = /^(room:(create|join)|[a-z]+:(createRoom|joinRoom|create|join|rejoin|watch)|[a-z]+:bc:(create|join|watch))$/;
 function _roomPrefix(ev) { return ev.split(":")[0]; }
 function _sockIp(socket) { return primaryIp(socket.handshake.headers, socket.handshake.address) || "unknown"; }
 
@@ -10297,7 +10297,7 @@ function _attachRoomGuard(socket) {
     const prefix = _roomPrefix(ev);
     const uid = socket.user?.id;
     if (/:watch$/.test(ev)) return next(); // 관전은 표시 안 함
-    const isBroadcast = BROADCAST_PREFIXES.has(prefix);
+    const isBroadcast = BROADCAST_PREFIXES.has(prefix) || ev.includes(":bc:"); // 방송(스트리머) 모드는 IP 인원 제한 없음
     // 게스트: 같은 IP에서 같은 종류 게임 방 동시 참가 상한 (다른 게스트ID 기준 — 같은 ID는 같은 사람)
     if (!priv && socket.user?.isGuest && !isBroadcast) {
       const set = _sockByIp.get(ip);
