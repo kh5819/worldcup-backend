@@ -43,4 +43,11 @@ const mk = (seed = 7, mode = "free") => { const S = newState({ seed, mode }), G 
 { const G = mk(), S = G.S; PT.ensure(S, G.sim); PT.sign(S); const json = G.sim.serialize(), back = JSON.parse(json); ok(back.patrol && back.patrol.paper === true && back.patrol.spots.length === S.patrol.spots.length, "저장에 현장 경영 상태 포함"); }
 /* 스토리 모드도 */
 { const G = mk(3, "story"); PT.ensure(G.S, G.sim); ok(G.S.patrol.spots.length >= 3, "스토리 모드 일거리"); }
+/* 예외: 옛 저장(patrol 없음)·떠난 출연자 고민·출연자 0명 */
+{ const G = mk(5), S = G.S; delete S.patrol; ok(PT.ensure(S, G.sim) && S.patrol.day === S.day, "옛 저장도 새로 만듦");
+  const w = S.patrol.worry[0]; if (w) { G.sim.byId.get(w.id).status = "gone"; } const G2 = mk(6), S2 = G2.S; S2.cast.forEach((c) => (c.status = "gone")); S2.patrol = null; PT.ensure(S2, G2.sim); ok(S2.patrol.worry.length === 0 && S2.patrol.spots.length >= 3, "출연자 0명이어도 오류 없음");
+  ok(PT.answer(S2, G2.sim, "nope", "cheer") === null && PT.answer(S, G.sim, w ? w.id : "x", "zzz") === null, "이상한 대답 무시"); }
+/* 여러 날 돌려도(진짜 진행) 오류 없음 */
+{ const G = mk(9), S = G.S; let days = 0, guard = 0; while (days < 5 && guard++ < 200000) { const d = S.day; PT.ensure(S, G.sim); for (const sp of [...S.patrol.spots].slice(0, 2)) PT.resolve(S, G.sim, sp); G.sim.update(0.5); if (G.shows.live) { G.shows.live.show.done = true; try { G.shows.finish(); } catch {} } if (G.sim.mode === "night") G.sim.startDay(); if (S.pendingEvent) G.events.resolve(0); if (S.day !== d) days++; }
+  ok(days >= 5, "5일 진행", days); ok(Number.isFinite(S.money) && Number.isFinite(S.fame) && Number.isFinite(S.fans), "숫자 정상"); }
 console.log(`현장 경영 시험: 통과 ${pass} · 실패 ${fails}`); process.exit(fails ? 1 : 0);
