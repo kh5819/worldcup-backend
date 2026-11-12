@@ -1,5 +1,6 @@
 import "dotenv/config";
 import http from "http";
+import net from "node:net";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -186,29 +187,88 @@ function isPrivateIp(ip) {
   return !ip || /^(10\.|127\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|::1$|f[cd]|fe80)/i.test(ip);
 }
 
-let bannedIps = new Set();
+// IP 차단 3종 (2026-11-12): all(전체·기존) / write(댓글·게시글·제작·신고) / play(멀티 방 입장)
+//  - 대역 차단(예: IPv6 "2001:db8:1:2::/64") 도 인식
+function _emptyBanBucket() { return { singles: new Set(), nets: null, netCount: 0 }; }
+let _banBuckets = { all: _emptyBanBucket(), write: _emptyBanBucket(), play: _emptyBanBucket() };
+let bannedIps = new Set(); // (옛 이름 유지: 전체 차단 단일 IP 수 표시용)
 async function refreshBannedIps() {
   try {
     const { data, error } = await supabaseAdmin
       .from("ip_bans")
-      .select("ip")
+      .select("ip, scopes")
       .or("expires_at.is.null,expires_at.gt." + new Date().toISOString())
       .limit(5000);
-    if (!error) bannedIps = new Set((data || []).map(r => r.ip));
+    if (!error) {
+      const next = { all: _emptyBanBucket(), write: _emptyBanBucket(), play: _emptyBanBucket() };
+      for (const r of data || []) {
+        const v = String(r.ip || "").trim();
+        if (!v) continue;
+        const sc = Array.isArray(r.scopes) && r.scopes.length ? r.scopes : ["all"];
+        for (const k of sc) {
+          const b = next[k];
+          if (!b) continue;
+          const slash = v.indexOf("/");
+          if (slash > 0) {
+            const addr = v.slice(0, slash), len = parseInt(v.slice(slash + 1));
+            const fam = net.isIPv6(addr) ? "ipv6" : net.isIPv4(addr) ? "ipv4" : null;
+            if (fam && Number.isFinite(len)) {
+              if (!b.nets) b.nets = new net.BlockList();
+              try { b.nets.addSubnet(addr, len, fam); b.netCount++; } catch (_) {}
+            }
+          } else {
+            b.singles.add(v);
+          }
+        }
+      }
+      _banBuckets = next;
+      bannedIps = next.all.singles;
+    }
   } catch (e) {
     console.error("[IPBAN] refresh error:", e?.message || e);
   }
 }
+function _ipInBucket(b, ip) {
+  if (b.singles.has(ip)) return true;
+  if (!b.nets) return false;
+  const fam = net.isIPv6(ip) ? "ipv6" : net.isIPv4(ip) ? "ipv4" : null;
+  try { return !!fam && b.nets.check(ip, fam); } catch (_) { return false; }
+}
+// scope: "write" | "play" — 전체 차단이거나 그 종류 차단이면 true
+function isIpBannedFor(scope, headers, fallback) {
+  const a = _banBuckets.all, b = _banBuckets[scope];
+  if (!a.singles.size && !a.nets && (!b || (!b.singles.size && !b.nets))) return false;
+  return requestIps(headers, fallback).some(ip => _ipInBucket(a, ip) || (b && _ipInBucket(b, ip)));
+}
 refreshBannedIps();
 setInterval(refreshBannedIps, 60_000).unref?.();
 
+// 전체 차단만 (API·소켓 전부 거부 — 기존 동작)
 function isIpBanned(headers, fallback) {
-  if (bannedIps.size === 0) return false;
-  return requestIps(headers, fallback).some(ip => bannedIps.has(ip));
+  const a = _banBuckets.all;
+  if (!a.singles.size && !a.nets) return false;
+  return requestIps(headers, fallback).some(ip => _ipInBucket(a, ip));
+}
+// IPv6 주소 → /64 대역 문자열 ("2001:db8:1:2::/64"). IPv4 는 null
+function ipv6Net64(ip) {
+  if (!net.isIPv6(ip)) return null;
+  let [head, tail] = ip.split("::");
+  const h = head ? head.split(":") : [];
+  const t = tail !== undefined ? (tail ? tail.split(":") : []) : null;
+  let parts = t === null ? h : [...h, ...Array(8 - h.length - t.length).fill("0"), ...t];
+  if (parts.length !== 8 || parts.some(x => x.includes("."))) return null;
+  return parts.slice(0, 4).map(x => (parseInt(x, 16) || 0).toString(16)).join(":") + "::/64";
 }
 
+// 쓰기 차단 대상 API (신고·제작 보조·발행·닉네임)
+const WRITE_ROUTE_RE = /^\/(api\/(youtube-videos|proxy-image)|reports|bingo-reports|ptest-reports|tier-reports|comment-reports|tier-multi\/publish|profile\/nickname|highlights\/submit|my\/contents\/)/;
 app.use((req, res, next) => {
   if (isIpBanned(req.headers, req.socket?.remoteAddress)) {
+    return res.status(403).json({ ok: false, error: "IP_BANNED" });
+  }
+  if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS"
+      && WRITE_ROUTE_RE.test(req.path)
+      && isIpBannedFor("write", req.headers, req.socket?.remoteAddress)) {
     return res.status(403).json({ ok: false, error: "IP_BANNED" });
   }
   next();
@@ -3327,18 +3387,36 @@ app.get("/me", requireAuth, (req, res) => {
 });
 
 // =========================
+// 비회원 신고 공용 (2026-11-12) — 로그인 없으면 IP 로 신고자 식별, 10분에 10건까지
+// =========================
+const _guestReportHits = new Map(); // ip -> [ts]
+function guestReporter(req, res) {
+  if (req.user?.id) return { reporter_user_id: req.user.id };
+  const ip = primaryIp(req.headers, req.socket?.remoteAddress);
+  if (!ip || isPrivateIp(ip)) { res.status(400).json({ ok: false, error: "IP_UNKNOWN" }); return null; }
+  const now = Date.now();
+  const hits = (_guestReportHits.get(ip) || []).filter(t => now - t < 10 * 60 * 1000);
+  if (hits.length >= 10) { res.status(429).json({ ok: false, error: "RATE_LIMITED" }); return null; }
+  hits.push(now);
+  _guestReportHits.set(ip, hits);
+  if (_guestReportHits.size > 5000) _guestReportHits.clear();
+  return { reporter_user_id: null, reporter_ip: ip };
+}
+
+// =========================
 // 신고 API
 // =========================
-app.post("/reports", requireAuth, async (req, res) => {
+app.post("/reports", optionalAuth, async (req, res) => {
   try {
     const { contentId, reason, detail } = req.body;
     if (!contentId || !reason) {
       return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
     }
 
+    const who = guestReporter(req, res); if (!who) return;
     const { error } = await supabaseAdmin.from("reports").insert({
       content_id: contentId,
-      reporter_user_id: req.user.id,
+      ...who,
       reason,
       detail: detail || null,
     });
@@ -3361,19 +3439,21 @@ app.post("/reports", requireAuth, async (req, res) => {
 // =========================
 // 빙고 신고 API
 // =========================
-app.post("/bingo-reports", requireAuth, async (req, res) => {
+app.post("/bingo-reports", optionalAuth, async (req, res) => {
   try {
     const { bingoId, reason, detail } = req.body;
     if (!bingoId || !reason) {
       return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
     }
+    const who = guestReporter(req, res); if (!who) return;
     const { error } = await supabaseAdmin.from("bingo_reports").insert({
       bingo_id: bingoId,
-      reporter_user_id: req.user.id,
+      ...who,
       reason,
       detail: detail || null,
     });
     if (error) {
+      if (error.code === "23505") return res.status(409).json({ ok: false, error: "ALREADY_REPORTED" });
       console.error("POST /bingo-reports error:", error);
       return res.status(500).json({ ok: false, error: "DB_ERROR" });
     }
@@ -3387,19 +3467,21 @@ app.post("/bingo-reports", requireAuth, async (req, res) => {
 // =========================
 // 심리테스트 신고 API
 // =========================
-app.post("/ptest-reports", requireAuth, async (req, res) => {
+app.post("/ptest-reports", optionalAuth, async (req, res) => {
   try {
     const { testId, reason, detail } = req.body;
     if (!testId || !reason) {
       return res.status(400).json({ ok: false, error: "MISSING_FIELDS" });
     }
+    const who = guestReporter(req, res); if (!who) return;
     const { error } = await supabaseAdmin.from("ptest_reports").insert({
       test_id: testId,
-      reporter_user_id: req.user.id,
+      ...who,
       reason,
       detail: detail || null,
     });
     if (error) {
+      if (error.code === "23505") return res.status(409).json({ ok: false, error: "ALREADY_REPORTED" });
       console.error("POST /ptest-reports error:", error);
       return res.status(500).json({ ok: false, error: "DB_ERROR" });
     }
@@ -3413,7 +3495,7 @@ app.post("/ptest-reports", requireAuth, async (req, res) => {
 // =========================
 // 티어 신고 API
 // =========================
-app.post("/tier-reports", requireAuth, async (req, res) => {
+app.post("/tier-reports", optionalAuth, async (req, res) => {
   try {
     const { targetType, targetId, reason, detail } = req.body;
     if (!targetType || !targetId || !reason) {
@@ -3423,10 +3505,11 @@ app.post("/tier-reports", requireAuth, async (req, res) => {
       return res.status(400).json({ ok: false, error: "INVALID_TARGET_TYPE" });
     }
 
+    const who = guestReporter(req, res); if (!who) return;
     const { error } = await supabaseAdmin.from("tier_reports").insert({
       target_type: targetType,
       target_id: targetId,
-      reporter_user_id: req.user.id,
+      ...who,
       reason,
       detail: detail || null,
     });
@@ -3557,7 +3640,7 @@ app.post("/tier-multi/publish", requireAuth, async (req, res) => {
 // =========================
 // 댓글 신고 API
 // =========================
-app.post("/comment-reports", requireAuth, async (req, res) => {
+app.post("/comment-reports", optionalAuth, async (req, res) => {
   try {
     const { commentId, commentTable, reason, detail } = req.body;
     if (!commentId || !commentTable || !reason) {
@@ -3583,15 +3666,16 @@ app.post("/comment-reports", requireAuth, async (req, res) => {
       return res.status(404).json({ ok: false, error: "COMMENT_NOT_FOUND" });
     }
 
-    // 자기 댓글 신고 방지
-    if (comment.user_id === req.user.id) {
+    // 자기 댓글 신고 방지 (회원만 판정 가능)
+    if (req.user?.id && comment.user_id === req.user.id) {
       return res.status(400).json({ ok: false, error: "CANNOT_REPORT_OWN" });
     }
 
+    const who = guestReporter(req, res); if (!who) return;
     const { error } = await supabaseAdmin.from("comment_reports").insert({
       comment_id: commentId,
       comment_table: commentTable,
-      reporter_user_id: req.user.id,
+      ...who,
       reason,
       detail: detail || null,
     });
@@ -3614,6 +3698,21 @@ app.post("/comment-reports", requireAuth, async (req, res) => {
 // =========================
 // 관리자 API
 // =========================
+
+// 비회원 댓글 IP 조회 (관리자 전용) → Map("table::id" -> ip)
+async function fetchGuestCommentIps(pairs) {
+  const out = new Map();
+  const byTable = {};
+  for (const [t, id] of pairs) { (byTable[t] = byTable[t] || []).push(id); }
+  for (const [t, ids] of Object.entries(byTable)) {
+    for (let i = 0; i < ids.length; i += 200) {
+      const { data } = await supabaseAdmin.from("guest_comment_meta")
+        .select("comment_table, comment_id, ip").eq("comment_table", t).in("comment_id", ids.slice(i, i + 200));
+      for (const r of data || []) out.set(`${r.comment_table}::${r.comment_id}`, r.ip);
+    }
+  }
+  return out;
+}
 
 // 관리자: 댓글 신고 목록
 app.get("/admin/comment-reports", requireAdmin, async (req, res) => {
@@ -3785,6 +3884,10 @@ app.get("/admin/comment-reports", requireAdmin, async (req, res) => {
       }
     }
 
+    // 비회원 댓글 IP
+    const guestIpMap = await fetchGuestCommentIps(
+      [...commentMap.values()].filter(c => !c.user_id).map(c => [c._table, c.id]));
+
     // 최종 응답 조립
     const items = [];
     for (const g of groupMap.values()) {
@@ -3809,9 +3912,14 @@ app.get("/admin/comment-reports", requireAdmin, async (req, res) => {
         comment: comment ? {
           id: comment.id,
           body: comment.body,
-          author_name: authorProfile?.nickname || comment.author_name || "알 수 없음",
+          author_name: comment.user_id
+            ? (authorProfile?.nickname || comment.author_name || "알 수 없음")
+            : `${comment.author_name || "익명"} (게스트)`,
           author_avatar: authorProfile?.avatar_url || null,
           user_id: comment.user_id,
+          is_guest: !comment.user_id,
+          comment_table: comment._table,
+          guest_ip: !comment.user_id ? (guestIpMap.get(`${comment._table}::${comment.id}`) || null) : null,
           created_at: comment.created_at,
           parent_id: comment.parent_id || null,
           parent_comment_body: parentComment?.body || null,
@@ -3821,7 +3929,9 @@ app.get("/admin/comment-reports", requireAdmin, async (req, res) => {
         content_link: contentLink,
         reports: g.reports.map(r => ({
           ...r,
-          reporter_name: profileMap.get(r.reporter_user_id)?.nickname || "알 수 없음",
+          reporter_name: r.reporter_user_id
+            ? (profileMap.get(r.reporter_user_id)?.nickname || "알 수 없음")
+            : `게스트${r.reporter_ip ? " · " + r.reporter_ip : ""}`,
         })),
       });
     }
@@ -3940,6 +4050,145 @@ app.delete("/admin/comments/:commentTable/:commentId", requireAdmin, async (req,
     return res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /admin/comments:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// ──────────────────────────────────────────
+// 관리자 IP 차단 (게스트 댓글 등) — 2026-11-12
+//   POST   /admin/ip-bans  { ip } 또는 { comment_table, comment_id }, days(1~30), reason, delete_comment
+//   GET    /admin/ip-bans
+//   DELETE /admin/ip-bans/:ip
+// ──────────────────────────────────────────
+app.post("/admin/ip-bans", requireAdmin, async (req, res) => {
+  try {
+    let { ip, comment_table, comment_id, days, reason, delete_comment } = req.body || {};
+    if (comment_table && !["content_comments", "tier_instance_comments"].includes(comment_table)) {
+      return res.status(400).json({ ok: false, error: "INVALID_TABLE" });
+    }
+    if (!ip && comment_table && comment_id) {
+      const { data: meta } = await supabaseAdmin.from("guest_comment_meta")
+        .select("ip").eq("comment_table", comment_table).eq("comment_id", comment_id).maybeSingle();
+      ip = meta?.ip;
+      if (!ip) return res.status(404).json({ ok: false, error: "NO_IP", reason: "이 댓글의 IP 기록이 없어요(회원 댓글이거나 옛 댓글)." });
+    }
+    ip = String(ip || "").trim();
+    if (!ip || ip.length > 64 || !net.isIP(ip)) {
+      return res.status(400).json({ ok: false, error: "INVALID_IP", reason: "IP 형식이 올바르지 않아요." });
+    }
+    if (isPrivateIp(ip)) return res.status(400).json({ ok: false, error: "PROTECTED_IP", reason: "내부망 IP는 막을 수 없어요." });
+    const { data: prot } = await supabaseAdmin.rpc("_ip_is_protected", { p_ip: ip });
+    if (prot === true) return res.status(400).json({ ok: false, error: "PROTECTED_IP", reason: "관리자가 쓰는 IP라 막을 수 없어요." });
+
+    const d = Math.min(30, Math.max(1, parseInt(days) || 7));
+    const expires = new Date(Date.now() + d * 86400000).toISOString();
+    const why = String(reason || "게스트 댓글").slice(0, 200);
+    // IPv6 는 주소를 쉽게 바꿀 수 있어서 /64 대역째 막음 (range:false 로 끌 수 있음)
+    const banKeys = [ip];
+    const v6net = req.body?.range === false ? null : ipv6Net64(ip);
+    if (v6net) banKeys.push(v6net);
+    // 차단 종류: write(댓글·게시글·제작) / play(멀티) — 둘 다면 전체(NULL)
+    let scopes = Array.isArray(req.body?.scopes) ? [...new Set(req.body.scopes.filter(x => x === "write" || x === "play"))] : [];
+    if (!scopes.length) return res.status(400).json({ ok: false, error: "NO_SCOPE", reason: "차단 종류를 골라주세요." });
+    const scopeVal = scopes.length === 2 ? null : scopes;
+    const { error } = await supabaseAdmin.from("ip_bans")
+      .upsert(banKeys.map(k => ({ ip: k, user_id: null, reason: why, expires_at: expires, scopes: scopeVal })), { onConflict: "ip" });
+    if (error) { console.error("POST /admin/ip-bans:", error); return res.status(500).json({ ok: false, error: "DB_ERROR" }); }
+
+    // 그 IP가 최근 7일 쓴 게스트 댓글 한꺼번에 삭제 (도배 테러 정리)
+    let purged = 0;
+    if (req.body?.purge) {
+      const since = new Date(Date.now() - 7 * 86400000).toISOString();
+      const { data: metas } = await supabaseAdmin.from("guest_comment_meta")
+        .select("comment_table, comment_id").eq("ip", ip).gte("created_at", since).limit(2000);
+      const byT = {};
+      for (const m of metas || []) {
+        if (m.comment_table === "content_comments" || m.comment_table === "tier_instance_comments") {
+          (byT[m.comment_table] = byT[m.comment_table] || []).push(m.comment_id);
+        }
+      }
+      for (const [t, ids] of Object.entries(byT)) {
+        for (let i = 0; i < ids.length; i += 200) {
+          const chunk = ids.slice(i, i + 200);
+          const { error: pErr } = await supabaseAdmin.from(t).delete().in("id", chunk).is("user_id", null);
+          if (!pErr) {
+            purged += chunk.length;
+            await supabaseAdmin.from("comment_reports").update({ status: "resolved" }).eq("comment_table", t).in("comment_id", chunk);
+          }
+        }
+      }
+    }
+
+    let deleted = false;
+    if (delete_comment && comment_table && comment_id) {
+      const { error: dErr } = await supabaseAdmin.from(comment_table).delete().eq("id", comment_id);
+      if (!dErr) {
+        deleted = true;
+        await supabaseAdmin.from("comment_reports").update({ status: "resolved" })
+          .eq("comment_id", comment_id).eq("comment_table", comment_table);
+      }
+    }
+    try {
+      await supabaseAdmin.from("admin_actions").insert({
+        admin_user_id: req.user.id, action_type: "ip_ban", target_type: "ip", target_id: null,
+        detail: JSON.stringify({ ip, range: v6net, scopes: scopeVal, days: d, reason: why, comment_table: comment_table || null, comment_id: comment_id || null, deleted, purged }),
+      });
+    } catch (_) { /* 로그 실패 무시 */ }
+    await refreshBannedIps();
+    // 플레이(또는 전체) 차단이면 지금 그 IP로 접속 중인 창 바로 끊기
+    let kicked = 0;
+    if (scopeVal === null || scopeVal.includes("play")) {
+      for (const sock of io.of("/").sockets.values()) {
+        if (isIpBannedFor("play", sock.handshake.headers, sock.handshake.address)) { sock.disconnect(true); kicked++; }
+      }
+    }
+    console.log(`[ADMIN] ip_ban ip=${ip} days=${d} scopes=${JSON.stringify(scopeVal)} kicked=${kicked} by=${req.user.id}`);
+    return res.json({ ok: true, ip, range: v6net, scopes: scopeVal, expires_at: expires, deleted, purged });
+  } catch (err) {
+    console.error("POST /admin/ip-bans:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.get("/admin/ip-bans", requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin.from("ip_bans")
+      .select("ip, user_id, reason, expires_at, created_at, scopes")
+      .or("expires_at.is.null,expires_at.gt." + new Date().toISOString())
+      .order("created_at", { ascending: false }).limit(500);
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    const uids = [...new Set((data || []).map(r => r.user_id).filter(Boolean))];
+    const nick = {};
+    if (uids.length) {
+      const { data: profs } = await supabaseAdmin.from("profiles").select("id, nickname").in("id", uids);
+      for (const p of profs || []) nick[p.id] = p.nickname;
+    }
+    return res.json({ ok: true, items: (data || []).map(r => ({ ...r, nickname: r.user_id ? (nick[r.user_id] || "(회원)") : null })) });
+  } catch (err) {
+    console.error("GET /admin/ip-bans:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+app.delete("/admin/ip-bans/:ip", requireAdmin, async (req, res) => {
+  try {
+    const ip = String(req.params.ip || "").trim();
+    // IPv6 주소를 풀면 같이 막았던 /64 대역도 같이 풂
+    const keys = [ip];
+    const v6net = ipv6Net64(ip);
+    if (v6net) keys.push(v6net);
+    const { error } = await supabaseAdmin.from("ip_bans").delete().in("ip", keys);
+    if (error) return res.status(500).json({ ok: false, error: "DB_ERROR" });
+    try {
+      await supabaseAdmin.from("admin_actions").insert({
+        admin_user_id: req.user.id, action_type: "ip_unban", target_type: "ip", target_id: null,
+        detail: JSON.stringify({ ip }),
+      });
+    } catch (_) { /* 로그 실패 무시 */ }
+    await refreshBannedIps();
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /admin/ip-bans:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
   }
 });
@@ -4179,6 +4428,19 @@ app.get("/admin/all-comments", requireAdmin, async (req, res) => {
     let items = results;
     if (source === "all") {
       items = results.slice(offset, offset + limit);
+    }
+
+    // 비회원(게스트) 댓글 표시 + IP (월드컵·퀴즈·밸런스 / 티어)
+    const SRC_TABLE = { content: "content_comments", tier: "tier_instance_comments" };
+    const guestRows = items.filter(it => !it.user_id && SRC_TABLE[it.source]);
+    if (guestRows.length) {
+      const ipMap = await fetchGuestCommentIps(guestRows.map(it => [SRC_TABLE[it.source], it.id]));
+      for (const it of guestRows) {
+        it.is_guest = true;
+        it.comment_table = SRC_TABLE[it.source];
+        it.guest_ip = ipMap.get(`${it.comment_table}::${it.id}`) || null;
+        it.author_name = `${it.author_name || "익명"} (게스트)`;
+      }
     }
 
     return res.json({
@@ -9949,10 +10211,27 @@ function doQuizReveal(room) {
 // Socket Auth 미들웨어
 // =========================
 
+// ── 멀티 테러 방지 (2026-11-12) ──
+//  1) IP당 동시 접속 수 상한 (창 여러 개 열기 방지)
+//  2) 같은 사람(회원ID·게스트ID)은 같은 종류 게임 방에 창 1개만
+//  3) IP당 같은 종류 게임 방 동시 참가 상한 (PC방 고려해 넉넉히)
+//  4) 플레이 차단 IP는 방 만들기·들어가기·관전 불가 (솔로·접속 자체는 허용)
+const SOCK_MAX_PER_IP = Number(process.env.SOCK_MAX_PER_IP || 12);
+const ROOM_MAX_PER_IP = Number(process.env.ROOM_MAX_PER_IP || 6);
+const _sockByIp = new Map();      // ip -> Set(socket)
+const ROOM_EVENT_RE = /^(room:(create|join)|[a-z]+:(createRoom|joinRoom|create|join|rejoin|watch))$/;
+function _roomPrefix(ev) { return ev.split(":")[0]; }
+function _sockIp(socket) { return primaryIp(socket.handshake.headers, socket.handshake.address) || "unknown"; }
+
 io.use(async (socket, next) => {
   try {
     const hs = socket.handshake;
     if (isIpBanned(hs.headers, hs.address)) return next(new Error("IP_BANNED"));
+    const ipKey = _sockIp(socket);
+    if (!isPrivateIp(ipKey)) {
+      const set = _sockByIp.get(ipKey);
+      if (set && set.size >= SOCK_MAX_PER_IP) return next(new Error("TOO_MANY_CONNECTIONS"));
+    }
     const token = socket.handshake.auth?.accessToken;
     if (token) {
       const user = await verify(token);
@@ -9965,13 +10244,76 @@ io.use(async (socket, next) => {
       if (!guestId || typeof guestId !== "string" || !guestId.startsWith("guest_")) {
         return next(new Error("UNAUTHORIZED"));
       }
+      if (guestId.length > 80) return next(new Error("UNAUTHORIZED"));
       socket.user = { id: guestId, isGuest: true, isAdmin: false };
     }
+    _attachRoomGuard(socket);
     next();
   } catch {
     next(new Error("UNAUTHORIZED"));
   }
 });
+
+function _attachRoomGuard(socket) {
+  const ip = _sockIp(socket);
+  const priv = isPrivateIp(ip);
+  if (!priv) {
+    let set = _sockByIp.get(ip);
+    if (!set) { set = new Set(); _sockByIp.set(ip, set); }
+    set.add(socket);
+  }
+  socket.data._roomPrefixes = new Set(); // 이 창이 들어간 게임 종류
+  socket.on("disconnect", () => {
+    if (priv) return;
+    const set = _sockByIp.get(ip);
+    if (set) { set.delete(socket); if (!set.size) _sockByIp.delete(ip); }
+  });
+  socket.use((packet, next) => {
+    const ev = packet?.[0];
+    if (typeof ev !== "string") return next();
+    if (/^[a-z]+:(leaveRoom|leave)$/.test(ev)) { socket.data._roomPrefixes.delete(_roomPrefix(ev)); return next(); }
+    if (!ROOM_EVENT_RE.test(ev)) return next();
+    const ack = typeof packet[packet.length - 1] === "function" ? packet[packet.length - 1] : null;
+    const deny = (code, msg) => { try { ack?.({ ok: false, error: code, reason: msg, message: msg }); } catch (_) {} };
+    // 플레이(멀티) 차단
+    if (isIpBannedFor("play", socket.handshake.headers, socket.handshake.address)) {
+      return deny("IP_PLAY_BANNED", "차단된 IP라 멀티 게임에 들어갈 수 없어요.");
+    }
+    const prefix = _roomPrefix(ev);
+    const uid = socket.user?.id;
+    if (/:watch$/.test(ev)) return next(); // 관전은 표시 안 함
+    // 같은 사람(같은 브라우저=같은 게스트ID / 같은 회원)이 다른 창으로 같은 종류 게임에 들어오면
+    // → 예전 창을 끊음 ("마지막 창만 유효"). 창 여러 개로 인원 채우기 불가 + 재접속은 그대로 됨
+    if (uid && !socket.user?.isAdmin) {
+      for (const other of io.of("/").sockets.values()) {
+        if (other !== socket && other.connected && other.user?.id === uid && other.data?._roomPrefixes?.has(prefix)) {
+          try { other.emit("duo:otherTab", { prefix }); } catch (_) {}
+          other.disconnect(true);
+        }
+      }
+    }
+    // 같은 IP에서 같은 종류 게임 방 동시 참가 상한
+    if (!priv && !socket.user?.isAdmin) {
+      const set = _sockByIp.get(ip);
+      let n = 0;
+      if (set) for (const o of set) if (o !== socket && o.connected && o.data?._roomPrefixes?.has(prefix)) n++;
+      if (n >= ROOM_MAX_PER_IP) return deny("TOO_MANY_FROM_IP", "같은 곳에서 너무 많이 접속했어요.");
+    }
+    // 방 만들기 도배 막기: 게스트 IP당 10분 6개 / 회원 10분 15개
+    if (/:(createRoom|create)$/.test(ev) && !socket.user?.isAdmin) {
+      const key = socket.user?.isGuest ? `g:${ip}` : `u:${uid}`;
+      const lim = socket.user?.isGuest ? 6 : 15;
+      const t = Date.now();
+      const arr = (_roomCreateHits.get(key) || []).filter(x => t - x < 600_000);
+      if (arr.length >= lim) return deny("RATE_LIMITED", "방을 너무 많이 만들었어요. 잠시 후 다시 해주세요.");
+      arr.push(t); _roomCreateHits.set(key, arr);
+      if (_roomCreateHits.size > 20000) _roomCreateHits.clear();
+    }
+    socket.data._roomPrefixes.add(prefix);
+    next();
+  });
+}
+const _roomCreateHits = new Map(); // key -> [ts]
 
 // =========================
 // Socket.IO 이벤트 rate-limit (IP 기준, 슬라이딩 윈도)
@@ -10738,10 +11080,7 @@ io.on("connection", (socket) => {
 
     const roomId = uuidv4();
     const inviteCode = generateInviteCode();
-    // 게스트는 방 생성 불가
-    if (me.isGuest) {
-      return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
-    }
+    // (2026-11-12) 게스트도 방 생성 가능 — 도배는 소켓 가드(_attachRoomGuard)가 막음
     // 이미 들어가 있던 방이 있으면 먼저 나감 (이전 방이 목록에 남아 방이 2개로 보이던 문제)
     { const prev = userRoomMap.get(me.id); if (prev && rooms.has(prev)) { try { _leaveRoomById(prev); } catch (e) { console.warn("[room:create] 이전 방 정리 실패", e?.message); } } }
 
@@ -14131,7 +14470,7 @@ async function _logStreamerChat({ platform, channelId, nickname, contentId, room
       content_title,
       content_mode,
       room_code: roomCode || null,
-      host_user_id: hostUserId || null,
+      host_user_id: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(hostUserId || "")) ? hostUserId : null, // 게스트 방장은 null
       host_nick,
     });
     console.log(`[STREAMER_LOG] ${platform} ch=${channelId} nick=${nickname || "?"} content=${content_title || "?"}`);

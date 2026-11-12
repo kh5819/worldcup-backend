@@ -716,9 +716,8 @@ export function registerOmok(io, supabaseAdmin) {
     socket.on("omok:createRoom", async (payload, cb) => {
       { const _f = createFlight("omok", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
-        // 게스트는 혼자 AI 대결용 방만 — 1대1 고정, 다른 사람 입장·설정 변경 불가
-        const guestAiOnly = !!me.isGuest;
-        if (guestAiOnly && payload?.soloAi !== true) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
+        // (2026-11-12) 게스트도 일반 방 만들기 가능. 게스트가 AI 대결로 만든 방만 혼자용(1대1 고정)
+        const guestAiOnly = !!me.isGuest && payload?.soloAi === true;
         if (omokUserRoom.has(me.id)) {
           const old = omokRooms.get(omokUserRoom.get(me.id));
           if (old) leavePlayer(io, old, me.id, true);
@@ -789,7 +788,7 @@ export function registerOmok(io, supabaseAdmin) {
         }
 
         const hostName = String(payload?.nickname || (guestAiOnly ? "게스트" : "방장")).slice(0, 20);
-        room.players.set(me.id, newPlayerState(hostName, guestAiOnly, avatar));
+        room.players.set(me.id, newPlayerState(hostName, !!me.isGuest, avatar));
         room.playerOrder.push(me.id);
         omokUserRoom.set(me.id, roomId);
         reassignColorsAndTeams(room);

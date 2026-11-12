@@ -375,7 +375,7 @@ export function registerRaisingPvp(io, supabaseAdmin) {
     socket.on("rpvp:createRoom", async (payload, cb) => {
       { const _f = createFlight("rpvp", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
-        if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
+        // (2026-11-12) 게스트도 방 만들기 가능 — 도배는 index.js 소켓 가드가 막음
         const old = myRoom();
         if (old) leavePlayer(io, old, me.id);
         const id = `rp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;

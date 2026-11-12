@@ -425,7 +425,7 @@ export function registerSuspect(io, supabaseAdmin) {
     socket.on("suspect:createRoom", async (payload, cb) => {
       { const _f = createFlight("suspect", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
-        if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
+        // (2026-11-12) 게스트도 방 만들기 가능 — 도배는 index.js 소켓 가드가 막음
         if (scUserRoom.has(me.id)) {
           const old = scRooms.get(scUserRoom.get(me.id));
           if (old) leavePlayer(io, old, me.id);

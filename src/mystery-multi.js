@@ -335,7 +335,7 @@ export function registerMysteryMulti(io, supabaseAdmin) {
       { const _f = createFlight("mysm", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
       try {
         if (!guard(cb)) return;
-        if (me.isGuest) return cb?.({ ok: false, error: "GUEST_CANNOT_CREATE" });
+        // (2026-11-12) 게스트도 방 만들기 가능 — 도배는 index.js 소켓 가드가 막음
         const old = myRoom(); if (old) removePlayer(io, old, me.id);
         const mode = payload?.mode === "race" ? "race" : "coop";
         const maxPlayers = Math.min(MAX_PLAYERS, Math.max(1, Number(payload?.maxPlayers) || MAX_PLAYERS));

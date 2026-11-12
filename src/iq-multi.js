@@ -181,7 +181,7 @@ export function registerIqMulti(io, supabaseAdmin) {
 
     on("iqm:create", async (p, reply) => {
       { const _f = createFlight("iqm", me?.id, reply); if (!_f) return; reply = _f; } // 방 중복 생성 막기
-      if (me.isGuest) return reply({ ok: false, error: "GUEST_CANNOT_CREATE" });
+        // (2026-11-12) 게스트도 방 만들기 가능 — 도배는 index.js 소켓 가드가 막음
       const old = myRoom(); if (old) removePlayer(io, old, me.id);
       const id = "iq" + now().toString(36) + Math.random().toString(36).slice(2, 6);
       const r = { id, code: genCode(), host: me.id, hostKey: `u:${me.id}`, maxPlayers: Math.min(MAX_PLAYERS, Math.max(1, Number(p.maxPlayers) || 8)), mode: MULTI_MODES.includes(p.mode) ? p.mode : "quick", plan: null, item: null, phase: "lobby", round: -1, players: new Map(), order: [], phaseEnd: null, startAt: null, deadline: null, lastRound: null, final: null, timer: null, emptyTimer: null, sb: supabaseAdmin };

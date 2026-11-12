@@ -141,13 +141,13 @@ export function registerFeelMulti(io, supabaseAdmin) {
     on("fm:mine", (_p, reply) => { const r = myRoom(); if (!r?.final?.individual?.[me.id]) return reply({ ok: false, error: "NO_RESULT" }); reply({ ok: true, result: r.final.individual[me.id] }); });
     on("fm:create", async (p, reply) => {
       { const _f = createFlight("fm", me?.id, reply); if (!_f) return; reply = _f; }   // 방 중복 생성 막기
-      if (me.isGuest) return reply({ ok: false, error: "GUEST_CANNOT_CREATE" });
+        // (2026-11-12) 게스트도 방 만들기 가능 — 도배는 index.js 소켓 가드가 막음
       const old = myRoom(); if (old) removePlayer(io, old, me.id);
       const id = "fm" + now().toString(36) + Math.random().toString(36).slice(2, 6);
       const set = MULTI_SETS[p.set] ? p.set : "all";
       const r = { id, code: genCode(), host: me.id, hostKey: `u:${me.id}`, maxPlayers: Math.min(MAX_PLAYERS, Math.max(2, Number(p.maxPlayers) || 8)), set, diff: C.okDiff(p.diff), tests: pickTests(set), phase: "lobby", round: -1, players: new Map(), order: [], seeds: null, phaseEnd: null, startAt: null, deadline: null, lastRound: null, final: null, timer: null, emptyTimer: null, sb: supabaseAdmin, isPublic: false };
       ROOMS.set(id, r); CODES.set(r.code, id);
-      const pl = newPlayer(p.profile?.nick, false, socket.id, p.device === "mobile" ? "mobile" : "pc"); await applyMember(pl, p); pl.best = await bestOf(supabaseAdmin, me.id, false);
+      const pl = newPlayer(p.profile?.nick, false, socket.id, p.device === "mobile" ? "mobile" : "pc"); await applyMember(pl, p); pl.best = await bestOf(supabaseAdmin, me.id, !!me.isGuest);
       r.players.set(me.id, pl); r.order.push(me.id); attach(r);
       reply({ ok: true, me: me.id, room: pubRoom(r) }); emitRoom(io, r);
     });

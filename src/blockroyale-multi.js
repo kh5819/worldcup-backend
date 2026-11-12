@@ -157,7 +157,7 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
     socket.on("br:createRoom", async (payload, cb) => {
       { const f = createFlight("br", me?.id, fn(cb)); if (!f) return; cb = f; }
       try {
-        if (me.isGuest) return cb({ ok: false, error: "GUEST_CANNOT_CREATE" });
+        // (2026-11-12) 게스트도 방 만들기 가능 — 도배는 index.js 소켓 가드가 막음
         const old = myRoom(); if (old) leave(io, old, me.id);
         const id = `br_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, inviteCode = genCode();
         const r = { id, inviteCode, hostUserId: me.id, status: "lobby", opts: { mode: "battle", maxPlayers: 50, isPublic: false, password: "", allowSpectate: true, countdown: 5, atkMul: 1, startLevel: 1, gameTimeSec: 0, teamCount: 2, rematch: true }, startsAt: null, deadline: null, total: 0, nextIdx: 0, players: new Map(), order: [], emptyTimer: null, gameTimer: null, tickTimer: null, net: { tick: 0 }, onFinish: (rr, rk, now) => saveRecords(supabaseAdmin, rr, rk, now) };
