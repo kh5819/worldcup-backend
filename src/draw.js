@@ -670,14 +670,17 @@ export function registerDraw(io, supabaseAdmin) {
       const room = roomId ? drawRooms.get(roomId) : null;
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       try {
-        await supabaseAdmin.from("draw_reports").insert({
+        // drawer_user_id·reporter_user_id는 uuid 칸 → 게스트(guest_xxx)는 NULL (넣으면 INSERT가 실패해 신고가 조용히 사라졌음)
+        const _isUuid = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v || ""));
+        const { error: repErr } = await supabaseAdmin.from("draw_reports").insert({
           room_id: room.id,
           round_no: room.currentRound,
-          drawer_user_id: room.currentDrawerId || null,
-          reporter_user_id: me.isGuest ? null : me.id,
+          drawer_user_id: _isUuid(room.currentDrawerId) ? room.currentDrawerId : null,
+          reporter_user_id: (!me.isGuest && _isUuid(me.id)) ? me.id : null,
           word: room.currentWord || null,
           status: "pending",
         });
+        if (repErr) { console.error("[draw:report] insert error", repErr.message); return cb?.({ ok: false, error: "INSERT_FAIL" }); }
         cb?.({ ok: true });
       } catch (e) {
         console.error("[draw:report] insert fail", e);
