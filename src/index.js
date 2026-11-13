@@ -261,7 +261,7 @@ function ipv6Net64(ip) {
 }
 
 // 쓰기 차단 대상 API (신고·제작 보조·발행·닉네임)
-const WRITE_ROUTE_RE = /^\/(api\/(youtube-videos|proxy-image)|reports|bingo-reports|ptest-reports|tier-reports|comment-reports|tier-multi\/publish|profile\/nickname|highlights\/submit|my\/contents\/)/;
+const WRITE_ROUTE_RE = /^\/(api\/(youtube-videos|proxy-image)|reports|bingo-reports|ptest-reports|tier-reports|comment-reports|tier-multi\/publish|tier\/guest-publish|profile\/nickname|highlights\/submit|my\/contents\/)/;
 app.use((req, res, next) => {
   if (isIpBanned(req.headers, req.socket?.remoteAddress)) {
     return res.status(403).json({ ok: false, error: "IP_BANNED" });
@@ -644,7 +644,7 @@ app.get("/og/tier-result/:id", async (req, res) => {
 
     const { data: inst, error } = await supabaseAdmin
       .from("tier_instances")
-      .select("id, template_id, user_id, vote_up_count, vote_down_count")
+      .select("id, template_id, user_id, guest_name, vote_up_count, vote_down_count")
       .eq("id", instanceId)
       .single();
 
@@ -674,6 +674,8 @@ app.get("/og/tier-result/:id", async (req, res) => {
         .eq("id", inst.user_id)
         .maybeSingle();
       creatorName = profile?.nickname || "";
+    } else if (inst.guest_name) {
+      creatorName = `${inst.guest_name}(게스트)`;
     }
 
     const tmplTitle = tmpl?.title || "티어";
@@ -3638,6 +3640,127 @@ app.post("/tier-multi/publish", requireAuth, async (req, res) => {
 });
 
 // =========================
+// 게스트 티어 발행 (솔로: POST /tier/guest-publish, 멀티: socket tier:guest-publish)
+// tier_instances.user_id = NULL + guest_name. 클라이언트는 RLS(user_id = auth.uid())로 NULL INSERT 불가 → 여기(service_role)서만 생성.
+// 원본 IP는 guest_comment_meta(comment_table='tier_instances')에 기록 → 관리자 "IP·부계정"/IP 차단 도구 그대로 사용.
+// =========================
+const TG_NAME_BAD = /(운영|관리자|admin|플듀|playduo|운영팀|매니저|staff)/;
+const TG_NAME_INVIS = /[\u0000-\u001f\u007f​-‏‪-‮⁠-⁤﻿ㅤᅟᅠ]/;
+const TG_IMG_OK = /^https:\/\/([a-z0-9]+\.supabase\.co\/storage\/|i\.ytimg\.com\/|img\.youtube\.com\/)/i;
+const TG_COLOR_OK = /^#[0-9a-f]{3,8}$/i;
+const _tierGuestHosts = new Map(); // tier_multi_results.id → { hostId, hostName, at } (게스트 방장만, 6시간)
+const TG_HOST_TTL_MS = 6 * 3600_000;
+
+function _tgCleanName(raw) {
+  const v = String(raw || "").trim().replace(/\s+/g, " ");
+  if (v.length < 1 || v.length > 12) return { error: "GUEST_NAME_REQUIRED" };
+  if (TG_NAME_INVIS.test(v)) return { error: "NAME_NOT_ALLOWED" };
+  if (TG_NAME_BAD.test(v.replace(/ /g, "").toLowerCase())) return { error: "NAME_NOT_ALLOWED" };
+  return { name: v };
+}
+
+/** 공용: 검증 + 도배 제한 + INSERT. 반환 { ok, instanceId } | { ok:false, error } */
+async function _guestTierPublish({ ip, guestName, templateId, tiers, placements, pool, boardType, boardState, titleOverride }) {
+  if (!ip) return { ok: false, error: "IP_UNKNOWN" };
+  const nm = _tgCleanName(guestName);
+  if (nm.error) return { ok: false, error: nm.error };
+  if (!UUID_RE.test(String(templateId || ""))) return { ok: false, error: "INVALID_TEMPLATE" };
+
+  const { data: tpl } = await supabaseAdmin.from("tier_templates")
+    .select("id, is_hidden, deleted_at").eq("id", templateId).maybeSingle();
+  if (!tpl || tpl.deleted_at || tpl.is_hidden) return { ok: false, error: "TEMPLATE_NOT_FOUND" };
+
+  // 크기 제한 (회원 저장과 같은 데이터지만 게스트는 상한을 둠)
+  let size = 0;
+  try { size = JSON.stringify({ tiers, placements, pool, boardState }).length; } catch { return { ok: false, error: "INVALID_BOARD" }; }
+  if (size > 300_000) return { ok: false, error: "TOO_LARGE" };
+
+  // 티어 줄: id/name/color/image_url만, 사진은 우리 저장소·유튜브 썸네일만
+  const cleanTiers = (Array.isArray(tiers) ? tiers : []).slice(0, 30).map((t) => ({
+    id: String(t?.id || "").slice(0, 60),
+    name: String(t?.name ?? "").slice(0, 40),
+    color: TG_COLOR_OK.test(String(t?.color || "")) ? t.color : "#888888",
+    ...(TG_IMG_OK.test(String(t?.image_url || "")) ? { image_url: String(t.image_url).slice(0, 1000) } : {}),
+  })).filter((t) => t.id);
+  const tierIds = new Set(cleanTiers.map((t) => t.id));
+  const cleanPlacements = {};
+  let placed = 0;
+  if (placements && typeof placements === "object" && !Array.isArray(placements)) {
+    for (const [k, arr] of Object.entries(placements)) {
+      if (!tierIds.has(k) || !Array.isArray(arr)) continue;
+      cleanPlacements[k] = arr.slice(0, 2000).map((x) => String(x).slice(0, 120));
+      placed += cleanPlacements[k].length;
+    }
+  }
+  const cleanPool = (Array.isArray(pool) ? pool : []).slice(0, 3000).map((x) => String(x).slice(0, 120));
+  const isBoard = !!boardType && boardState && typeof boardState === "object";
+  if (!isBoard && (!cleanTiers.length || placed === 0)) return { ok: false, error: "EMPTY_BOARD" };
+
+  // 도배 제한: IP당 10분 5개·1시간 20개, 사이트 전체 게스트 1분 30개
+  const since = (ms) => new Date(Date.now() - ms).toISOString();
+  const cnt = async (q) => { const { count } = await q; return count || 0; };
+  const base = () => supabaseAdmin.from("guest_comment_meta").select("comment_id", { count: "exact", head: true }).eq("comment_table", "tier_instances");
+  const [n10, n60, nAll] = await Promise.all([
+    cnt(base().eq("ip", ip).gte("created_at", since(10 * 60_000))),
+    cnt(base().eq("ip", ip).gte("created_at", since(60 * 60_000))),
+    cnt(base().gte("created_at", since(60_000))),
+  ]);
+  if (n10 >= 5 || n60 >= 20 || nAll >= 30) return { ok: false, error: "RATE_LIMITED" };
+
+  const row = {
+    template_id: templateId,
+    user_id: null,
+    guest_name: nm.name,
+    tiers: isBoard ? [] : cleanTiers,
+    placements: isBoard ? {} : cleanPlacements,
+    pool: isBoard ? [] : cleanPool,
+    added_cards: [], // 게스트는 카드 추가 불가 (외부 이미지 차단)
+    status: "published",
+    published_at: new Date().toISOString(),
+  };
+  if (isBoard) {
+    row.board_type = String(boardType).slice(0, 40);
+    row.board_state = boardState;
+    if (titleOverride) row.title_override = String(titleOverride).slice(0, 80);
+  }
+  const { data: inst, error: insErr } = await supabaseAdmin.from("tier_instances").insert(row).select("id").single();
+  if (insErr || !inst) { console.error("[tier guest-publish] insert error:", insErr?.message); return { ok: false, error: "DB_ERROR" }; }
+
+  const { error: metaErr } = await supabaseAdmin.from("guest_comment_meta").insert({ comment_table: "tier_instances", comment_id: inst.id, ip });
+  if (metaErr) {
+    // IP 기록이 없으면 도배 제한·IP 추적이 안 되므로 발행 취소 (fail-closed)
+    console.error("[tier guest-publish] meta insert error:", metaErr.message);
+    await supabaseAdmin.from("tier_instances").delete().eq("id", inst.id);
+    return { ok: false, error: "DB_ERROR" };
+  }
+  console.log(`[tier guest-publish] instance=${inst.id} template=${templateId} name=${nm.name}`);
+  return { ok: true, instanceId: inst.id };
+}
+
+// 솔로 게스트 발행
+app.post("/tier/guest-publish", optionalAuth, async (req, res) => {
+  try {
+    if (req.user?.id) return res.status(400).json({ ok: false, error: "USE_MEMBER_PUBLISH" }); // 회원은 기존 방식
+    const b = req.body || {};
+    const ip = primaryIp(req.headers, req.socket?.remoteAddress);
+    const r = await _guestTierPublish({
+      ip, guestName: b.guestName, templateId: b.templateId,
+      tiers: b.tiers, placements: b.placements, pool: b.pool,
+      boardType: b.boardType, boardState: b.boardState, titleOverride: b.titleOverride,
+    });
+    if (!r.ok) return res.status(r.error === "RATE_LIMITED" ? 429 : r.error === "DB_ERROR" ? 500 : 400).json(r);
+    // 플레이 횟수 +1 (회원 솔로 발행과 동일하게)
+    supabaseAdmin.rpc("increment_tier_play_count", { p_template_id: b.templateId }).then(({ error }) => {
+      if (error) console.error("[tier guest-publish] play_count error:", error.message);
+    });
+    return res.json(r);
+  } catch (err) {
+    console.error("POST /tier/guest-publish:", err);
+    return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
+  }
+});
+
+// =========================
 // 댓글 신고 API
 // =========================
 app.post("/comment-reports", optionalAuth, async (req, res) => {
@@ -4116,10 +4239,20 @@ app.post("/admin/ip-bans", requireAdmin, async (req, res) => {
       const { data: metas } = await supabaseAdmin.from("guest_comment_meta")
         .select("comment_table, comment_id").eq("ip", ip).gte("created_at", since).limit(2000);
       const byT = {};
+      const guestTierIds = [];
       for (const m of metas || []) {
         if (m.comment_table === "content_comments" || m.comment_table === "tier_instance_comments") {
           (byT[m.comment_table] = byT[m.comment_table] || []).push(m.comment_id);
+        } else if (m.comment_table === "tier_instances") {
+          guestTierIds.push(m.comment_id);
         }
+      }
+      // 게스트가 발행한 티어 결과도 정리 (soft delete — 관리자 싸움터 삭제와 같은 방식)
+      for (let i = 0; i < guestTierIds.length; i += 200) {
+        const chunk = guestTierIds.slice(i, i + 200);
+        const { error: tErr } = await supabaseAdmin.from("tier_instances")
+          .update({ deleted_at: new Date().toISOString(), is_hidden: true, hidden_reason: "관리자 IP 차단 정리" }).in("id", chunk).is("user_id", null).is("deleted_at", null);
+        if (!tErr) purged += chunk.length;
       }
       for (const [t, ids] of Object.entries(byT)) {
         for (let i = 0; i < ids.length; i += 200) {
@@ -5203,7 +5336,7 @@ app.get("/admin/users/:userId/ips", requireAdmin, async (req, res) => {
 // 게스트 글·댓글 IP 조회 (관리자 커뮤니티 탭 등) { items: [{ table, id }] } → { map: { "table::id": ip } }
 app.post("/admin/guest-ips", requireAdmin, async (req, res) => {
   try {
-    const OK = ["content_comments", "tier_instance_comments", "community_comments", "community_posts"];
+    const OK = ["content_comments", "tier_instance_comments", "community_comments", "community_posts", "tier_instances"];
     const items = Array.isArray(req.body?.items) ? req.body.items.slice(0, 500) : [];
     const pairs = items.filter(x => x && OK.includes(x.table) && typeof x.id === "string").map(x => [x.table, x.id]);
     const map = await fetchGuestCommentIps(pairs);
@@ -6379,7 +6512,7 @@ app.get("/admin/tier-reports", requireAdmin, async (req, res) => {
     if (battleIds.length > 0) {
       const { data: instances } = await supabaseAdmin
         .from("tier_instances")
-        .select("id, template_id, user_id, tiers, placements, is_hidden, deleted_at, created_at, tier_templates(id, title, cards)")
+        .select("id, template_id, user_id, guest_name, tiers, placements, is_hidden, deleted_at, created_at, tier_templates(id, title, cards)")
         .in("id", battleIds);
       if (instances) {
         for (const inst of instances) instancesMap[inst.id] = inst;
@@ -6426,7 +6559,7 @@ app.get("/admin/tier-reports", requireAdmin, async (req, res) => {
             template_cards: inst.tier_templates?.cards || [],
             tiers: inst.tiers,
             placements: inst.placements,
-            creator_name: profilesMap[inst.user_id] || inst.user_id?.slice(0, 8) || "-",
+            creator_name: profilesMap[inst.user_id] || inst.user_id?.slice(0, 8) || (inst.guest_name ? `${inst.guest_name}(게스트)` : "-"),
             is_hidden: inst.is_hidden,
             deleted_at: inst.deleted_at,
             created_at: inst.created_at,
@@ -10983,7 +11116,15 @@ async function finishTierGame(room) {
       duration_ms: durationMs,
     }).select("id").single();
     if (error) console.error("[tier:finished] DB save error:", error.message);
-    else { resultId = inserted?.id || null; console.log("[tier:finished] result saved:", resultId); }
+    else {
+      resultId = inserted?.id || null; console.log("[tier:finished] result saved:", resultId);
+      // 게스트 방장이면 발행 권한을 메모리에 기억 (socket tier:guest-publish에서 확인)
+      if (resultId && !UUID_RE.test(String(room.hostUserId || ""))) {
+        const now = Date.now();
+        for (const [k, v] of _tierGuestHosts) if (now - v.at > TG_HOST_TTL_MS) _tierGuestHosts.delete(k);
+        _tierGuestHosts.set(resultId, { hostId: room.hostUserId, hostName: room.players.get(room.hostUserId)?.name || "", at: now });
+      }
+    }
   } catch (err) {
     console.error("[tier:finished] DB save exception:", err);
   }
@@ -12129,6 +12270,46 @@ io.on("connection", (socket) => {
   // =============================================================
 
   /** tier:vote — 플레이어 슬롯 선택 제출 */
+  // 게스트 방장 멀티 티어 발행 (회원은 POST /tier-multi/publish)
+  safeOn(socket, "tier:guest-publish", async (payload, cb) => {
+    try {
+      if (!me.isGuest) return cb?.({ ok: false, error: "USE_MEMBER_PUBLISH" });
+      const hs = socket.handshake;
+      if (isIpBannedFor("write", hs.headers, hs.address)) return cb?.({ ok: false, error: "IP_BANNED" });
+      const resultId = String(payload?.resultId || "");
+      const info = _tierGuestHosts.get(resultId);
+      if (!info || Date.now() - info.at > TG_HOST_TTL_MS) return cb?.({ ok: false, error: "RESULT_NOT_FOUND" });
+      if (info.hostId !== me.id) return cb?.({ ok: false, error: "ONLY_HOST" });
+      if (info.busy) return cb?.({ ok: false, error: "IN_PROGRESS" });
+      info.busy = true;
+      try {
+        const { data: result } = await supabaseAdmin.from("tier_multi_results").select("*").eq("id", resultId).maybeSingle();
+        if (!result) return cb?.({ ok: false, error: "RESULT_NOT_FOUND" });
+        if (result.published_at) return cb?.({ ok: false, error: "ALREADY_PUBLISHED" });
+        const board = result.board;
+        if (!board?.tierMeta || !board?.tiers) return cb?.({ ok: false, error: "INVALID_BOARD" });
+        const tiers = board.tierMeta.map((m, i) => ({ id: m.id, name: m.name, image_url: m.image_url || "", color: MULTI_TIER_DEFAULT_COLORS[i % MULTI_TIER_DEFAULT_COLORS.length] }));
+        const placements = {};
+        for (const m of board.tierMeta) placements[m.id] = board.tiers[m.id] || [];
+        const r = await _guestTierPublish({
+          ip: primaryIp(hs.headers, hs.address),
+          guestName: payload?.guestName || String(info.hostName || "").trim().slice(0, 12) || "게스트", // 방 닉네임은 14자까지라 12자로 자름
+          templateId: result.template_id, tiers, placements, pool: [],
+        });
+        if (!r.ok) return cb?.(r);
+        await supabaseAdmin.from("tier_multi_results").update({ published_at: new Date().toISOString() }).eq("id", resultId);
+        supabaseAdmin.rpc("increment_tier_play_count", { p_template_id: result.template_id }).then(({ error }) => {
+          if (error) console.error("[tier:guest-publish] play_count error:", error.message);
+        });
+        _tierGuestHosts.delete(resultId);
+        return cb?.({ ok: true, instanceId: r.instanceId });
+      } finally { info.busy = false; }
+    } catch (err) {
+      console.error("[tier:guest-publish] error:", err);
+      return cb?.({ ok: false, error: "INTERNAL_ERROR" });
+    }
+  });
+
   safeOn(socket, "tier:vote", (payload, cb) => {
     const room = rooms.get(payload?.roomId);
     if (!room || room.mode !== "tier" || !room.tier) return cb?.({ ok: false, error: "NOT_TIER_ROOM" });
