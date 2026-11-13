@@ -11327,8 +11327,8 @@ io.on("connection", (socket) => {
 
   safeOn(socket, "room:create", async (payload, cb) => {
     { const _f = createFlight("room", me?.id, cb); if (!_f) return; cb = _f; } // 방 중복 생성 막기
-    // ban 체크
-    try {
+    // ban 체크 (회원만 — 게스트 ID는 uuid가 아니라 조회가 항상 실패했음. 게스트는 IP 차단으로 막음)
+    if (!me.isGuest) try {
       const { data: banRows } = await supabaseAdmin
         .from("bans")
         .select("id")
@@ -11399,7 +11399,7 @@ io.on("connection", (socket) => {
     inviteCodeMap.set(inviteCode, roomId);
 
     const hostNick = pickNick(socket, payload);
-    const hostPlayer = { name: hostNick, isGuest: false, joinedAt: Date.now(), avatar_url: null, team: null };
+    const hostPlayer = { name: hostNick, isGuest: !!me.isGuest, joinedAt: Date.now(), avatar_url: null, team: null }; // 게스트 방장도 "게스트" 표시
     // 프로필 아바타 조회 (비차단)
     if (me.id && !me.isGuest) {
       supabaseAdmin.from("profiles").select("avatar_url").eq("id", me.id).single()
