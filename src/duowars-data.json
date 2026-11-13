@@ -1,0 +1,2101 @@
+{
+ "version": 1,
+ "rules": {
+  "teamBaseHp": 6000,
+  "ffaBaseHp": 4500,
+  "suddenDeathSec": 360,
+  "startUnits": [
+   "malang",
+   "shield",
+   "spike",
+   "bounce"
+  ],
+  "maxLevel": 30
+ },
+ "difficulty": {
+  "easy": {
+   "name": "쉬움",
+   "hp": 0.75,
+   "atk": 0.8,
+   "rate": 0.8,
+   "baseHp": 0.85,
+   "coin": 0.8
+  },
+  "normal": {
+   "name": "보통",
+   "hp": 1,
+   "atk": 1,
+   "rate": 1,
+   "baseHp": 1,
+   "coin": 1
+  },
+  "hard": {
+   "name": "어려움",
+   "hp": 1.4,
+   "atk": 1.2,
+   "rate": 1.25,
+   "baseHp": 1.2,
+   "coin": 1.5
+  }
+ },
+ "units": {
+  "malang": {
+   "name": "말랑이",
+   "role": "기본 근접",
+   "desc": "싸고 빨리 나오는 말랑한 친구. 숫자로 밀어붙여요.",
+   "cost": 50,
+   "cd": 2,
+   "hp": 120,
+   "atk": 14,
+   "aspd": 1,
+   "windup": 0.32,
+   "range": 18,
+   "speed": 62,
+   "r": 15,
+   "kb": 2,
+   "rig": {
+    "type": "blob",
+    "body": "pink_circle",
+    "size": 34,
+    "face": "a",
+    "atkFace": "f",
+    "hand": "hand_pink_closed",
+    "feet": "#d94f86"
+   }
+  },
+  "shield": {
+   "name": "방패콩",
+   "role": "탱커",
+   "desc": "커다란 방패로 앞줄을 버텨요. 체력이 아주 높아요.",
+   "cost": 120,
+   "cd": 6,
+   "hp": 560,
+   "atk": 10,
+   "aspd": 1.4,
+   "windup": 0.4,
+   "range": 16,
+   "speed": 44,
+   "r": 18,
+   "kb": 4,
+   "rig": {
+    "type": "chibi",
+    "head": "green_squircle",
+    "size": 36,
+    "face": "e",
+    "atkFace": "g",
+    "body": "green_square",
+    "hand": "hand_green_closed",
+    "feet": "#1f8a4c",
+    "acc": "shield"
+   }
+  },
+  "spike": {
+   "name": "뾰족이",
+   "role": "근접 딜러",
+   "desc": "뾰족한 몸으로 콕! 한 방이 아주 아파요.",
+   "cost": 180,
+   "cd": 7,
+   "hp": 210,
+   "atk": 50,
+   "aspd": 1.25,
+   "windup": 0.45,
+   "range": 20,
+   "speed": 55,
+   "r": 16,
+   "kb": 2,
+   "rig": {
+    "type": "chibi",
+    "head": "red_rhombus",
+    "size": 38,
+    "face": "g",
+    "atkFace": "g",
+    "body": "red_circle",
+    "hand": "hand_red_point",
+    "feet": "#a0283c",
+    "acc": "spikes"
+   }
+  },
+  "bounce": {
+   "name": "콩콩이",
+   "role": "속공",
+   "desc": "통통 튀며 가장 먼저 달려가요. 빠르게 쌓이는 연타!",
+   "cost": 90,
+   "cd": 3,
+   "hp": 110,
+   "atk": 16,
+   "aspd": 0.65,
+   "windup": 0.18,
+   "range": 16,
+   "speed": 115,
+   "r": 14,
+   "kb": 2,
+   "rig": {
+    "type": "chibi",
+    "head": "blue_circle",
+    "size": 30,
+    "face": "h",
+    "atkFace": "f",
+    "body": "blue_circle",
+    "hand": "hand_blue_closed",
+    "feet": "#2d5fb8",
+    "acc": "spring",
+    "hop": 1
+   }
+  },
+  "duck": {
+   "name": "슈팅덕",
+   "role": "원거리",
+   "desc": "물총 대신 콩알탄! 멀리서 또박또박 쏴요.",
+   "cost": 220,
+   "cd": 8,
+   "hp": 150,
+   "atk": 34,
+   "aspd": 1.5,
+   "windup": 0.42,
+   "range": 200,
+   "speed": 45,
+   "r": 15,
+   "kb": 2,
+   "proj": {
+    "speed": 460,
+    "kind": "pea"
+   },
+   "rig": {
+    "type": "animal",
+    "head": "an_duck",
+    "size": 40,
+    "body": "gold_circle",
+    "hand": "hand_yellow_closed",
+    "feet": "#e08a1e",
+    "acc": "blaster"
+   }
+  },
+  "potato": {
+   "name": "폭탄감자",
+   "role": "범위 공격",
+   "desc": "폭탄을 던져 뭉친 적을 한꺼번에 날려요.",
+   "cost": 300,
+   "cd": 10,
+   "hp": 190,
+   "atk": 72,
+   "aspd": 2.4,
+   "windup": 0.6,
+   "range": 160,
+   "speed": 40,
+   "r": 16,
+   "kb": 2,
+   "aoe": 70,
+   "fx": "boom",
+   "proj": {
+    "speed": 300,
+    "kind": "bomb",
+    "arc": 1
+   },
+   "rig": {
+    "type": "chibi",
+    "head": "potato_squircle",
+    "size": 38,
+    "face": "c",
+    "atkFace": "g",
+    "body": "potato_squircle",
+    "hand": "hand_potato_closed",
+    "feet": "#8a5a28",
+    "acc": "bomb"
+   }
+  },
+  "jelly": {
+   "name": "힐링젤리",
+   "role": "지원",
+   "desc": "뒤에서 말랑한 기운으로 주변 아군을 회복해요.",
+   "cost": 260,
+   "cd": 14,
+   "hp": 230,
+   "atk": 8,
+   "aspd": 2.6,
+   "windup": 0.5,
+   "range": 110,
+   "speed": 42,
+   "r": 15,
+   "kb": 2,
+   "special": "heal",
+   "heal": 38,
+   "healRange": 130,
+   "support": true,
+   "keepBack": 80,
+   "proj": {
+    "speed": 360,
+    "kind": "bubble"
+   },
+   "rig": {
+    "type": "blob",
+    "body": "green_circle",
+    "size": 36,
+    "face": "l",
+    "atkFace": "l",
+    "hand": "hand_green_open",
+    "feet": "#1f8a4c",
+    "alpha": 0.88,
+    "acc": "halo"
+   }
+  },
+  "rabbit": {
+   "name": "얼음토끼",
+   "role": "제어",
+   "desc": "얼음 당근을 던져 적을 느리게 만들어요.",
+   "cost": 240,
+   "cd": 10,
+   "hp": 210,
+   "atk": 22,
+   "aspd": 1.3,
+   "windup": 0.36,
+   "range": 130,
+   "speed": 50,
+   "r": 15,
+   "kb": 2,
+   "slow": {
+    "pct": 0.45,
+    "dur": 3
+   },
+   "proj": {
+    "speed": 380,
+    "kind": "ice"
+   },
+   "rig": {
+    "type": "animal",
+    "head": "an_rabbit",
+    "size": 40,
+    "body": "ice_circle",
+    "hand": "hand_white_closed",
+    "feet": "#7fb4d8",
+    "acc": "scarf"
+   }
+  },
+  "chick": {
+   "name": "번개삐",
+   "role": "광역 딜러",
+   "desc": "찌릿! 번개가 적 사이를 튀어 다녀요.",
+   "cost": 380,
+   "cd": 14,
+   "hp": 180,
+   "atk": 46,
+   "aspd": 2,
+   "windup": 0.5,
+   "range": 175,
+   "speed": 46,
+   "r": 15,
+   "kb": 2,
+   "chain": 4,
+   "rig": {
+    "type": "animal",
+    "head": "an_chick",
+    "size": 38,
+    "body": "gold_circle",
+    "hand": "hand_yellow_open",
+    "feet": "#e0a01e",
+    "acc": "bolt"
+   }
+  },
+  "bear": {
+   "name": "철갑곰",
+   "role": "중장갑",
+   "desc": "철갑을 두른 곰. 밀려나지 않고 주변을 후려쳐요.",
+   "cost": 450,
+   "cd": 18,
+   "hp": 1450,
+   "atk": 42,
+   "aspd": 1.8,
+   "windup": 0.55,
+   "range": 22,
+   "speed": 32,
+   "r": 22,
+   "kb": 1,
+   "kbRes": 0.85,
+   "aoe": 46,
+   "fx": "slash",
+   "armor": 0.15,
+   "rig": {
+    "type": "animal",
+    "head": "an_bear",
+    "size": 46,
+    "body": "steel_square",
+    "hand": "hand_steel_closed",
+    "feet": "#55606e",
+    "acc": "armor",
+    "scale": 1.15
+   }
+  },
+  "cat": {
+   "name": "그림자냥",
+   "role": "암살",
+   "desc": "그림자처럼 순식간에 달려들어 첫 일격이 두 배!",
+   "cost": 330,
+   "cd": 12,
+   "hp": 250,
+   "atk": 88,
+   "aspd": 1.6,
+   "windup": 0.3,
+   "range": 20,
+   "speed": 92,
+   "r": 15,
+   "kb": 2,
+   "special": "dash",
+   "rig": {
+    "type": "chibi",
+    "head": "shadow_squircle",
+    "size": 36,
+    "face": "h",
+    "atkFace": "g",
+    "body": "shadow_squircle",
+    "hand": "hand_shadow_closed",
+    "feet": "#2a2340",
+    "acc": "catears",
+    "eyesGlow": 1
+   }
+  },
+  "octo": {
+   "name": "우주문어",
+   "role": "초고비용",
+   "desc": "우주에서 온 대왕 문어. 먹물 폭격으로 전장을 쓸어버려요.",
+   "cost": 1200,
+   "cd": 45,
+   "hp": 1700,
+   "atk": 260,
+   "aspd": 3.2,
+   "windup": 0.9,
+   "range": 240,
+   "speed": 28,
+   "r": 26,
+   "kb": 3,
+   "aoe": 140,
+   "fx": "ink",
+   "proj": {
+    "speed": 280,
+    "kind": "ink",
+    "arc": 1
+   },
+   "rig": {
+    "type": "blob",
+    "body": "purple_circle",
+    "size": 58,
+    "face": "f",
+    "atkFace": "g",
+    "hand": "hand_purple_open",
+    "feet": "#6b3fb8",
+    "acc": "tentacles",
+    "helmet": 1,
+    "scale": 1.2
+   }
+  }
+ },
+ "unlocks": {
+  "1": "duck",
+  "2": "potato",
+  "3": "jelly",
+  "4": "rabbit",
+  "5": "chick",
+  "6": "cat",
+  "7": "bear",
+  "8": "octo"
+ },
+ "enemies": {
+  "slime": {
+   "name": "말랑슬라임",
+   "desc": "가장 흔한 슬라임. 약하지만 떼로 와요.",
+   "hp": 90,
+   "atk": 10,
+   "aspd": 1.1,
+   "windup": 0.35,
+   "range": 16,
+   "speed": 40,
+   "r": 15,
+   "kb": 2,
+   "reward": 14,
+   "sprite": {
+    "idle": [
+     "en_slimeGreen"
+    ],
+    "move": [
+     "en_slimeGreen",
+     "en_slimeGreen_move"
+    ],
+    "hit": "en_slimeGreen_hit",
+    "dead": "en_slimeGreen_dead",
+    "h": 58
+   }
+  },
+  "mouse": {
+   "name": "쪼르르쥐",
+   "desc": "재빠르게 파고드는 쥐.",
+   "hp": 70,
+   "atk": 9,
+   "aspd": 0.8,
+   "windup": 0.2,
+   "range": 14,
+   "speed": 105,
+   "r": 13,
+   "kb": 1,
+   "reward": 16,
+   "sprite": {
+    "idle": [
+     "en_mouse"
+    ],
+    "move": [
+     "en_mouse",
+     "en_mouse_move"
+    ],
+    "dead": "en_mouse_dead",
+    "h": 52
+   }
+  },
+  "bee": {
+   "name": "침쏘는벌",
+   "desc": "멀리서 침을 쏘는 벌.",
+   "hp": 85,
+   "atk": 16,
+   "aspd": 1.6,
+   "windup": 0.4,
+   "range": 150,
+   "speed": 50,
+   "r": 13,
+   "kb": 1,
+   "reward": 22,
+   "proj": {
+    "speed": 360,
+    "kind": "sting"
+   },
+   "sprite": {
+    "idle": [
+     "en_bee"
+    ],
+    "move": [
+     "en_bee",
+     "en_bee_move"
+    ],
+    "dead": "en_bee_dead",
+    "h": 52,
+    "float": 1
+   }
+  },
+  "iceslime": {
+   "name": "얼음슬라임",
+   "desc": "맞으면 몸이 꽁꽁 느려져요.",
+   "hp": 170,
+   "atk": 12,
+   "aspd": 1.2,
+   "windup": 0.38,
+   "range": 16,
+   "speed": 34,
+   "r": 16,
+   "kb": 2,
+   "reward": 24,
+   "slow": {
+    "pct": 0.35,
+    "dur": 2.5
+   },
+   "sprite": {
+    "idle": [
+     "en_slimeBlue"
+    ],
+    "move": [
+     "en_slimeBlue",
+     "en_slimeBlue_move"
+    ],
+    "hit": "en_slimeBlue_hit",
+    "dead": "en_slimeBlue_dead",
+    "h": 64
+   }
+  },
+  "ladybug": {
+   "name": "폭탄무당",
+   "desc": "등껍질 폭탄으로 주변을 터뜨려요.",
+   "hp": 150,
+   "atk": 30,
+   "aspd": 2.2,
+   "windup": 0.55,
+   "range": 90,
+   "speed": 38,
+   "r": 15,
+   "kb": 2,
+   "reward": 30,
+   "aoe": 60,
+   "fx": "boom",
+   "proj": {
+    "speed": 260,
+    "kind": "bomb",
+    "arc": 1
+   },
+   "sprite": {
+    "idle": [
+     "en_ladybug"
+    ],
+    "move": [
+     "en_ladybug",
+     "en_ladybug_move"
+    ],
+    "dead": "en_ladybug_fly",
+    "h": 56
+   }
+  },
+  "ghostfly": {
+   "name": "유령파리",
+   "desc": "눈 깜짝할 새 날아드는 파리.",
+   "hp": 95,
+   "atk": 15,
+   "aspd": 0.9,
+   "windup": 0.22,
+   "range": 16,
+   "speed": 125,
+   "r": 13,
+   "kb": 1,
+   "reward": 22,
+   "sprite": {
+    "idle": [
+     "en_fly"
+    ],
+    "move": [
+     "en_fly",
+     "en_fly_move"
+    ],
+    "dead": "en_fly_dead",
+    "h": 48,
+    "float": 1,
+    "ghost": 1
+   }
+  },
+  "snail": {
+   "name": "강철달팽이",
+   "desc": "단단한 껍질. 웬만한 공격은 덜 아파요.",
+   "hp": 720,
+   "atk": 22,
+   "aspd": 1.6,
+   "windup": 0.5,
+   "range": 18,
+   "speed": 22,
+   "r": 18,
+   "kb": 1,
+   "kbRes": 0.6,
+   "armor": 0.35,
+   "reward": 60,
+   "sprite": {
+    "idle": [
+     "en_snail"
+    ],
+    "move": [
+     "en_snail",
+     "en_snail_move"
+    ],
+    "dead": "en_snail_shell",
+    "h": 66
+   }
+  },
+  "wingman": {
+   "name": "날개돌이",
+   "desc": "앞이 막히면 훌쩍 뛰어넘어 뒤를 노려요.",
+   "hp": 160,
+   "atk": 24,
+   "aspd": 1.1,
+   "windup": 0.3,
+   "range": 18,
+   "speed": 60,
+   "r": 15,
+   "kb": 2,
+   "reward": 34,
+   "special": "leap",
+   "sprite": {
+    "idle": [
+     "je_wingMan1"
+    ],
+    "move": [
+     "je_wingMan1",
+     "je_wingMan2",
+     "je_wingMan3",
+     "je_wingMan4",
+     "je_wingMan5",
+     "je_wingMan4",
+     "je_wingMan3",
+     "je_wingMan2"
+    ],
+    "dead": "je_wingMan5",
+    "h": 52,
+    "float": 1
+   }
+  },
+  "spikeman": {
+   "name": "가시돌이",
+   "desc": "가시 갑옷 병사. 긴급 방어 때 튀어나와요.",
+   "hp": 320,
+   "atk": 28,
+   "aspd": 1.2,
+   "windup": 0.35,
+   "range": 18,
+   "speed": 48,
+   "r": 16,
+   "kb": 2,
+   "reward": 40,
+   "armor": 0.15,
+   "sprite": {
+    "idle": [
+     "je_spikeMan_stand"
+    ],
+    "move": [
+     "je_spikeMan_walk1",
+     "je_spikeMan_walk2"
+    ],
+    "dead": "je_spikeMan_jump",
+    "h": 54
+   }
+  }
+ },
+ "bosses": {
+  "kingslime": {
+   "name": "킹 슬라임",
+   "title": "젤리 왕국의 폭군",
+   "hp": 3600,
+   "atk": 60,
+   "aspd": 2,
+   "windup": 0.7,
+   "range": 40,
+   "speed": 18,
+   "r": 46,
+   "kb": 3,
+   "kbRes": 0.9,
+   "reward": 300,
+   "aoe": 70,
+   "fx": "slam",
+   "specEvery": 9,
+   "spec": {
+    "type": "summon",
+    "unit": "slime",
+    "count": 3
+   },
+   "enrageAt": 0.5,
+   "sprite": {
+    "idle": [
+     "en_slimePurple"
+    ],
+    "move": [
+     "en_slimePurple",
+     "en_slimePurple_move"
+    ],
+    "hit": "en_slimePurple_hit",
+    "dead": "en_slimePurple_dead",
+    "h": 210,
+    "crown": 0.5
+   }
+  },
+  "golem": {
+   "name": "기계 골렘",
+   "title": "공장의 심장",
+   "hp": 8200,
+   "atk": 90,
+   "aspd": 2.2,
+   "windup": 0.8,
+   "range": 50,
+   "speed": 14,
+   "r": 52,
+   "kb": 3,
+   "kbRes": 0.95,
+   "reward": 500,
+   "armor": 0.2,
+   "aoe": 60,
+   "fx": "slam",
+   "specEvery": 8,
+   "spec": {
+    "type": "laser",
+    "len": 430,
+    "mul": 0.8
+   },
+   "enrageAt": 0.4,
+   "rig": {
+    "type": "monster",
+    "body": "mb_body_whiteC",
+    "arm": "mb_arm_whiteA",
+    "leg": "mb_leg_whiteA",
+    "eye": "mb_eye_angry_red",
+    "eyes": 1,
+    "mouth": "mb_mouth_closed_teeth",
+    "horn": "mb_ant_white",
+    "size": 120,
+    "tint": "#9aa6b8"
+   }
+  },
+  "demon": {
+   "name": "혼돈 마왕",
+   "title": "최후의 전장의 주인",
+   "hp": 15500,
+   "atk": 140,
+   "aspd": 2,
+   "windup": 0.8,
+   "range": 60,
+   "speed": 14,
+   "r": 58,
+   "kb": 4,
+   "kbRes": 0.95,
+   "reward": 900,
+   "armor": 0.2,
+   "aoe": 80,
+   "fx": "slam",
+   "specEvery": 7,
+   "enrageAt": 0.5,
+   "spec": {
+    "type": "multi",
+    "list": [
+     {
+      "type": "quake",
+      "r": 130,
+      "mul": 1.1,
+      "offset": 70
+     },
+     {
+      "type": "summon",
+      "unit": "ghostfly",
+      "count": 4
+     },
+     {
+      "type": "laser",
+      "len": 520,
+      "mul": 0.9
+     }
+    ]
+   },
+   "rig": {
+    "type": "monster",
+    "body": "mb_body_darkA",
+    "arm": "mb_arm_darkC",
+    "leg": "mb_leg_darkA",
+    "eye": "mb_eye_psycho_light",
+    "eyes": 2,
+    "mouth": "mb_mouth_closed_fangs",
+    "horn": "mb_horn_red",
+    "size": 135
+   }
+  }
+ },
+ "stages": [
+  {
+   "id": 1,
+   "name": "말랑 초원",
+   "desc": "기본 조작을 배워요. 말랑이를 불러 슬라임을 밀어내세요!",
+   "length": 1900,
+   "playerBaseHp": 2500,
+   "enemyBaseHp": 2000,
+   "theme": {
+    "bg": "grass",
+    "ground": "grass",
+    "sky": [
+     "#bfe8ff",
+     "#e9f8ff"
+    ],
+    "deco": [
+     "tree",
+     "bush1",
+     "treeSmall_green1",
+     "bush2",
+     "fence",
+     "tree"
+    ],
+    "weather": "petals",
+    "tint": null
+   },
+   "waves": [
+    {
+     "unit": "slime",
+     "at": 4,
+     "every": 6.5,
+     "until": 999
+    },
+    {
+     "unit": "mouse",
+     "at": 55,
+     "every": 14,
+     "until": 999
+    }
+   ],
+   "emergency": [
+    {
+     "pct": 0.5,
+     "spawn": [
+      {
+       "unit": "slime",
+       "n": 4
+      }
+     ]
+    }
+   ],
+   "reward": {
+    "first": 300,
+    "repeat": 90
+   },
+   "par": 120
+  },
+  {
+   "id": 2,
+   "name": "버섯 숲",
+   "desc": "약한 적이 우르르! 범위 공격이 빛나요.",
+   "length": 2100,
+   "playerBaseHp": 2800,
+   "enemyBaseHp": 2600,
+   "theme": {
+    "bg": "shroom",
+    "ground": "dirt",
+    "sky": [
+     "#ffe0f0",
+     "#fff6e9"
+    ],
+    "deco": [
+     "treeLongOrange",
+     "bushOrange1",
+     "treeOrange",
+     "bushAlt1"
+    ],
+    "weather": "spores",
+    "tint": null
+   },
+   "waves": [
+    {
+     "unit": "slime",
+     "at": 3,
+     "every": 4.5,
+     "batch": 2,
+     "until": 999
+    },
+    {
+     "unit": "mouse",
+     "at": 20,
+     "every": 8,
+     "until": 999
+    }
+   ],
+   "emergency": [
+    {
+     "pct": 0.5,
+     "spawn": [
+      {
+       "unit": "mouse",
+       "n": 6
+      }
+     ]
+    }
+   ],
+   "advance": {
+    "at": 0.6,
+    "spawn": [
+     {
+      "unit": "slime",
+      "n": 6
+     }
+    ]
+   },
+   "reward": {
+    "first": 450,
+    "repeat": 120
+   },
+   "par": 140
+  },
+  {
+   "id": 3,
+   "name": "장난감 도시",
+   "desc": "멀리서 침을 쏘는 벌이 나타나요. 원거리로 맞서세요.",
+   "length": 2200,
+   "playerBaseHp": 3000,
+   "enemyBaseHp": 3200,
+   "theme": {
+    "bg": "land",
+    "ground": "stone",
+    "sky": [
+     "#d8ecff",
+     "#fff"
+    ],
+    "deco": [
+     "house1",
+     "houseAlt1",
+     "houseSmall1",
+     "house2",
+     "towerSmall",
+     "houseSmallAlt1"
+    ],
+    "weather": "confetti",
+    "tint": null
+   },
+   "waves": [
+    {
+     "unit": "slime",
+     "at": 3,
+     "every": 6,
+     "until": 999
+    },
+    {
+     "unit": "bee",
+     "at": 15,
+     "every": 9,
+     "until": 999
+    },
+    {
+     "unit": "mouse",
+     "at": 40,
+     "every": 10,
+     "until": 999
+    }
+   ],
+   "emergency": [
+    {
+     "pct": 0.5,
+     "spawn": [
+      {
+       "unit": "bee",
+       "n": 4
+      }
+     ]
+    }
+   ],
+   "advance": {
+    "at": 0.6,
+    "spawn": [
+     {
+      "unit": "bee",
+      "n": 3
+     },
+     {
+      "unit": "slime",
+      "n": 3
+     }
+    ]
+   },
+   "reward": {
+    "first": 600,
+    "repeat": 150
+   },
+   "par": 150
+  },
+  {
+   "id": 4,
+   "name": "얼음 동굴",
+   "desc": "얼음슬라임에 맞으면 느려져요. 그리고… 킹 슬라임이 깨어나요!",
+   "length": 2300,
+   "playerBaseHp": 3200,
+   "enemyBaseHp": 3800,
+   "theme": {
+    "bg": "blueland",
+    "ground": "snow",
+    "sky": [
+     "#a9d6f5",
+     "#e8f6ff"
+    ],
+    "deco": [
+     "treePineSnow",
+     "treeSnow",
+     "treeFrozen",
+     "treeLongFrozen",
+     "treePineFrozen"
+    ],
+    "weather": "snow",
+    "tint": "rgba(160,210,255,0.18)"
+   },
+   "waves": [
+    {
+     "unit": "iceslime",
+     "at": 4,
+     "every": 8,
+     "until": 999
+    },
+    {
+     "unit": "slime",
+     "at": 10,
+     "every": 7,
+     "until": 999
+    },
+    {
+     "unit": "bee",
+     "at": 60,
+     "every": 12,
+     "until": 999
+    }
+   ],
+   "bosses": [
+    {
+     "id": "kingslime",
+     "at": 110
+    }
+   ],
+   "emergency": [
+    {
+     "pct": 0.35,
+     "spawn": [
+      {
+       "unit": "iceslime",
+       "n": 4
+      }
+     ]
+    }
+   ],
+   "reward": {
+    "first": 800,
+    "repeat": 180
+   },
+   "par": 180
+  },
+  {
+   "id": 5,
+   "name": "화산 지대",
+   "desc": "폭탄무당이 뭉친 아군을 노려요. 흩어져서 싸우세요.",
+   "length": 2400,
+   "playerBaseHp": 3400,
+   "enemyBaseHp": 4300,
+   "theme": {
+    "bg": "desert",
+    "ground": "sand",
+    "sky": [
+     "#ff9a6b",
+     "#ffd9a8"
+    ],
+    "deco": [
+     "treeDead",
+     "cactus1",
+     "pyramid",
+     "cactus3",
+     "treeDead"
+    ],
+    "weather": "embers",
+    "tint": "rgba(255,90,40,0.16)"
+   },
+   "waves": [
+    {
+     "unit": "ladybug",
+     "at": 6,
+     "every": 10,
+     "until": 999
+    },
+    {
+     "unit": "slime",
+     "at": 3,
+     "every": 6,
+     "until": 999
+    },
+    {
+     "unit": "mouse",
+     "at": 30,
+     "every": 9,
+     "until": 999
+    }
+   ],
+   "emergency": [
+    {
+     "pct": 0.5,
+     "spawn": [
+      {
+       "unit": "ladybug",
+       "n": 3
+      }
+     ]
+    }
+   ],
+   "advance": {
+    "at": 0.6,
+    "spawn": [
+     {
+      "unit": "ladybug",
+      "n": 3
+     }
+    ]
+   },
+   "reward": {
+    "first": 1000,
+    "repeat": 210
+   },
+   "par": 180
+  },
+  {
+   "id": 6,
+   "name": "유령 마을",
+   "desc": "유령파리가 순식간에 날아들어요. 앞줄을 두껍게!",
+   "length": 2400,
+   "playerBaseHp": 3600,
+   "enemyBaseHp": 4800,
+   "theme": {
+    "bg": "castles",
+    "ground": "stone",
+    "sky": [
+     "#3a2f5c",
+     "#6b5a8e"
+    ],
+    "deco": [
+     "treeDead",
+     "houseSmallAlt1",
+     "fenceIron",
+     "moonFull",
+     "treeDead",
+     "houseAlt2"
+    ],
+    "weather": "fog",
+    "tint": "rgba(40,20,80,0.35)",
+    "night": 1
+   },
+   "waves": [
+    {
+     "unit": "ghostfly",
+     "at": 5,
+     "every": 6,
+     "until": 999
+    },
+    {
+     "unit": "slime",
+     "at": 3,
+     "every": 7,
+     "until": 999
+    },
+    {
+     "unit": "bee",
+     "at": 40,
+     "every": 11,
+     "until": 999
+    }
+   ],
+   "emergency": [
+    {
+     "pct": 0.5,
+     "spawn": [
+      {
+       "unit": "ghostfly",
+       "n": 6
+      }
+     ]
+    }
+   ],
+   "reward": {
+    "first": 1200,
+    "repeat": 240
+   },
+   "par": 190
+  },
+  {
+   "id": 7,
+   "name": "기계 공장",
+   "desc": "단단한 강철달팽이와 기계 골렘. 강한 한 방이 필요해요.",
+   "length": 2500,
+   "playerBaseHp": 3800,
+   "enemyBaseHp": 5400,
+   "theme": {
+    "bg": "empty",
+    "ground": "stone",
+    "sky": [
+     "#8a96a8",
+     "#c9d1dc"
+    ],
+    "deco": [
+     "towerAlt",
+     "castleWallAlt",
+     "towerSmallAlt",
+     "fenceIron"
+    ],
+    "weather": "sparks",
+    "tint": "rgba(80,90,110,0.25)",
+    "gears": 1
+   },
+   "waves": [
+    {
+     "unit": "snail",
+     "at": 8,
+     "every": 15,
+     "until": 999
+    },
+    {
+     "unit": "slime",
+     "at": 3,
+     "every": 6,
+     "until": 999
+    },
+    {
+     "unit": "ladybug",
+     "at": 40,
+     "every": 14,
+     "until": 999
+    }
+   ],
+   "bosses": [
+    {
+     "id": "golem",
+     "at": 140
+    }
+   ],
+   "emergency": [
+    {
+     "pct": 0.4,
+     "spawn": [
+      {
+       "unit": "spikeman",
+       "n": 4
+      }
+     ]
+    }
+   ],
+   "reward": {
+    "first": 1500,
+    "repeat": 270
+   },
+   "par": 210
+  },
+  {
+   "id": 8,
+   "name": "하늘 왕국",
+   "desc": "날개돌이는 앞줄을 뛰어넘어요. 뒤쪽도 지키세요.",
+   "length": 2500,
+   "playerBaseHp": 4000,
+   "enemyBaseHp": 6000,
+   "theme": {
+    "bg": "empty",
+    "ground": "planet",
+    "sky": [
+     "#7ec8ff",
+     "#e9f7ff"
+    ],
+    "deco": [
+     "cloud1",
+     "castleSmall",
+     "cloud3",
+     "tower",
+     "cloud5"
+    ],
+    "weather": "clouds",
+    "tint": null,
+    "sky2": 1
+   },
+   "waves": [
+    {
+     "unit": "wingman",
+     "at": 5,
+     "every": 8,
+     "until": 999
+    },
+    {
+     "unit": "bee",
+     "at": 10,
+     "every": 10,
+     "until": 999
+    },
+    {
+     "unit": "mouse",
+     "at": 20,
+     "every": 9,
+     "until": 999
+    }
+   ],
+   "emergency": [
+    {
+     "pct": 0.5,
+     "spawn": [
+      {
+       "unit": "wingman",
+       "n": 5
+      }
+     ]
+    }
+   ],
+   "advance": {
+    "at": 0.55,
+    "spawn": [
+     {
+      "unit": "wingman",
+      "n": 4
+     }
+    ]
+   },
+   "reward": {
+    "first": 1800,
+    "repeat": 300
+   },
+   "par": 210
+  },
+  {
+   "id": 9,
+   "name": "혼돈의 성",
+   "desc": "모든 적이 뒤섞여 몰려와요. 킹 슬라임과 골렘까지!",
+   "length": 2600,
+   "playerBaseHp": 4200,
+   "enemyBaseHp": 7000,
+   "theme": {
+    "bg": "castles",
+    "ground": "dirt",
+    "sky": [
+     "#c0392b",
+     "#f5b7a0"
+    ],
+    "deco": [
+     "castleWall",
+     "tower",
+     "castleSmallAlt",
+     "towerSmall",
+     "treeDead"
+    ],
+    "weather": "embers",
+    "tint": "rgba(160,20,30,0.22)"
+   },
+   "waves": [
+    {
+     "unit": "slime",
+     "at": 3,
+     "every": 5,
+     "until": 999
+    },
+    {
+     "unit": "ladybug",
+     "at": 15,
+     "every": 12,
+     "until": 999
+    },
+    {
+     "unit": "ghostfly",
+     "at": 25,
+     "every": 9,
+     "until": 999
+    },
+    {
+     "unit": "snail",
+     "at": 45,
+     "every": 20,
+     "until": 999
+    },
+    {
+     "unit": "wingman",
+     "at": 60,
+     "every": 12,
+     "until": 999
+    }
+   ],
+   "bosses": [
+    {
+     "id": "kingslime",
+     "at": 90
+    },
+    {
+     "id": "golem",
+     "at": 180
+    }
+   ],
+   "emergency": [
+    {
+     "pct": 0.5,
+     "spawn": [
+      {
+       "unit": "spikeman",
+       "n": 5
+      }
+     ]
+    }
+   ],
+   "reward": {
+    "first": 2200,
+    "repeat": 340
+   },
+   "par": 240
+  },
+  {
+   "id": 10,
+   "name": "최후의 전장",
+   "desc": "혼돈 마왕이 기다리고 있어요. 모든 힘을 모으세요!",
+   "length": 2700,
+   "playerBaseHp": 4500,
+   "enemyBaseHp": 8000,
+   "theme": {
+    "bg": "castles",
+    "ground": "planet",
+    "sky": [
+     "#1b1030",
+     "#4a2a6e"
+    ],
+    "deco": [
+     "towerAlt",
+     "castleWallAlt",
+     "moon",
+     "treeDead",
+     "towerSmallAlt"
+    ],
+    "weather": "storm",
+    "tint": "rgba(30,10,60,0.4)",
+    "night": 1
+   },
+   "waves": [
+    {
+     "unit": "slime",
+     "at": 3,
+     "every": 5,
+     "until": 999
+    },
+    {
+     "unit": "bee",
+     "at": 10,
+     "every": 10,
+     "until": 999
+    },
+    {
+     "unit": "ghostfly",
+     "at": 20,
+     "every": 8,
+     "until": 999
+    },
+    {
+     "unit": "snail",
+     "at": 40,
+     "every": 18,
+     "until": 999
+    },
+    {
+     "unit": "ladybug",
+     "at": 50,
+     "every": 12,
+     "until": 999
+    }
+   ],
+   "bosses": [
+    {
+     "id": "demon",
+     "at": 100
+    }
+   ],
+   "emergency": [
+    {
+     "pct": 0.5,
+     "spawn": [
+      {
+       "unit": "spikeman",
+       "n": 6
+      }
+     ]
+    },
+    {
+     "pct": 0.2,
+     "spawn": [
+      {
+       "unit": "wingman",
+       "n": 5
+      }
+     ]
+    }
+   ],
+   "reward": {
+    "first": 3000,
+    "repeat": 400
+   },
+   "par": 270
+  }
+ ],
+ "donor": {
+  "dn_n_a": {
+   "name": "후원 몬스터",
+   "grade": "일반",
+   "hp": 320,
+   "atk": 30,
+   "aspd": 1.1,
+   "windup": 0.32,
+   "range": 20,
+   "speed": 58,
+   "r": 16,
+   "kb": 2,
+   "reward": 30,
+   "rig": {
+    "type": "animal",
+    "head": "an_pig",
+    "size": 40,
+    "body": "pink_circle",
+    "hand": "hand_pink_closed",
+    "feet": "#d94f86",
+    "acc": null,
+    "scale": 1.1
+   }
+  },
+  "dn_n_e": {
+   "name": "방해 몬스터",
+   "grade": "일반",
+   "hp": 320,
+   "atk": 30,
+   "aspd": 1.1,
+   "windup": 0.32,
+   "range": 20,
+   "speed": 58,
+   "r": 16,
+   "kb": 2,
+   "reward": 30,
+   "rig": {
+    "type": "animal",
+    "head": "an_snake",
+    "size": 40,
+    "body": "green_circle",
+    "hand": "hand_green_closed",
+    "feet": "#1f8a4c",
+    "acc": null,
+    "scale": 1.1
+   }
+  },
+  "dn_s_a": {
+   "name": "강화 몬스터",
+   "grade": "강화",
+   "hp": 760,
+   "atk": 62,
+   "aspd": 1.2,
+   "windup": 0.38,
+   "range": 22,
+   "speed": 55,
+   "r": 18,
+   "kb": 3,
+   "reward": 60,
+   "rig": {
+    "type": "animal",
+    "head": "an_monkey",
+    "size": 46,
+    "body": "potato_squircle",
+    "hand": "hand_potato_closed",
+    "feet": "#8a5a28",
+    "acc": "armor",
+    "scale": 1.25
+   }
+  },
+  "dn_s_e": {
+   "name": "강화 방해 몬스터",
+   "grade": "강화",
+   "hp": 760,
+   "atk": 62,
+   "aspd": 1.2,
+   "windup": 0.38,
+   "range": 22,
+   "speed": 55,
+   "r": 18,
+   "kb": 3,
+   "reward": 60,
+   "rig": {
+    "type": "animal",
+    "head": "an_gorilla",
+    "size": 46,
+    "body": "shadow_squircle",
+    "hand": "hand_shadow_closed",
+    "feet": "#2a2340",
+    "acc": "armor",
+    "scale": 1.25
+   }
+  },
+  "dn_r_a": {
+   "name": "희귀 몬스터",
+   "grade": "희귀",
+   "hp": 1500,
+   "atk": 110,
+   "aspd": 1.6,
+   "windup": 0.5,
+   "range": 30,
+   "speed": 48,
+   "r": 22,
+   "kb": 3,
+   "kbRes": 0.5,
+   "aoe": 50,
+   "fx": "slash",
+   "reward": 120,
+   "rig": {
+    "type": "animal",
+    "head": "an_panda",
+    "size": 52,
+    "body": "white_squircle",
+    "hand": "hand_white_closed",
+    "feet": "#55606e",
+    "acc": "scarf",
+    "scale": 1.45
+   }
+  },
+  "dn_r_e": {
+   "name": "희귀 방해 몬스터",
+   "grade": "희귀",
+   "hp": 1500,
+   "atk": 110,
+   "aspd": 1.6,
+   "windup": 0.5,
+   "range": 30,
+   "speed": 48,
+   "r": 22,
+   "kb": 3,
+   "kbRes": 0.5,
+   "aoe": 50,
+   "fx": "slash",
+   "reward": 120,
+   "rig": {
+    "type": "animal",
+    "head": "an_rhino",
+    "size": 52,
+    "body": "steel_square",
+    "hand": "hand_steel_closed",
+    "feet": "#55606e",
+    "acc": "armor",
+    "scale": 1.45
+   }
+  },
+  "dn_b_a": {
+   "name": "지원 보스",
+   "grade": "보스",
+   "isBoss": true,
+   "hp": 4200,
+   "atk": 170,
+   "aspd": 2,
+   "windup": 0.7,
+   "range": 40,
+   "speed": 30,
+   "r": 36,
+   "kb": 3,
+   "kbRes": 0.9,
+   "aoe": 80,
+   "fx": "slam",
+   "reward": 300,
+   "rig": {
+    "type": "animal",
+    "head": "an_elephant",
+    "size": 64,
+    "body": "steel_square",
+    "hand": "hand_steel_closed",
+    "feet": "#55606e",
+    "acc": "armor",
+    "scale": 1.9
+   }
+  },
+  "dn_b_e": {
+   "name": "파괴 보스",
+   "grade": "보스",
+   "isBoss": true,
+   "hp": 4200,
+   "atk": 170,
+   "aspd": 2,
+   "windup": 0.7,
+   "range": 40,
+   "speed": 22,
+   "r": 40,
+   "kb": 3,
+   "kbRes": 0.9,
+   "aoe": 80,
+   "fx": "slam",
+   "reward": 300,
+   "rig": {
+    "type": "monster",
+    "body": "mb_body_redA",
+    "arm": "mb_arm_redA",
+    "leg": "mb_leg_redA",
+    "eye": "mb_eye_angry_red",
+    "eyes": 2,
+    "mouth": "mb_mouth_closed_fangs",
+    "horn": "mb_horn_dark",
+    "size": 105
+   }
+  },
+  "dn_l_a": {
+   "name": "전설 몬스터",
+   "grade": "전설",
+   "isBoss": true,
+   "hp": 9000,
+   "atk": 300,
+   "aspd": 2.2,
+   "windup": 0.8,
+   "range": 60,
+   "speed": 30,
+   "r": 44,
+   "kb": 4,
+   "kbRes": 0.95,
+   "aoe": 120,
+   "fx": "slam",
+   "reward": 500,
+   "rig": {
+    "type": "animal",
+    "head": "an_walrus",
+    "size": 70,
+    "body": "ice_circle",
+    "hand": "hand_white_closed",
+    "feet": "#7fb4d8",
+    "acc": "halo",
+    "scale": 2.2
+   }
+  },
+  "dn_g_e": {
+   "name": "초거대 보스",
+   "grade": "초거대",
+   "isBoss": true,
+   "hp": 14000,
+   "atk": 260,
+   "aspd": 2.2,
+   "windup": 0.9,
+   "range": 60,
+   "speed": 14,
+   "r": 60,
+   "kb": 4,
+   "kbRes": 0.97,
+   "aoe": 110,
+   "fx": "quake",
+   "reward": 800,
+   "specEvery": 8,
+   "spec": {
+    "type": "quake",
+    "r": 140,
+    "mul": 1,
+    "offset": 70
+   },
+   "enrageAt": 0.4,
+   "rig": {
+    "type": "monster",
+    "body": "mb_body_darkC",
+    "arm": "mb_arm_darkA",
+    "leg": "mb_leg_darkC",
+    "eye": "mb_eye_red",
+    "eyes": 1,
+    "mouth": "mb_mouth_closed_teeth",
+    "horn": "mb_horn_red",
+    "size": 165
+   }
+  }
+ },
+ "streamDefaults": {
+  "settings": {
+   "showDonorNames": true,
+   "donorHpMul": 1,
+   "donorAtkMul": 1,
+   "donorScale": 1,
+   "maxDonorMonsters": 24,
+   "queueMax": 40,
+   "execGap": 1.2,
+   "maxBosses": 2,
+   "cimeBeamKrw": 1,
+   "overflow": "skip",
+   "bossLevel": "normal",
+   "voteEvery": 35,
+   "voteDur": 15,
+   "viewerUnits": true,
+   "viewerUnitCd": 90,
+   "viewerUnitCap": 12
+  },
+  "rules": [
+   {
+    "amount": 1000,
+    "name": "아군 공격력 증가",
+    "enabled": true,
+    "cooldown": 0,
+    "stack": false,
+    "combo": false,
+    "anim": "portal",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "buff",
+      "stat": "atk",
+      "target": "ally",
+      "value": 0.3,
+      "dur": 30
+     }
+    ],
+    "donor": {
+     "def": "dn_n_a",
+     "side": "ally"
+    }
+   },
+   {
+    "amount": 1100,
+    "name": "아군 공격력 감소",
+    "enabled": true,
+    "cooldown": 0,
+    "stack": false,
+    "combo": false,
+    "anim": "portal",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "buff",
+      "stat": "atk",
+      "target": "ally",
+      "value": -0.3,
+      "dur": 20
+     }
+    ],
+    "donor": {
+     "def": "dn_n_e",
+     "side": "enemy"
+    }
+   },
+   {
+    "amount": 1200,
+    "name": "적군 소환",
+    "enabled": true,
+    "cooldown": 0,
+    "stack": false,
+    "combo": false,
+    "anim": "portal",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "spawn",
+      "unit": "slime",
+      "target": "enemy",
+      "count": 10
+     }
+    ],
+    "donor": null
+   },
+   {
+    "amount": 1300,
+    "name": "아군 기지 회복",
+    "enabled": true,
+    "cooldown": 0,
+    "stack": false,
+    "combo": false,
+    "anim": "portal",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "healBase",
+      "target": "ally",
+      "value": 0.2
+     }
+    ],
+    "donor": null
+   },
+   {
+    "amount": 2000,
+    "name": "강화 지원 몬스터",
+    "enabled": true,
+    "cooldown": 0,
+    "stack": false,
+    "combo": false,
+    "anim": "portal",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "buff",
+      "stat": "def",
+      "target": "ally",
+      "value": 0.25,
+      "dur": 25
+     }
+    ],
+    "donor": {
+     "def": "dn_s_a",
+     "side": "ally"
+    }
+   },
+   {
+    "amount": 2100,
+    "name": "강화 방해 몬스터",
+    "enabled": true,
+    "cooldown": 0,
+    "stack": false,
+    "combo": false,
+    "anim": "portal",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "buff",
+      "stat": "spd",
+      "target": "ally",
+      "value": -0.3,
+      "dur": 20
+     }
+    ],
+    "donor": {
+     "def": "dn_s_e",
+     "side": "enemy"
+    }
+   },
+   {
+    "amount": 3000,
+    "name": "아군 전체 회복",
+    "enabled": true,
+    "cooldown": 0,
+    "stack": false,
+    "combo": false,
+    "anim": "portal",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "healUnits",
+      "target": "ally",
+      "value": 0.5
+     }
+    ],
+    "donor": {
+     "def": "dn_r_a",
+     "side": "ally"
+    }
+   },
+   {
+    "amount": 3100,
+    "name": "희귀 방해 몬스터",
+    "enabled": true,
+    "cooldown": 0,
+    "stack": false,
+    "combo": false,
+    "anim": "portal",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "buff",
+      "stat": "aspd",
+      "target": "enemy",
+      "value": 0.3,
+      "dur": 25
+     }
+    ],
+    "donor": {
+     "def": "dn_r_e",
+     "side": "enemy"
+    }
+   },
+   {
+    "amount": 5000,
+    "name": "지원 보스",
+    "enabled": true,
+    "cooldown": 0,
+    "stack": false,
+    "combo": false,
+    "anim": "boss",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "energy",
+      "target": "ally",
+      "value": 300
+     }
+    ],
+    "donor": {
+     "def": "dn_b_a",
+     "side": "ally"
+    }
+   },
+   {
+    "amount": 5100,
+    "name": "적군 보스",
+    "enabled": true,
+    "cooldown": 0,
+    "stack": false,
+    "combo": false,
+    "anim": "boss",
+    "sound": "fanfare",
+    "effects": [],
+    "donor": {
+     "def": "dn_b_e",
+     "side": "enemy"
+    }
+   },
+   {
+    "amount": 10000,
+    "name": "전설 지원 몬스터",
+    "enabled": true,
+    "cooldown": 0,
+    "stack": false,
+    "combo": false,
+    "anim": "boss",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "buff",
+      "stat": "atk",
+      "target": "ally",
+      "value": 0.5,
+      "dur": 30
+     }
+    ],
+    "donor": {
+     "def": "dn_l_a",
+     "side": "ally"
+    }
+   },
+   {
+    "amount": 10100,
+    "name": "초거대 적군 보스",
+    "enabled": true,
+    "cooldown": 0,
+    "stack": false,
+    "combo": false,
+    "anim": "boss",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "giant",
+      "target": "enemy",
+      "value": 1.3,
+      "dur": 20
+     }
+    ],
+    "donor": {
+     "def": "dn_g_e",
+     "side": "enemy"
+    }
+   },
+   {
+    "amount": 20000,
+    "name": "전장 랜덤 이벤트",
+    "enabled": true,
+    "cooldown": 20,
+    "stack": false,
+    "combo": false,
+    "anim": "portal",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "random",
+      "target": "all"
+     }
+    ],
+    "donor": null
+   },
+   {
+    "amount": 30000,
+    "name": "초거대 레이드 보스",
+    "enabled": true,
+    "cooldown": 60,
+    "stack": false,
+    "combo": false,
+    "anim": "boss",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "boss",
+      "unit": "demon",
+      "target": "enemy"
+     }
+    ],
+    "donor": null
+   },
+   {
+    "amount": 50000,
+    "name": "특별 재난 이벤트",
+    "enabled": true,
+    "cooldown": 90,
+    "stack": false,
+    "combo": false,
+    "anim": "boss",
+    "sound": "fanfare",
+    "effects": [
+     {
+      "type": "meteor",
+      "target": "all",
+      "count": 5,
+      "value": 400
+     },
+     {
+      "type": "stun",
+      "target": "all",
+      "dur": 2
+     },
+     {
+      "type": "bossRush",
+      "target": "enemy",
+      "dur": 30
+     }
+    ],
+    "donor": null
+   }
+  ]
+ },
+ "streamEffects": {
+  "buff": "능력치 변화(공격력·방어력·이동속도·공격속도)",
+  "spawn": "유닛 소환",
+  "boss": "보스 소환",
+  "healUnits": "유닛 체력 회복",
+  "healBase": "기지 회복",
+  "damageBase": "기지 피해",
+  "energy": "에너지 증가/감소",
+  "giant": "유닛 거대화",
+  "transform": "유닛 변신",
+  "knock": "넉백",
+  "stun": "기절",
+  "meteor": "운석 낙하",
+  "random": "랜덤 이벤트",
+  "bossRush": "보스 러시"
+ }
+}

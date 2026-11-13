@@ -54,6 +54,7 @@ import { registerGolf } from "./golf.js";
 import { registerAppleMulti } from "./apple-multi.js";
 import { registerBlockBlastMulti } from "./blockblast-multi.js";
 import { registerBlockRoyale } from "./blockroyale-multi.js";
+import { registerDuoWars } from "./duowars.js"; // 플듀 대전쟁 (2026-11-13)
 import { registerPublicRooms, addPublicList } from "./public-rooms.js";
 import { installLobbyBurstGuard } from "./lobby-burst-guard.js";
 import { registerRaisingPvp } from "./raising-pvp.js";
@@ -11172,6 +11173,7 @@ registerGolf(io, supabaseAdmin);
 registerAppleMulti(io, supabaseAdmin);
 registerBlockBlastMulti(io, supabaseAdmin);
 registerBlockRoyale(io, supabaseAdmin, app);
+registerDuoWars(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k), logStreamer: (o) => _logStreamerChat(o) }); // 플듀 대전쟁 (스트리머 모드: 채팅·후원 연결)
 registerPublicRooms(app, io);
 
 // ── 공개방: 월드컵·퀴즈·티어·밸런스 대기실 (방장이 🌐 켠 방만, 공개 콘텐츠만) ──
@@ -13756,6 +13758,7 @@ class ChatBridge {
           console.log(`[CHAT_BRIDGE:${this.roomCode}] ✅ CHAT 구독 성공`);
         }
       }
+      if (this.wantDonation) await this._subscribeDonationChzzk();
 
       this.status = "connected";
       this.connectedAt = new Date();
@@ -13783,6 +13786,18 @@ class ChatBridge {
       this.disconnect();
       throw err;
     }
+  }
+
+  // (플듀 대전쟁 전용) 후원 이벤트 구독 — wantDonation 일 때만 호출됨
+  async _subscribeDonationChzzk() {
+    try {
+      const url = `${CHZZK_API_BASE}/open/v1/sessions/events/subscribe/donation?sessionKey=${encodeURIComponent(this.sessionKey)}`;
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${this.accessToken}`, "Client-Id": CHZZK_CLIENT_ID }, body: JSON.stringify({ sessionKey: this.sessionKey }) });
+      const raw = await r.text(); let p = null; try { p = JSON.parse(raw); } catch {}
+      if (!r.ok || (p?.code && p.code !== 200)) { this.donationSubscribed = false; this.donationError = r.status === 403 ? "후원 조회 권한 없음 (치지직 개발자센터 앱에 '후원 조회' 권한 필요)" : `후원 구독 실패 ${r.status}: ${raw.slice(0, 120)}`; }
+      else this.donationSubscribed = true;
+      console.log(`[CHAT_BRIDGE:${this.roomCode}] 후원 구독: ${this.donationSubscribed ? "성공" : this.donationError}`);
+    } catch (e) { this.donationSubscribed = false; this.donationError = e.message; }
   }
 
   /** Socket.IO 이벤트 라우팅 (raw WS에서 파싱 후 호출) */
@@ -13834,6 +13849,9 @@ class ChatBridge {
         }
         break;
       case "DONATION":
+        if (this.dwHooks?.onDonation) { try { this.dwHooks.onDonation(data); } catch (e) { console.warn("[CHAT_BRIDGE] dw donation hook", e.message); } }
+        else console.log(`[CHAT_BRIDGE:${this.roomCode}] ${eventName} 이벤트 수신 (무시)`);
+        break;
       case "SUBSCRIPTION":
         console.log(`[CHAT_BRIDGE:${this.roomCode}] ${eventName} 이벤트 수신 (무시)`);
         break;
@@ -13920,6 +13938,7 @@ class ChatBridge {
 
   /** ★ 개별 채팅 메시지 처리 — 발신자 타입/구조 전체 로깅 */
   _processSingleChatMsg(evt) {
+    if (this.dwHooks?.onChat) { try { this.dwHooks.onChat(evt); } catch (_) {} }
     // ── [최적화 2026-06-15] 메시지 텍스트 먼저 추출 (가장 싼 작업) ──
     let content = null;
     if (typeof evt.message === "string") content = evt.message;
@@ -14318,7 +14337,7 @@ class SoopChatBridge {
         this.errorCode = "SOOP_WS_ERROR"; this.errorMsg = e.message;
         if (!settled) { settled = true; reject(e); }
       });
-      this.ws.on("close", () => { this.status = "stopped"; this._stopPing(); });
+      this.ws.on("close", () => { this.status = "stopped"; this._stopPing(); if (this.dwHooks?.onClose) { try { this.dwHooks.onClose(); } catch (_) {} } });
     });
     return { ok: true };
   }
@@ -14357,6 +14376,19 @@ class SoopChatBridge {
     const svc = str.slice(2, 6);
     const body = str.slice(14); // ESC(2)+svc(4)+len(6)+"00"(2) = 14
     const fields = body.split(SOOP_SEP);
+    // (플듀 대전쟁 전용) 별풍선: svc "0018" — 대전쟁이 연결한 브릿지(dwHooks)일 때만 처리, 다른 모드는 그대로 무시
+    //   알려진 배치: [1]=BJ아이디 [2]=보낸사람 아이디 [3]=보낸사람 닉네임 [4]=개수 (⚠️ 비공식 — 실방송 로그로 확인)
+    if (svc === "0018") {
+      if (!this.dwHooks?.onDonation) return;
+      if ((this._balloonLog = (this._balloonLog || 0) + 1) <= 10) console.log(`[SOOP:${this.roomCode}] 별풍선 원본#${this._balloonLog}: ${body.slice(0, 200).replace(/\f/g, "|")}`);
+      let i = fields.findIndex((f, k) => k > 0 && String(f).toLowerCase() === String(this.bjId).toLowerCase());
+      if (i < 0) i = 1;
+      const cnt = String(fields[i + 3] || "").trim();
+      if (!/^\d{1,6}$/.test(cnt)) { console.warn(`[SOOP:${this.roomCode}] 별풍선 개수 못 읽음: ${body.slice(0, 160).replace(/\f/g, "|")}`); return; }
+      const uid = String(fields[i + 1] || "").replace(/\(\d+\)$/, "");
+      try { this.dwHooks.onDonation({ channelId: this.bjId, donatorChannelId: uid || null, donatorNickname: fields[i + 2] || null, balloons: Number(cnt), donationText: "" }); } catch (e) { console.warn("[SOOP] dw balloon hook", e.message); }
+      return;
+    }
     // CHAT 메시지: svc "0005" (일반 채팅). ⚠️ 필드 인덱스는 실측 검증 필요.
     if (svc === "0005") {
       // 일반적으로: fields[1]=메시지, fields[6]=닉네임, fields[2]=userId (버전마다 다름)
@@ -14370,6 +14402,7 @@ class SoopChatBridge {
       const userId = fields[2] || fields[5] || "";
       const nickname = fields[6] || fields[3] || "익명";
       const id = userId || nickname;
+      if (this.dwHooks?.onChat) { try { this.dwHooks.onChat({ content: message, senderChannelId: id, profile: { nickname } }); } catch (_) {} return; }
       if (this.mode === "lifebc") this._processLifebcMsg(id, nickname, message);
       else if (this.mode === "bingo") this._processBingoMsg(id, nickname, message);
       else if (this.mode === "omok") this._processOmokMsg(id, nickname, message, Date.now());
@@ -14654,6 +14687,7 @@ class CimeChatBridge extends ChatBridge {
           this._startPing();
           // (C) 채팅 이벤트 구독
           try { await this._subscribeChat(); } catch (e) { console.warn(`[CIME_BRIDGE:${this.roomCode}] 구독 예외:`, e.message); }
+          if (this.wantDonation) { try { await this._subscribeDonationCime(); } catch (e) { this.donationError = e.message; } }
           if (!settled) { settled = true; resolve(); }
         });
         this.ws.on("message", (buf) => this._onCimeFrame(buf));
@@ -14700,6 +14734,16 @@ class CimeChatBridge extends ChatBridge {
     else { this.subscribed = true; console.log(`[CIME_BRIDGE:${this.roomCode}] ✅ CHAT 구독 성공`); }
   }
 
+  // (플듀 대전쟁 전용) 씨미 후원 구독 — scope READ:DONATION 필요
+  async _subscribeDonationCime() {
+    const url = `${CIME_API_BASE}/open/v1/sessions/events/subscribe/donation?sessionKey=${encodeURIComponent(this.sessionKey || "")}`;
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${this.accessToken}`, "Client-Id": CIME_CLIENT_ID }, body: "{}" });
+    const raw = await r.text(); let p = null; try { p = JSON.parse(raw); } catch {}
+    if (!r.ok || (p?.code && p.code !== 200)) { this.donationSubscribed = false; this.donationError = r.status === 403 ? "후원 조회 권한 없음 (씨미 앱에 READ:DONATION 권한 필요)" : `후원 구독 실패 ${r.status}: ${raw.slice(0, 120)}`; }
+    else this.donationSubscribed = true;
+    console.log(`[CIME_BRIDGE:${this.roomCode}] 후원 구독: ${this.donationSubscribed ? "성공" : this.donationError}`);
+  }
+
   _onCimeFrame(buf) {
     this.rawFrameCount++;
     this.lastEventAt = new Date();
@@ -14711,6 +14755,7 @@ class CimeChatBridge extends ChatBridge {
       if (!m || typeof m !== "object") continue;
       const evName = m.event || m.type || "";
       if (evName) this._allEventNames.add(evName);
+      if (/^donation$/i.test(evName)) { if (this.dwHooks?.onDonation) { try { this.dwHooks.onDonation(m.data != null ? m.data : m); } catch (e) { console.warn("[CIME_BRIDGE] dw donation hook", e.message); } } continue; }
       if (/^chat$/i.test(evName) || m.data?.content != null || m.content != null) {
         this._rawDumpCount++;
         const data = m.data != null ? m.data : m;
@@ -14734,7 +14779,7 @@ const chatBridges = new Map();
 
 // 스트리머 채팅연동 사용 로그 (운영자 admin 탭에서 확인) — 실패해도 게임 흐름엔 영향 없음
 // 콘텐츠(DB) 없이 쓰는 스트리머 모드(예: 그려봐)는 종류만 프론트가 알려 줌 — 허용 목록만 저장
-const STREAMER_LOG_MODES = { draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", mafia: "플듀 마피아 스트리머 모드", ptest: "심리테스트 시청자 참여", bingo: "빙고 시청자 참여", raising: "플듀 키우기 스트리머 모드" };
+const STREAMER_LOG_MODES = { duowars: "플듀 대전쟁 스트리머 모드", draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", mafia: "플듀 마피아 스트리머 모드", ptest: "심리테스트 시청자 참여", bingo: "빙고 시청자 참여", raising: "플듀 키우기 스트리머 모드" };
 async function _logStreamerChat({ platform, channelId, nickname, contentId, roomCode, hostUserId, hostNick, contentMode }) {
   try {
     if (!platform || !channelId) return; // 식별자 없으면 기록 안 함
@@ -14782,6 +14827,54 @@ async function _logStreamerChat({ platform, channelId, nickname, contentId, room
     console.warn("[STREAMER_LOG] insert 실패(무시):", e.message);
   }
 }
+
+// ===== 플듀 대전쟁 스트리머 모드: 채팅·후원 연결 (대전쟁 방 코드별, 본인 토큰만 사용) =====
+async function _dwLinkChat({ platform, key, accessToken, channelId, nickname, hostUserId, roomCode, onDonation, onChat, onClose, soopUrl }) {
+  _dwUnlinkChat(key);
+  // 서버 보호: 대전쟁 방송 연결은 동시에 150개까지 (방을 여러 개 만들어 연결을 쌓는 것 막기)
+  let dwCount = 0; for (const k of chatBridges.keys()) if (String(k).startsWith("dw_")) dwCount++;
+  if (dwCount >= 150) return { ok: false, error: "지금 방송 연결이 너무 많아요. 잠시 뒤 다시 시도해 주세요" };
+  let bridge;
+  if (platform === "soop") {
+    // SOOP: 공식 후원 API 없음 → 방송 주소로 공개 채팅방에 들어가 별풍선 신호를 읽음 (비공식)
+    const s = String(soopUrl || "").trim();
+    const m = s.match(/sooplive\.(?:com|co\.kr)\/([A-Za-z0-9_-]{3,30})(?:\/(\d{1,12}))?/i) || s.match(/^([A-Za-z0-9_-]{3,30})(?:\/(\d{1,12}))?$/);
+    if (!m) return { ok: false, error: "SOOP 방송 주소 형식이 아니에요 (예: play.sooplive.com/아이디/방송번호)" };
+    bridge = new SoopChatBridge(key, m[1], m[2] || null);
+    bridge.dwHooks = { onDonation, onChat, onClose };
+    chatBridges.set(key, bridge);
+    try { await bridge.connect(); }
+    catch (e) { bridge.dwHooks = null; try { bridge.disconnect(); } catch (_) {} chatBridges.delete(key); return { ok: false, error: e.message }; }
+    _logStreamerChat({ platform: "soop", channelId: m[1], nickname: bridge.bjNick, roomCode, hostUserId, hostNick: nickname, contentMode: "duowars" });
+    return { ok: true, subscribed: true, donationSubscribed: true, donationError: null, nickname: bridge.bjNick || m[1] };
+  }
+  if (platform === "chzzk") {
+    if (!CHZZK_CLIENT_ID) return { ok: false, error: "치지직 서버 설정 없음" };
+    if (!channelId) return { ok: false, error: "치지직 채널 정보 없음 (다시 연동해 주세요)" };
+    bridge = new ChatBridge(key, accessToken, channelId);
+  } else if (platform === "cime") {
+    if (!CIME_CLIENT_ID) return { ok: false, error: "씨미 서버 설정 없음" };
+    bridge = new CimeChatBridge(key, accessToken, channelId || null);
+  } else return { ok: false, error: "지원하지 않는 플랫폼" };
+  bridge.wantDonation = true;
+  bridge.dwHooks = { onDonation, onChat };
+  chatBridges.set(key, bridge);
+  try { await bridge.connect(); }
+  catch (e) { chatBridges.delete(key); return { ok: false, error: e.message }; }
+  _logStreamerChat({ platform, channelId: bridge.channelId || channelId, nickname, roomCode, hostUserId, hostNick: nickname, contentMode: "duowars" });
+  return { ok: true, subscribed: !!bridge.subscribed, donationSubscribed: !!bridge.donationSubscribed, donationError: bridge.donationError || null, nickname };
+}
+function _dwUnlinkChat(key) {
+  const b = chatBridges.get(key);
+  if (b) { try { b.dwHooks = null; b.disconnect(); } catch (_) {} chatBridges.delete(key); }
+}
+// ★ 대전쟁 연결(키 "dw_방코드")은 대전쟁 서버만 다룸 — 공개 /chat-audience/* 주소로 끊거나 바꾸지 못하게 막음
+//   (방 코드는 시청자도 알기 때문에, 막지 않으면 아무나 스트리머의 후원 연결을 끊을 수 있음)
+app.use("/chat-audience", (req, res, next) => {
+  const k = String(req.body?.roomCode || req.query?.room || req.query?.roomCode || "");
+  if (k.startsWith("dw_")) return res.status(403).json({ ok: false, error: "FORBIDDEN" });
+  next();
+});
 
 // --- POST /chat-audience/start ---
 app.post("/chat-audience/start", optionalAuth, async (req, res) => {
