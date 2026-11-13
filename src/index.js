@@ -7228,6 +7228,7 @@ async function incrementPlayCount(contentId) {
 // play_count 정확 누적 — 완주 시점 기록 + 쿨다운 스팸 방지
 // =========================
 const PLAY_COOLDOWN_SEC = Number(process.env.PLAY_COOLDOWN_SEC) || 60;
+const _guestPlayHit = new Map(); // `${contentId}|${guestId}` → ts (게스트 방장 멀티 완주 쿨다운)
 
 /**
  * recordPlayOnce — 게임 완주 시 play_count +1 (쿨다운 내 중복 차단)
@@ -7240,6 +7241,22 @@ const PLAY_COOLDOWN_SEC = Number(process.env.PLAY_COOLDOWN_SEC) || 60;
 async function recordPlayOnce({ contentId, userId, mode, gameType }) {
   try {
     if (!contentId || !userId) return;
+
+    // 게스트 방장(guest_xxx): content_plays.user_id가 uuid NOT NULL이라 INSERT가 실패해 +1이 안 되던 문제
+    // → 기록 테이블은 건너뛰고 메모리 쿨다운만 걸고 play_count +1
+    if (!UUID_RE.test(String(userId))) {
+      const gk = contentId + "|" + userId;
+      const now = Date.now();
+      if (now - (_guestPlayHit.get(gk) || 0) < PLAY_COOLDOWN_SEC * 1000) {
+        console.log(`[recordPlayOnce] 게스트 쿨다운 스킵 — contentId=${contentId} userId=${userId}`);
+        return;
+      }
+      if (_guestPlayHit.size > 20_000) _guestPlayHit.clear();
+      _guestPlayHit.set(gk, now);
+      await incrementPlayCount(contentId);
+      console.log(`[recordPlayOnce] OK(게스트) — contentId=${contentId} userId=${userId} mode=${mode} type=${gameType}`);
+      return;
+    }
 
     // 쿨다운 체크: 같은 유저+콘텐츠의 최근 기록
     const cooldownThreshold = new Date(Date.now() - PLAY_COOLDOWN_SEC * 1000).toISOString();
