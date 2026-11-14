@@ -153,7 +153,7 @@ export function registerLifeBroadcast(io, sb, app) {
     on("lbc:donLog", (p, reply) => { const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); reply({ ok: true, rows: (b.donLog || []).slice(-60) }); });
     on("lbc:watch", (p, reply) => { const b = get(p.id); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" }); if (b.banned?.has(key)) return reply({ ok: false, error: "KICKED" });
       // 방장 다시 붙기: 로그인·로그아웃이나 재연결로 계정이 바뀌어도, 방송을 만들 때 받은 자격표가 맞으면 지금 계정을 방장으로
-      if (!b.ended && b.hostKey !== key && typeof p.hostTok === "string" && p.hostTok.length === b.hostTok.length && p.hostTok === b.hostTok) {
+      if (!b.ended && b.hostTok && b.hostKey !== key && typeof p.hostTok === "string" && p.hostTok.length === b.hostTok.length && p.hostTok === b.hostTok) {
         const hv = b.viewers.get(b.hostKey); b.viewers.delete(b.hostKey); b.viewers.delete(key); b.viewers.set(key, hv || { nick: `📺 ${b.nick}`, pts: 0, no: 0, host: true });
         b.hostKey = key; b.lastAt = now();
       } socket.join(room(b.id)); socket.join(uroom(b.id)); reply({ ok: true, host: b.hostKey === key, state: pubState(b), donKey: b.hostKey === key ? b.donKey : null }); });
