@@ -2,7 +2,7 @@
 import http from "http";
 import { Server } from "socket.io";
 import ioc from "socket.io-client";
-import { registerLifeBroadcast, lbcDonation, lbcIsDon } from "../src/lifebc-broadcast.js";
+import { registerLifeBroadcast, lbcDonation, lbcIsDon, lbcDonKeyOk } from "../src/lifebc-broadcast.js";
 
 let fail = 0, pass = 0; const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL", m); } };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -17,9 +17,13 @@ const emit = (s, ev, p) => new Promise((res) => s.emit(ev, p, res));
 
 const H = await conn("host"), V = await conn("viewer"), N = await conn("normal");
 const got = [], gotV = [], gotN = []; H.on("lbc:donation", (d) => got.push(d)); V.on("lbc:donation", (d) => gotV.push(d)); N.on("lbc:donation", (d) => gotN.push(d));
-const { id } = await emit(H, "lbc:create", { nick: "방장", title: "후원방", don: true });
+const cr = await emit(H, "lbc:create", { nick: "방장", title: "후원방", don: true }); const id = cr.id;
 const { id: nid } = await emit(N, "lbc:create", { nick: "일반", title: "보통" });
 await emit(V, "lbc:join", { id, nick: "시청자" });
+ok(typeof cr.donKey === "string" && cr.donKey.length === 16, "방장에게만 후원 연결 비밀키");
+const vw = await emit(V, "lbc:watch", { id }); ok(vw.ok && vw.donKey == null && !JSON.stringify(vw.state).includes(cr.donKey), "시청자는 비밀키 못 받음 (상태에도 없음)");
+const hw = await emit(H, "lbc:watch", { id }); ok(hw.donKey === cr.donKey, "방장 재접속 시 비밀키 다시 받음");
+ok(lbcDonKeyOk(id, cr.donKey) && !lbcDonKeyOk(id, "x".repeat(16)) && !lbcDonKeyOk(id, null) && !lbcDonKeyOk(nid, cr.donKey), "비밀키 검사 (틀린 키·없는 키·다른 방송 거절)");
 ok(lbcIsDon(id) && !lbcIsDon(nid), "후원 모드 표시는 후원방만");
 await wait(50);
 ok(logs.some((r) => r.channel_id === id && r.content_mode === "donation" && /후원 방송 모드/.test(r.content_title)), "admin 기록: 후원 방송 모드");

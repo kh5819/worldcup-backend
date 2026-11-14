@@ -59,6 +59,8 @@ export function lbcDonation(bcId, platform, raw) {
   return ev;
 }
 export const lbcIsDon = (bcId) => !!BC.get(String(bcId || ""))?.don;
+// 후원 연결 허가: 방송을 만든 스트리머만 받은 비밀키가 맞아야 함
+export function lbcDonKeyOk(bcId, k) { const b = BC.get(String(bcId || "")); return !!b && !b.ended && !!b.don && !!b.donKey && typeof k === "string" && k.length === b.donKey.length && k === b.donKey; }
 export const lbcExists = (bcId) => { const b = BC.get(String(bcId || "")); return !!b && !b.ended; };
 export function nickOk(n) { const s = String(n || "").toLowerCase().replace(/\s/g, ""); if (!s) return false; return !BAD.some((w) => s.includes(w)); }
 // 글자 묶음({ko,ja,en} 또는 문자열) 안전하게
@@ -125,14 +127,14 @@ function closePoll(io, b) {
 
 export function registerLifeBroadcast(io, sb, app) {
   IO = io;
-  setInterval(() => { const t = now(); for (const [id, b] of BC) if (t - b.createdAt > TTL || (b.ended && t - b.endedAt > (b.season ? 7200e3 : 600e3))) { clearTimeout(b.poll?.timer); clearTimeout(b.pred?.timer); BC.delete(id); } }, 10 * 60e3).unref?.();
+  setInterval(() => { const t = now(); for (const [id, b] of BC) if (t - (b.lastAt || b.createdAt) > TTL || (b.ended && t - b.endedAt > (b.season ? 7200e3 : 600e3))) { clearTimeout(b.poll?.timer); clearTimeout(b.pred?.timer); BC.delete(id); } }, 10 * 60e3).unref?.();
   io.on("connection", (socket) => {
     const me = socket.user; if (!me) return;
     const key = (me.isGuest ? "g:" : "u:") + me.id;
     let win = now(), cnt = 0;
     const limited = () => { const n = now(); if (n - win > 10000) { win = n; cnt = 0; } return ++cnt > Number(process.env.LBC_RL || 80); };
     const on = (ev, fn) => socket.on(ev, async (p, cb) => { const reply = typeof cb === "function" ? cb : () => {}; if (limited()) return reply({ ok: false, error: "RATE_LIMITED" }); try { await fn(p && typeof p === "object" ? p : {}, reply); } catch (e) { console.error(`[${ev}]`, e); reply({ ok: false, error: "INTERNAL" }); } });
-    const mine = (id) => { const b = BC.get(String(id || "")); return b && b.hostKey === key && !b.ended ? b : null; };
+    const mine = (id) => { const b = BC.get(String(id || "")); if (!b || b.hostKey !== key || b.ended) return null; b.lastAt = now(); return b; };
     const get = (id) => BC.get(String(id || "")) || null;
     const uroom = (id) => `lbcu:${id}:${key}`; // 이 시청자 개인 알림 (강퇴·닉네임 변경)
 
@@ -142,14 +144,19 @@ export function registerLifeBroadcast(io, sb, app) {
       for (const b of BC.values()) if (b.hostKey === key && !b.ended) { b.ended = true; b.endedAt = now(); emitState(io, b, true); } // 한 사람당 방송 1개
       const id = bcId();
       const b = { id, hostKey: key, nick, title: clean(p.title, 40) || nick, lang: ["ko", "ja", "en"].includes(p.lang) ? p.lang : "ko", intensity: INTENSITY.includes(p.intensity) ? p.intensity : "normal",
-        don: !!p.don, viewers: new Map([[key, { nick: `📺 ${nick}`, pts: 0, no: 0, host: true }]]), seq: 0, poll: null, pred: null, apps: [], accepted: new Set(), castNicks: [], status: null, notice: null, createdAt: now(), emitAt: 0, emitT: null, pseq: 0 };
-      BC.set(id, b); socket.join(room(id)); socket.join(uroom(id)); reply({ ok: true, id, state: pubState(b) });
+        hostTok: bcId() + bcId() + bcId(), lastAt: now(), don: !!p.don, donKey: p.don ? bcId() + bcId() : null, viewers: new Map([[key, { nick: `📺 ${nick}`, pts: 0, no: 0, host: true }]]), seq: 0, poll: null, pred: null, apps: [], accepted: new Set(), castNicks: [], status: null, notice: null, createdAt: now(), emitAt: 0, emitT: null, pseq: 0 };
+      BC.set(id, b); socket.join(room(id)); socket.join(uroom(id)); reply({ ok: true, id, state: pubState(b), donKey: b.donKey, hostTok: b.hostTok });
       // admin 「📺 스트리머」 목록 — 인생 방송국 (게스트도 기록, 회원이면 host_user_id 남김)
       if (sb) Promise.resolve(sb.from("streamer_chat_log").insert({ platform: "lifebc", channel_id: id, nickname: nick, content_id: null, content_title: b.don ? `💝 후원 방송 모드 · ${b.title}`.slice(0, 120) : b.title, content_mode: b.don ? "donation" : b.intensity, room_code: id, host_user_id: me.isGuest ? null : me.id, host_nick: me.isGuest ? `게스트 ${nick}` : nick })).then((r) => r?.error && console.error("[lbc] streamer log", r.error.message), () => {});
     });
     // 후원 방송 모드: 스트리머가 다시 연결됐을 때 놓친 후원 받기 (방장만)
     on("lbc:donLog", (p, reply) => { const b = mine(p.id); if (!b) return reply({ ok: false, error: "NOT_HOST" }); reply({ ok: true, rows: (b.donLog || []).slice(-60) }); });
-    on("lbc:watch", (p, reply) => { const b = get(p.id); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" }); if (b.banned?.has(key)) return reply({ ok: false, error: "KICKED" }); socket.join(room(b.id)); socket.join(uroom(b.id)); reply({ ok: true, host: b.hostKey === key, state: pubState(b) }); });
+    on("lbc:watch", (p, reply) => { const b = get(p.id); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" }); if (b.banned?.has(key)) return reply({ ok: false, error: "KICKED" });
+      // 방장 다시 붙기: 로그인·로그아웃이나 재연결로 계정이 바뀌어도, 방송을 만들 때 받은 자격표가 맞으면 지금 계정을 방장으로
+      if (!b.ended && b.hostKey !== key && typeof p.hostTok === "string" && p.hostTok.length === b.hostTok.length && p.hostTok === b.hostTok) {
+        const hv = b.viewers.get(b.hostKey); b.viewers.delete(b.hostKey); b.viewers.delete(key); b.viewers.set(key, hv || { nick: `📺 ${b.nick}`, pts: 0, no: 0, host: true });
+        b.hostKey = key; b.lastAt = now();
+      } socket.join(room(b.id)); socket.join(uroom(b.id)); reply({ ok: true, host: b.hostKey === key, state: pubState(b), donKey: b.hostKey === key ? b.donKey : null }); });
     on("lbc:join", (p, reply) => {
       const b = get(p.id); if (!b) return reply({ ok: false, error: "BC_NOT_FOUND" }); if (b.ended) return reply({ ok: false, error: "BC_CLOSED" });
       if (b.banned?.has(key)) return reply({ ok: false, error: "KICKED" });

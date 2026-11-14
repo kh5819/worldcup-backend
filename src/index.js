@@ -45,7 +45,7 @@ import { registerLingoBroadcast, lbcLivePlayers } from "./lingo-broadcast.js";
 import { registerLingoMulti } from "./lingo-multi.js";
 import { registerKnowMulti } from "./know-multi.js";
 import { registerKnowBroadcast, kbcLivePlayers } from "./know-broadcast.js";
-import { registerLifeBroadcast, lbcChatVote, lbcChatCard, CHAT_CARD, lbcExists, lbcDonation, lbcIsDon } from "./lifebc-broadcast.js";
+import { registerLifeBroadcast, lbcChatVote, lbcChatCard, CHAT_CARD, lbcExists, lbcDonation, lbcIsDon, lbcDonKeyOk } from "./lifebc-broadcast.js";
 import { registerLifeMulti } from "./lifebc-multi.js";
 import { registerLifeSave } from "./lifebc-save.js";
 import { createFlight } from "./create-flight.js";
@@ -15266,7 +15266,12 @@ app.post("/chat-audience/lifebc-link", optionalAuth, async (req, res) => {
     if (!lbcExists(bcId)) return res.status(404).json({ ok: false, error: "BC_NOT_FOUND" });
     const plat = ["chzzk", "soop", "cime"].includes(req.body.platform) ? req.body.platform : "chat";
     bridge.setLifebc(String(bcId).slice(0, 16), plat);
-    if (req.body.donation && lbcIsDon(bcId) && plat !== "chat") await _lbcAttachDonation(bridge, String(bcId).slice(0, 16), plat);
+    if (req.body.donation && lbcIsDon(bcId) && plat !== "chat") {
+      if (!lbcDonKeyOk(bcId, req.body.donKey)) return res.json({ ok: true, bridgeStatus: bridge.status, donation: { ok: false, error: "후원 연결 권한 없음 (스트리머 모드를 다시 시작해 주세요)" } });
+      // 같은 방송에 예전 채팅 다리(새로고침 전 등)가 후원을 붙들고 있으면 떼어 냄 → 별풍선이 두 번 들어오지 않게
+      for (const [k, other] of chatBridges) if (other !== bridge && other.lbcDon && other.lbcId === String(bcId).slice(0, 16)) { other.dwHooks = null; other.lbcDon = false; other.wantDonation = false; }
+      await _lbcAttachDonation(bridge, String(bcId).slice(0, 16), plat);
+    }
     return res.json({ ok: true, bridgeStatus: bridge.status, donation: bridge.lbcDon ? { ok: !!bridge.donationSubscribed, error: bridge.donationError || null } : null });
   } catch (err) {
     console.error("[CHAT_AUD] /lifebc-link 예외:", err);
