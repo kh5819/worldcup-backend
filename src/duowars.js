@@ -111,6 +111,8 @@ export function registerDuoWars(io, supabaseAdmin, hooks = {}) {
   function removePlayer(r, uid, why) {
     const p = r.players.get(uid); if (!p) return;
     if (p.dcTimer) { clearTimeout(p.dcTimer); p.dcTimer = null; }
+    // 플레이어·관전 채널 둘 다에서 빼기 (관전자가 나간 뒤 새 방을 만들어도 예전 방 소식이 계속 오던 문제)
+    { const s = p.socketId && io.sockets.sockets.get(p.socketId); if (s) { s.leave(sr(r.id)); s.leave(srv(r.id)); } }
     r.players.delete(uid); r.order = r.order.filter((x) => x !== uid);
     if (userRoom.get(uid) === r.id) userRoom.delete(uid);
     if (r.game && r.status === "playing" && !p.spec) { r.game.removePlayer(uid); }
