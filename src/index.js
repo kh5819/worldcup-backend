@@ -45,7 +45,7 @@ import { registerLingoBroadcast, lbcLivePlayers } from "./lingo-broadcast.js";
 import { registerLingoMulti } from "./lingo-multi.js";
 import { registerKnowMulti } from "./know-multi.js";
 import { registerKnowBroadcast, kbcLivePlayers } from "./know-broadcast.js";
-import { registerLifeBroadcast, lbcChatVote, lbcChatCard, CHAT_CARD, lbcExists } from "./lifebc-broadcast.js";
+import { registerLifeBroadcast, lbcChatVote, lbcChatCard, CHAT_CARD, lbcExists, lbcDonation, lbcIsDon } from "./lifebc-broadcast.js";
 import { registerLifeMulti } from "./lifebc-multi.js";
 import { registerLifeSave } from "./lifebc-save.js";
 import { createFlight } from "./create-flight.js";
@@ -14613,6 +14613,17 @@ const LifebcVoteMixin = {
 };
 Object.assign(ChatBridge.prototype, LifebcVoteMixin);
 Object.assign(SoopChatBridge.prototype, LifebcVoteMixin);
+// 인생 방송국 후원 방송 모드: 이미 연결된 채팅 다리에 후원 받기를 붙임 (대전쟁과 같은 후원 통로 dwHooks.onDonation 사용)
+//   onChat은 안 넣음 → 채팅 투표·카드는 원래 길 그대로. 다른 게임 모드엔 영향 없음 (이 방송이 후원 모드일 때만 호출)
+async function _lbcAttachDonation(bridge, bcId, plat) {
+  bridge.dwHooks = { onDonation: (data) => { try { lbcDonation(bcId, plat, data); } catch (e) { console.warn("[lbc] donation", e.message); } } };
+  bridge.lbcDon = true;
+  if (plat === "soop") { bridge.donationSubscribed = true; bridge.donationError = null; return; } // 별풍선은 채팅방 신호로 들어옴 (비공식)
+  bridge.wantDonation = true; // 다시 연결될 때도 자동으로 후원 구독
+  if (!bridge.sessionKey) return; // 아직 연결 전이면 연결될 때 구독됨
+  try { if (bridge instanceof CimeChatBridge) await bridge._subscribeDonationCime(); else await bridge._subscribeDonationChzzk(); }
+  catch (e) { bridge.donationSubscribed = false; bridge.donationError = e.message; }
+}
 
 // ── 빙고 시청자 참여: 채팅 "!a1 !b3 c4" → 그 시청자가 '나도 해당'이라고 고른 칸들 (한 사람 한 칸에 1표, 여러 칸 가능)
 //    "!취소" / "!초기화" → 그 시청자가 고른 칸 전부 지움. 좌표는 오목과 같음: 글자 = 열(a=왼쪽), 숫자 = 행(1=위). 한글 자판 상태로 쳐도 됨
@@ -14779,7 +14790,7 @@ const chatBridges = new Map();
 
 // 스트리머 채팅연동 사용 로그 (운영자 admin 탭에서 확인) — 실패해도 게임 흐름엔 영향 없음
 // 콘텐츠(DB) 없이 쓰는 스트리머 모드(예: 그려봐)는 종류만 프론트가 알려 줌 — 허용 목록만 저장
-const STREAMER_LOG_MODES = { duowars: "플듀 대전쟁 스트리머 모드", draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", mafia: "플듀 마피아 스트리머 모드", ptest: "심리테스트 시청자 참여", bingo: "빙고 시청자 참여", raising: "플듀 키우기 스트리머 모드" };
+const STREAMER_LOG_MODES = { duowars: "플듀 대전쟁 스트리머 모드", draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", lifebc_don: "인생 방송국 후원 방송 모드", mafia: "플듀 마피아 스트리머 모드", ptest: "심리테스트 시청자 참여", bingo: "빙고 시청자 참여", raising: "플듀 키우기 스트리머 모드" };
 async function _logStreamerChat({ platform, channelId, nickname, contentId, roomCode, hostUserId, hostNick, contentMode }) {
   try {
     if (!platform || !channelId) return; // 식별자 없으면 기록 안 함
@@ -15255,7 +15266,8 @@ app.post("/chat-audience/lifebc-link", optionalAuth, async (req, res) => {
     if (!lbcExists(bcId)) return res.status(404).json({ ok: false, error: "BC_NOT_FOUND" });
     const plat = ["chzzk", "soop", "cime"].includes(req.body.platform) ? req.body.platform : "chat";
     bridge.setLifebc(String(bcId).slice(0, 16), plat);
-    return res.json({ ok: true, bridgeStatus: bridge.status });
+    if (req.body.donation && lbcIsDon(bcId) && plat !== "chat") await _lbcAttachDonation(bridge, String(bcId).slice(0, 16), plat);
+    return res.json({ ok: true, bridgeStatus: bridge.status, donation: bridge.lbcDon ? { ok: !!bridge.donationSubscribed, error: bridge.donationError || null } : null });
   } catch (err) {
     console.error("[CHAT_AUD] /lifebc-link 예외:", err);
     return res.status(500).json({ ok: false, error: "INTERNAL_ERROR" });
@@ -15264,7 +15276,7 @@ app.post("/chat-audience/lifebc-link", optionalAuth, async (req, res) => {
 app.get("/chat-audience/lifebc-stat", (req, res) => {
   const bridge = chatBridges.get(req.query.room);
   if (!bridge) return res.json({ ok: true, status: "no_bridge" });
-  return res.json({ ok: true, status: bridge.status, errorCode: bridge.errorCode || null, linked: bridge.mode === "lifebc", seen: bridge.lbcSeen || 0, votes: bridge.lbcVotes || 0, recent: (bridge.lbcRecent || []).slice().reverse(), chatMsgs: bridge.totalMessagesProcessed || 0 });
+  return res.json({ ok: true, status: bridge.status, errorCode: bridge.errorCode || null, linked: bridge.mode === "lifebc", donation: bridge.lbcDon ? { ok: !!bridge.donationSubscribed, error: bridge.donationError || null } : null, seen: bridge.lbcSeen || 0, votes: bridge.lbcVotes || 0, recent: (bridge.lbcRecent || []).slice().reverse(), chatMsgs: bridge.totalMessagesProcessed || 0 });
 });
 
 app.post("/chat-audience/omok-round", optionalAuth, async (req, res) => {
