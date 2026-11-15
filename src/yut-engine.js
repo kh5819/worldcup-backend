@@ -60,7 +60,7 @@ export class YutGame {
     const a = AUG[augId];
     p.augs.push({ id: augId, charges: a.charges ?? null });
     if (a.id === "ironWall") this.teams[p.team].defense += 1;
-    if (a.id === "absoluteDefense") this.teams[p.team].defense += 3;
+    if (a.id === "absoluteDefense") this.teams[p.team].defense += 2;
     p.offer = null; p.picked = true;
     this.emit("picked", { uid, aug: augId, auto });
     if ([...this.players.values()].every(q => q.picked)) this.endPick();
@@ -163,9 +163,9 @@ export class YutGame {
     if (r === 4) me.stats.yut++;
     if (r === 5) me.stats.mo++;
     const extra = [];
-    if (r === 4 && this.hasAug(me, "yutBlessing")) { extra.push(1); this.impact(me, "yutBlessing", 1); }
-    if (r === 5 && this.hasAug(me, "moBlessing")) { extra.push(2); this.impact(me, "moBlessing", 2); }
-    if (r === 1 && this.hasAug(me, "luckyDo") && me.luckyDo < 3) { me.luckyDo++; }
+    if (r === 4 && this.hasAug(me, "yutBlessing") && this.capLeft(me, "yutBlessing", 3)) { extra.push(1); this.capUse(me, "yutBlessing"); this.impact(me, "yutBlessing", 1); }
+    if (r === 5 && this.hasAug(me, "moBlessing") && this.capLeft(me, "moBlessing", 3)) { extra.push(2); this.capUse(me, "moBlessing"); this.impact(me, "moBlessing", 2); }
+    if (r === 1 && this.hasAug(me, "luckyDo") && me.luckyDo < 1 && this.capLeft(me, "luckyDo", 3)) { me.luckyDo++; this.capUse(me, "luckyDo"); }
     if (isBonus(r)) c.throws++;
     // 운명 강탈: 상대가 켜 뒀으면 이 차례 첫 결과를 가져감
     let stolenBy = null;
@@ -209,7 +209,7 @@ export class YutGame {
     const seen = new Set();
     for (const pc of this.pieces) {
       if (pc.team !== team || pc.pos === DONE) continue;
-      const key = pc.pos === HOME ? "home" : "n" + pc.pos;
+      const key = pc.pos === HOME ? "home" : "n" + pc.pos + (pc.clone ? "c" : "");
       if (seen.has(key)) continue;
       seen.add(key);
       if (this.groupBlocked(pc)) continue; // 봉쇄된 말이 하나라도 업혀 있으면 그 무리는 못 움직임
@@ -221,7 +221,8 @@ export class YutGame {
   groupBlocked(pc) { return pc.pos !== HOME && this.groupOf(pc).some(p => p.blocked); }
   groupOf(pc) {
     if (pc.pos === HOME || pc.pos === DONE) return [pc];
-    return this.pieces.filter(q => q.team === pc.team && q.pos === pc.pos);
+    // 분신은 진짜 말과 업히지 않고 따로 움직임 (분신끼리만)
+    return this.pieces.filter(q => q.team === pc.team && q.pos === pc.pos && !!q.clone === !!pc.clone);
   }
   prevOf(pc) { return pc.hist.length ? pc.hist[pc.hist.length - 1] : null; }
   /** 칸 수 보너스 계산 (앞으로 갈 때만) */
@@ -229,13 +230,13 @@ export class YutGame {
     if (r < 1 || !me) return { n: r, notes: [] };
     let n = r; const notes = [];
     if (this.mode === "augment") {
-      if ((r === 1 || r === 2) && this.hasAug(me, "quickStep") && this.capLeft(me, "quickStep", 3)) { n++; notes.push("quickStep"); }
-      if (me.luckyDo > 0 && this.hasAug(me, "luckyDo")) { n++; notes.push("luckyDo"); }
-      if (group.length >= 2 && this.hasAug(me, "buddyPower")) { n++; notes.push("buddyPower"); }
+      if ((r === 1 || r === 2) && this.hasAug(me, "quickStep") && this.capLeft(me, "quickStep", 6)) { n++; notes.push("quickStep"); }
+      if (me.luckyDo > 0 && this.hasAug(me, "luckyDo")) { n += 2; notes.push("luckyDo"); }
+      if (group.length >= 2 && this.hasAug(me, "buddyPower")) { n += 2; notes.push("buddyPower"); }
       if (pc.pos !== HOME && this.hasAug(me, "escapeArtist") && this.threatenedBy(pc, 3)) { n++; notes.push("escapeArtist"); }
       if (pc.pos !== HOME && this.hasAug(me, "lastDash") && distLeft(pc.pos, this.prevOf(pc)) <= 5) { n++; notes.push("lastDash"); }
-      if (pc.pos !== HOME && this.hasAug(me, "chaser") && this.preyAhead(pc, 4)) { n++; notes.push("chaser"); }
-      if (this.cur?.revenge && this.cur.moved === 0) { n += 2; notes.push("revengeStep"); }
+      if (pc.pos !== HOME && this.hasAug(me, "chaser") && this.preyAhead(pc, 5)) { n += 2; notes.push("chaser"); }
+      if (this.cur?.revenge) { n += 2; notes.push("revengeStep"); }
       if (this.hasAug(me, "comeback") && this.isBehind(me.team, 15)) { n += 2; notes.push("comeback"); }
       const alive = this.pieces.filter(q => q.team === me.team && !q.clone && q.pos !== DONE);
       if (alive.length === 1 && alive[0] === pc && this.hasAug(me, "finalDash")) { n *= 2; notes.push("finalDash"); }
@@ -250,11 +251,16 @@ export class YutGame {
     }
     const group = this.groupOf(pc);
     const { n, notes } = this.bonusSteps(pc, r, me, group);
+    const fork = !!(me && this.mode === "augment" && this.hasAug(me, "forkMaster") && this.capLeft(me, "forkMaster", 2));
     const flags = {
-      passTurn: !!(me && this.mode === "augment" && (this.hasAug(me, "forkMaster") || me.armed.pathWarp)) || !!flagsExtra.passTurn,
+      passTurn: fork || !!(me && this.mode === "augment" && me.armed.pathWarp) || !!flagsExtra.passTurn,
       gate15: !!(me && this.mode === "augment" && (this.hasAug(me, "shortcutOpen") || me.armed.pathWarp)) || !!flagsExtra.gate15,
     };
-    return forwardPaths(pc.pos, this.prevOf(pc), n, flags).map(p => ({ ...p, n, notes }));
+    const plain = new Set(forwardPaths(pc.pos, this.prevOf(pc), n, { gate15: flags.gate15 }).map(p => p.steps.join(",")));
+    return forwardPaths(pc.pos, this.prevOf(pc), n, flags).map(p => {
+      const turned = !plain.has(p.steps.join(",")); // 지나가며 꺾은 길
+      return { ...p, n, notes: turned && fork && !me.armed.pathWarp ? [...notes, "forkMaster"] : notes };
+    });
   }
 
   /** 결과 pending[ri] 로 말 pieceId 를 pathIdx 길로 이동 */
@@ -277,6 +283,7 @@ export class YutGame {
     // 보너스 소모
     for (const nt of path.notes || []) {
       if (nt === "quickStep") this.capUse(me, "quickStep");
+      if (nt === "forkMaster") this.capUse(me, "forkMaster");
       if (nt === "luckyDo") me.luckyDo--;
       this.impact(me, nt, 1);
     }
@@ -294,7 +301,7 @@ export class YutGame {
       }
     }
     // 무적 행군
-    if (me.armed.invincibleMarch) { me.armed.invincibleMarch = false; this.useCount(me, "invincibleMarch"); for (const g of group) if (g.pos !== DONE) g.guard = this.teams.length - 1; }
+    if (me.armed.invincibleMarch) { me.armed.invincibleMarch = false; this.useCount(me, "invincibleMarch"); for (const g of group) if (g.pos !== DONE) g.guard = (this.teams.length - 1) * 2; } // 상대 두 바퀴
     if (me.armed.pathWarp) { me.armed.pathWarp = false; this.useCount(me, "pathWarp"); }
     c.moved++;
     if (this.checkWin(c.team)) return { ok: true, win: true };
@@ -438,7 +445,7 @@ export class YutGame {
       }
       case "dimension": {
         const p = myPiece(); if (!p) return { ok: false, error: "BAD_TARGET" };
-        const k = Math.max(1, Math.ceil(distLeft(p.pos, this.prevOf(p)) / 2));
+        const k = Math.max(1, Math.ceil(distLeft(p.pos, this.prevOf(p)) * 2 / 3));
         const path = forwardPaths(p.pos, this.prevOf(p), k)[0];
         this.relocate(me, this.groupOf(p), path.to, path.steps, false); c.snap = null; r.steps = k;
         break;
@@ -459,6 +466,7 @@ export class YutGame {
         if (op === "GUARD") return { ok: false, error: "GUARDED" };
         if (op.shield > 0 && id === "swapPos") return { ok: false, error: "GUARDED" };
         if (id === "swapPos" && Math.abs(distLeft(mp.pos, this.prevOf(mp)) - distLeft(op.pos, this.prevOf(op))) > 6) return { ok: false, error: "TOO_FAR" };
+        if (id === "forceSwap" && distLeft(op.pos, this.prevOf(op)) <= 4) return { ok: false, error: "TOO_CLOSE_TO_FINISH" };
         const g1 = this.groupOf(mp), g2 = this.groupOf(op);
         const s1 = { pos: mp.pos, hist: mp.hist.slice() }, s2 = { pos: op.pos, hist: op.hist.slice() };
         for (const x of g1) { x.pos = s2.pos; x.hist = s2.hist.slice(); }
@@ -474,7 +482,7 @@ export class YutGame {
         if (op === "GUARD") return { ok: false, error: "GUARDED" };
         const g = this.groupOf(op);
         let to = op.pos;
-        for (let k = 0; k < 2; k++) { const h = g[0].hist; if (h.length) { to = h[h.length - 1]; for (const x of g) x.hist.pop(); } }
+        for (let k = 0; k < 3; k++) { const h = g[0].hist; if (h.length) { to = h[h.length - 1]; for (const x of g) x.hist.pop(); } }
         for (const x of g) x.pos = to;
         this.emit("move", { uid, team: op.team, pieces: g.map(x => x.id), from: op.pos, to, steps: [to], back: true, captured: 0, blocked: 0, pushed: true });
         this.impact(me, "pushBack", 2); c.snap = null;
@@ -492,7 +500,7 @@ export class YutGame {
         const p = myPiece(); if (!p || p.clone) return { ok: false, error: "BAD_TARGET" };
         if (this.pieces.some(x => x.team === c.team && x.clone)) return { ok: false, error: "ONE_CLONE" };
         const cl = newPiece(`t${c.team}c${++this.cloneSeq}`, c.team);
-        cl.pos = p.pos; cl.hist = p.hist.slice(); cl.clone = true; cl.ttl = 4; // 만든 차례 + 다음 내 차례 3번
+        cl.pos = p.pos; cl.hist = p.hist.slice(); cl.clone = true; cl.ttl = 6; // 만든 차례 + 다음 내 차례 5번
         this.pieces.push(cl);
         this.emit("fx", { kind: "clone", piece: cl.id, from: p.id, node: p.pos });
         c.snap = null;
@@ -509,8 +517,8 @@ export class YutGame {
         let list = homeCaptured;
         if (id === "reviveMarch") { const p = homeCaptured.find(x => x.id === pl.pieceId) || homeCaptured[0]; list = p ? [p] : []; }
         if (!list.length) return { ok: false, error: "NO_TARGET" };
-        for (const p of list) p.wasCaptured = false;
-        this.relocate(me, list, 1, [1], false);
+        for (const p of list) { p.wasCaptured = false; p.hist = [0, 1, 2, 3]; p.pos = 4; } // 모 자리(5)로 — 4를 거쳐 온 것처럼
+        this.relocate(me, list, 5, [5], false);
         this.impact(me, id, 6 * list.length); c.snap = null;
         break;
       }
@@ -636,10 +644,10 @@ export function aiChooseMove(g) {
       const group = g.groupOf(pc);
       const before = pc.pos === HOME ? 21 : distLeft(pc.pos, g.prevOf(pc));
       const after = m.to === DONE ? 0 : distLeft(m.to, m.steps.length > 1 ? m.steps[m.steps.length - 2] : pc.pos);
-      let s = (before - after) * 2;
+      let s = pc.clone ? 0 : (before - after) * 2; // 분신은 완주해도 소용없음 — 잡기에만 씀
       const victims = m.to === DONE ? [] : g.pieces.filter(o => o.team !== c.team && o.pos === m.to);
       if (victims.length && !victims.some(v => v.guard > 0 || v.shield > 0)) s += 55 + victims.length * 12 + victims.reduce((a, v) => a + (21 - distLeft(v.pos)), 0);
-      if (m.to === DONE) s += 40 * group.length;
+      if (m.to === DONE) s += pc.clone ? -5 : 40 * group.length;
       if (g.pieces.some(o => o.team === c.team && o.pos === m.to && !group.includes(o))) s += 6;
       if ([5, 10, 22].includes(m.to)) s += 10;
       const dNow = pc.pos === HOME ? 0 : danger(g, pc.pos, c.team);
@@ -669,7 +677,7 @@ export function aiChooseAug(g) {
     if (has("reviveMarch") && homeCap.length >= 1) return { id: "reviveMarch", pieceId: homeCap[0].id };
     if (has("blockade") && opp.length && g.rng() < 0.5) { const t = lead(opp); if (t && distLeft(t.pos, g.prevOf(t)) <= 8) return { id: "blockade", targetId: t.id }; }
     if (has("pushBack") && opp.length) { const t = lead(opp); if (t && !(t.guard > 0) && distLeft(t.pos, g.prevOf(t)) <= 10) return { id: "pushBack", targetId: t.id }; }
-    if (has("forceSwap") && mine.length && opp.length) { const t = lead(opp), m = mine.slice().sort((a, b) => distLeft(b.pos) - distLeft(a.pos))[0]; if (distLeft(m.pos, g.prevOf(m)) - distLeft(t.pos, g.prevOf(t)) >= 8) return { id: "forceSwap", pieceId: m.id, targetId: t.id }; }
+    if (has("forceSwap") && mine.length && opp.length) { const t = lead(opp), m = mine.slice().sort((a, b) => distLeft(b.pos) - distLeft(a.pos))[0]; if (distLeft(t.pos, g.prevOf(t)) > 4 && distLeft(m.pos, g.prevOf(m)) - distLeft(t.pos, g.prevOf(t)) >= 8) return { id: "forceSwap", pieceId: m.id, targetId: t.id }; }
     if (has("swapPos") && mine.length && opp.length) { for (const m of mine) for (const t of opp) { const d = distLeft(m.pos, g.prevOf(m)) - distLeft(t.pos, g.prevOf(t)); if (d >= 3 && d <= 6 && !(t.guard > 0) && !(t.shield > 0)) return { id: "swapPos", pieceId: m.id, targetId: t.id }; } }
     if (has("dimension") && mine.length) { const m = mine.slice().sort((a, b) => distLeft(b.pos) - distLeft(a.pos))[0]; if (distLeft(m.pos, g.prevOf(m)) >= 10) return { id: "dimension", pieceId: m.id }; }
     if (has("spaceRule") && mine.length) { const m = mine.find(p => distLeft(p.pos, g.prevOf(p)) > 8); if (m) return { id: "spaceRule", pieceId: m.id, node: 22 }; }
@@ -694,4 +702,11 @@ export function aiChooseAug(g) {
     if (has("groupMove") && !c.groupWith) { const groups = [...new Set(mine.map(p => p.pos))]; if (groups.length >= 2) { const a = mine.find(p => p.pos === groups[0]), b = mine.find(p => p.pos === groups[1]); return { id: "groupMove", pieceId: a.id, pieceId2: b.id }; } }
   }
   return null;
+}
+
+/** 운명의 선택: 두 결과 중 고르기 (윷·모 > 걸 > 개 > 도 > 빽도) */
+export function aiChooseChoice(g) {
+  const c = g.cur; if (!c?.choice) return 0;
+  const val = (r) => (r === 5 ? 6 : r === 4 ? 5 : r === -1 ? 0 : r);
+  return val(c.choice[1].result) > val(c.choice[0].result) ? 1 : 0;
 }

@@ -47,9 +47,9 @@ export function nextOptions(node, prev, start, flags = {}) {
   switch (node) {
     case 5: return start || flags.passTurn ? [20, 6] : [6];
     case 10: return start || flags.passTurn ? [25, 11] : [11];
-    case 15:
-      if (prev === 24) return [16];
-      return (start || flags.passTurn) && flags.gate15 ? [24, 16] : [16];
+    case 4: return start && flags.gate15 ? [5, 20] : [5];   // 지름길 개방: 모서리 건너뛰고 지름길
+    case 9: return start && flags.gate15 ? [10, 25] : [10];
+    case 15: return [16];
     case 20: return [21];
     case 21: return [22];
     case 25: return [26];
@@ -95,7 +95,7 @@ export function forwardPaths(pos, prev, n, flags = {}) {
 }
 function routeLabel(node, nx, k) {
   if (node === 22) return nx === 27 ? "출발점 쪽" : "반대쪽";
-  if (node === 15) return nx === 24 ? "지름길" : "바깥길";
+  if (node === 4 || node === 9) return nx === 20 || nx === 25 ? "지름길" : "바깥길";
   return k === 0 ? "지름길" : "바깥길";
 }
 
