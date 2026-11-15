@@ -131,7 +131,7 @@ export function registerDuoWars(io, supabaseAdmin, hooks = {}) {
     let amount = null;
     if (platform === "chzzk") amount = parseAmount(String(data.payAmount ?? "").replace(/[,\s]/g, ""));   // 치지직: 원 단위 문자열
     else if (platform === "soop") { const n = Number(data.balloons); amount = Number.isSafeInteger(n) && n > 0 ? parseAmount(n * SOOP_BALLOON_KRW) : null; } // SOOP: 별풍선 1개 = 100원
-    else if (platform === "cime") { const beam = Number(data.payAmountNumber ?? data.payAmount); const krw = beam * (r.stream.settings.cimeBeamKrw || 1); amount = Number.isFinite(krw) && Math.abs(krw - Math.round(krw)) < 1e-6 ? parseAmount(Math.round(krw)) : null; }
+    else if (platform === "cime") { const beam = Number(String(data.payAmountNumber ?? data.payAmount ?? "").replace(/[,\s]/g, "")) || NaN; const krw = beam * (r.stream.settings.cimeBeamKrw || 1); amount = Number.isFinite(krw) && Math.abs(krw - Math.round(krw)) < 1e-6 ? parseAmount(Math.round(krw)) : null; }
     const donor = data.donatorNickname || (data.donatorChannelId ? null : "익명 후원자");
     // 치지직·씨미 후원 이벤트엔 고유 번호가 없음 → 같은 내용이 3초 안에 두 번 오면 같은 후원으로 봄
     const t = Date.now(), base = [platform, data.channelId || "", data.donatorChannelId || "anon", data.payAmount ?? data.payAmountNumber ?? data.balloons ?? "", String(data.donationText || "").slice(0, 60), data.donationType || ""].join("|");

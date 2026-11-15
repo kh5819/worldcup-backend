@@ -72,20 +72,38 @@ function modeMaxPlayers(mode, ffaSize) {
 
 // ===== 초딩 모드 카드 정의 =====
 // 가중치 = 출현률 (총합 무관, 비율로 계산)
+// (2026-11-15) 8종 → 16종. 강한 카드는 덜 나오게, 약한 카드·견제 카드는 자주.
 const SPECIAL_CARDS = [
-  { id: "bomb",    emoji: "💣", name: "폭탄",     weight: 8  }, // 강
-  { id: "flip",    emoji: "🔄", name: "뒤집기",   weight: 8  }, // 강
-  { id: "replay",  emoji: "✨", name: "재행동",   weight: 7  }, // 강 (즉시 체크메이트 위험)
-  { id: "move",    emoji: "↔️", name: "이동",     weight: 18 }, // 중
-  { id: "wall",    emoji: "🧱", name: "벽",       weight: 15 }, // 중
-  { id: "push",    emoji: "🌀", name: "밀치기",   weight: 18 }, // 중
-  { id: "ghost",   emoji: "👻", name: "투명돌",   weight: 15 }, // 중 (본인 화면엔 보임)
-  { id: "lightning", emoji: "⚡", name: "번개",   weight: 13 }, // 약
+  // 강
+  { id: "bomb",    emoji: "💣", name: "폭탄",     weight: 7  },
+  { id: "flip",    emoji: "🔄", name: "뒤집기",   weight: 6  },
+  { id: "replay",  emoji: "✨", name: "재행동",   weight: 6  }, // 공짜 행동 (턴 안 끝남)
+  { id: "cross",   emoji: "💥", name: "십자폭탄", weight: 4  }, // 고른 칸 상하좌우 적 돌 제거
+  { id: "swap",    emoji: "🔁", name: "맞바꾸기", weight: 6  }, // 내 돌 ↔ 옆 적 돌
+  { id: "tornado", emoji: "🌪️", name: "회오리",   weight: 5  }, // 3×3 안 돌 섞기
+  // 중
+  { id: "move",    emoji: "↔️", name: "이동",     weight: 11 },
+  { id: "wall",    emoji: "🧱", name: "벽",       weight: 10 },
+  { id: "push",    emoji: "🌀", name: "밀치기",   weight: 11 },
+  { id: "ghost",   emoji: "👻", name: "투명돌",   weight: 9  }, // 본인 화면엔 보임
+  { id: "shield",  emoji: "🛡️", name: "방패",     weight: 9  }, // 내 돌 1개 한 바퀴 보호
+  { id: "steal",   emoji: "🃏", name: "훔치기",   weight: 5  }, // 공짜 행동
+  // 약
+  { id: "lightning", emoji: "⚡", name: "번개",   weight: 9  },
+  { id: "timeThief", emoji: "⏳", name: "시간도둑", weight: 7 }, // 공짜 행동
+  { id: "lucky",   emoji: "🎁", name: "럭키박스", weight: 5  }, // 공짜 행동
+  { id: "peek",    emoji: "👀", name: "엿보기",   weight: 5  }, // 공짜 행동
 ];
-const SPECIAL_CARDS_TOTAL_WEIGHT = SPECIAL_CARDS.reduce((s, c) => s + c.weight, 0); // 100
+const SPECIAL_CARD_IDS = new Set(SPECIAL_CARDS.map(c => c.id));
+const SPECIAL_CARDS_TOTAL_WEIGHT = SPECIAL_CARDS.reduce((s, c) => s + c.weight, 0);
+// 턴을 끝내지 않는 카드 (쓰고 나서 돌을 두거나 다른 카드를 더 쓸 수 있음)
+const FREE_ACTION_CARDS = new Set(["replay", "timeThief", "lucky", "peek", "steal"]);
+// 보드를 바꾸는 카드 — 쓰면 모두에게 보드 전체를 다시 보냄
+const BOARD_CHANGING_CARDS = new Set(["bomb", "flip", "move", "push", "lightning", "cross", "swap", "tornado"]);
 // 카드 효과 지속 턴 수
 const WALL_DURATION_TURNS = 1;   // 2→1
 const GHOST_REVEAL_TURNS = 1;    // 2→1
+const TIME_THIEF_MIN_SEC = 5;
 function drawRandomCard() {
   let r = Math.random() * SPECIAL_CARDS_TOTAL_WEIGHT;
   for (const c of SPECIAL_CARDS) {
@@ -187,6 +205,60 @@ function reassignColorsAndTeams(room) {
 // 보드 인덱스
 function idx(size, x, y) { return y * size + x; }
 
+// ===== 초딩 모드 도우미 =====
+// 이 색 돌의 주인(팀전이면 같은 색 여럿 → 입장 순서상 첫 사람)
+function ownerIdOfColor(room, color) {
+  return room.playerOrder.find(uid => room.players.get(uid)?.color === color) || null;
+}
+// me 기준으로 v 색 돌이 적 돌인가 (팀전 같은 팀 돌은 아군)
+function isEnemyStone(room, me, v) {
+  if (!v || v === me.color) return false;
+  if (me.team != null) {
+    const owner = room.players.get(ownerIdOfColor(room, v));
+    if (owner && owner.team === me.team) return false;
+  }
+  return true;
+}
+function isShielded(room, x, y) {
+  return !!(room.shields && room.shields.has(`${x},${y}`));
+}
+function inBoard(W, ...nums) {
+  return nums.every(n => Number.isInteger(n) && n >= 0 && n < W);
+}
+// 여러 칸이 바뀐 뒤 승리 검사 — 카드 쓴 사람 색을 먼저 봄
+function findWinAmong(room, cells, preferColor) {
+  const W = room.boardSize;
+  const sorted = cells.slice().sort((a, b) => {
+    const ca = room.board[idx(W, a.x, a.y)], cb = room.board[idx(W, b.x, b.y)];
+    return (cb === preferColor) - (ca === preferColor);
+  });
+  for (const c of sorted) {
+    const v = room.board[idx(W, c.x, c.y)];
+    if (!v) continue;
+    const line = findWinLine(room.board, W, c.x, c.y, v, room.winLength);
+    if (line) return { line, color: v };
+  }
+  return null;
+}
+function setWinner(room, line, color) {
+  const uid = ownerIdOfColor(room, color);
+  room.winLine = line;
+  room.winnerUserId = uid;
+  room.winnerTeam = uid ? (room.players.get(uid)?.team ?? null) : null;
+}
+// 다음 차례 사람(나 다음, 같은 팀 제외) — 시간도둑 대상
+function nextEnemyUid(room, me) {
+  const n = room.playerOrder.length;
+  for (let k = 1; k < n; k++) {
+    const uid = room.playerOrder[(room.currentTurnIdx + k) % n];
+    const p = room.players.get(uid);
+    if (!p) continue;
+    if (me.team != null && p.team === me.team) continue;
+    return uid;
+  }
+  return null;
+}
+
 // N목 검사 — 마지막 착수 좌표에서 4방향, 승리 길이는 winLength (3/4/5)
 const DIRS = [[1,0],[0,1],[1,1],[1,-1]];
 function findWinLine(board, size, x, y, color, winLength) {
@@ -240,6 +312,9 @@ function publicRoom(room, viewerUserId = null) {
       expireAtTurn: g.expireAtTurn,
     });
   }
+  // 방패 — 모두에게 공개 (어떤 돌이 보호 중인지 알아야 폭탄 대상에서 뺌)
+  const shields = [];
+  if (room.shields) for (const [key, v] of room.shields) shields.push({ key, expireAtTurn: v.expireAtTurn });
   return {
     id: room.id,
     inviteCode: room.inviteCode,
@@ -263,6 +338,8 @@ function publicRoom(room, viewerUserId = null) {
     turnCount: room.turnCount || 0,
     walls,
     ghosts,
+    shields,
+    timeThiefUserId: room.timeThiefFor || null,
   };
 }
 
@@ -336,16 +413,25 @@ function startTurn(io, room) {
   }
   clearBotTimer(room);
 
-  room.turnDeadline = Date.now() + room.turnTimeSec * 1000;
+  // 시간도둑: 이번 차례가 대상이면 제한 시간 절반 (재행동으로 이어지는 같은 사람 차례엔 다시 안 깎음)
+  let sec = room.turnTimeSec;
+  let timeStolen = false;
+  if (room.timeThiefFor && room.timeThiefFor === turnUid) {
+    sec = Math.max(TIME_THIEF_MIN_SEC, Math.ceil(sec / 2));
+    room.timeThiefFor = null;
+    timeStolen = true;
+  }
+  room.turnDeadline = Date.now() + sec * 1000;
 
   io.to(socketRoomName(room.id)).emit("omok:turnStart", {
     turnUserId: turnUid,
     turnDeadline: room.turnDeadline,
-    turnTimeSec: room.turnTimeSec,
+    turnTimeSec: sec,
+    timeStolen,
   });
 
   clearTurnTimer(room);
-  room.turnTimer = setTimeout(() => onTurnTimeout(io, room, turnUid), room.turnTimeSec * 1000);
+  room.turnTimer = setTimeout(() => onTurnTimeout(io, room, turnUid), sec * 1000);
 
   if (turnPlayer.isBot) scheduleBot(io, room, turnUid);
 }
@@ -386,9 +472,69 @@ function botTurn(io, room, uid, histLen) {
   if (room.status === "playing" && room.playerOrder[room.currentTurnIdx] === uid) {
     clearTurnTimer(room);
     io.to(socketRoomName(room.id)).emit("omok:turnPass", { userId: uid, name: bot.name, timedOut: false });
-    room.currentTurnIdx = (room.currentTurnIdx + 1) % room.playerOrder.length;
-    startTurn(io, room);
+    passTurn(io, room);
   }
+}
+
+// 착수 없이 차례를 넘김 (시간초과·끊김·봇 둘 곳 없음) — 재행동 효과는 버림, 턴 수는 셈(벽·투명돌 만료)
+function passTurn(io, room) {
+  room.replayNext = false;
+  if (endTurnCommon(io, room)) return;
+  room.currentTurnIdx = (room.currentTurnIdx + 1) % room.playerOrder.length;
+  startTurn(io, room);
+  if (room.specialMode === "kid") broadcastRoomState(io, room);
+}
+
+// 한 턴이 끝날 때 공통 처리: 턴 수 +1, 벽·방패 만료, 투명돌 공개(+승리 검사), 카드 지급.
+// 게임이 끝났으면 true
+function endTurnCommon(io, room) {
+  room.turnCount = (room.turnCount || 0) + 1;
+  if (room.walls && room.walls.size > 0) {
+    for (const [k, v] of room.walls) if (room.turnCount >= v.expireAtTurn) room.walls.delete(k);
+  }
+  if (room.shields && room.shields.size > 0) {
+    for (const [k, v] of room.shields) {
+      const [sx, sy] = k.split(",").map(Number);
+      // 만료됐거나 그 칸 돌이 사라졌으면 방패도 없앰
+      if (room.turnCount >= v.expireAtTurn || room.board[idx(room.boardSize, sx, sy)] === 0) room.shields.delete(k);
+    }
+  }
+  if (room.ghosts && room.ghosts.size > 0) {
+    const revealed = [];
+    for (const [k, g] of room.ghosts) {
+      if (room.turnCount < g.expireAtTurn) continue;
+      const [gx, gy] = k.split(",").map(Number);
+      const gi = idx(room.boardSize, gx, gy);
+      if (room.board[gi] === 0) {
+        room.board[gi] = g.color;
+        revealed.push({ x: gx, y: gy, color: g.color, ownerId: g.ownerId });
+      }
+      room.ghosts.delete(k);
+    }
+    for (const r of revealed) io.to(socketRoomName(room.id)).emit("omok:ghostReveal", r);
+    for (const r of revealed) {
+      const win = findWinLine(room.board, room.boardSize, r.x, r.y, r.color, room.winLength);
+      if (win) {
+        room.winLine = win;
+        room.winnerUserId = r.ownerId;
+        room.winnerTeam = room.players.get(r.ownerId)?.team ?? null;
+        endGame(io, room, win);
+        return true;
+      }
+    }
+  }
+  if (room.specialMode === "kid" && room.turnCount % CARDS_DRAW_INTERVAL === 0) {
+    // 모든 플레이어에게 카드 1장 (가득 찬 사람은 건너뜀)
+    for (const uid of room.playerOrder) {
+      const p = room.players.get(uid);
+      if (!p) continue;
+      if ((p.cards || []).length >= MAX_CARDS_PER_PLAYER) continue;
+      p.cards.push(drawRandomCard());
+      emitMyCards(io, room, uid);
+    }
+    io.to(socketRoomName(room.id)).emit("omok:cardDraw", { turn: room.turnCount });
+  }
+  return false;
 }
 
 function onTurnTimeout(io, room, expectedTurnUid) {
@@ -403,158 +549,234 @@ function onTurnTimeout(io, room, expectedTurnUid) {
     name: p?.name || "?",
     timedOut: true,
   });
-  // 다음 턴
-  room.currentTurnIdx = (room.currentTurnIdx + 1) % room.playerOrder.length;
-  startTurn(io, room);
+  passTurn(io, room);
 }
 
 // ===== 카드 효과 적용 =====
-// 반환: { ok, error?, effect? }
+// 반환: { ok, error?, effect?, private? }
+// 보드가 바뀌어 누군가 이기면 room.winLine 등만 채워 둠 — 끝내기는 useCard 처리에서 바로 함
 function applyCardEffect(io, room, userId, cardId, payload) {
   const me = room.players.get(userId);
   if (!me) return { ok: false, error: "NOT_PLAYER" };
   const W = room.boardSize;
+  const walled = (x, y) => room.walls.has(`${x},${y}`);
+  const ghosted = (x, y) => room.ghosts.has(`${x},${y}`);
 
-  if (cardId === "bomb") {
-    // 상대 돌 1개 제거 — payload.x, payload.y
+  if (cardId === "bomb" || cardId === "flip") {
     const x = Number(payload.x), y = Number(payload.y);
-    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= W || y >= W) return { ok: false, error: "INVALID_COORD" };
+    if (!inBoard(W, x, y)) return { ok: false, error: "INVALID_COORD" };
     const i = idx(W, x, y);
     const v = room.board[i];
     if (v === 0) return { ok: false, error: "EMPTY_CELL" };
     if (v === me.color) return { ok: false, error: "OWN_STONE" };
-    // 팀전: 같은 팀 돌도 제거 불가
-    if (me.team != null) {
-      const owner = [...room.players.values()].find(p => p.color === v);
-      if (owner && owner.team === me.team) return { ok: false, error: "OWN_TEAM_STONE" };
-    }
-    room.board[i] = 0;
-    return { ok: true, effect: { type: "bomb", x, y } };
-  }
-
-  if (cardId === "flip") {
-    // 상대 돌 → 내 돌
-    const x = Number(payload.x), y = Number(payload.y);
-    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= W || y >= W) return { ok: false, error: "INVALID_COORD" };
-    const i = idx(W, x, y);
-    const v = room.board[i];
-    if (v === 0) return { ok: false, error: "EMPTY_CELL" };
-    if (v === me.color) return { ok: false, error: "OWN_STONE" };
-    if (me.team != null) {
-      const owner = [...room.players.values()].find(p => p.color === v);
-      if (owner && owner.team === me.team) return { ok: false, error: "OWN_TEAM_STONE" };
+    if (!isEnemyStone(room, me, v)) return { ok: false, error: "OWN_TEAM_STONE" };
+    if (isShielded(room, x, y)) return { ok: false, error: "SHIELDED" };
+    if (cardId === "bomb") {
+      room.board[i] = 0;
+      return { ok: true, effect: { type: "bomb", x, y } };
     }
     room.board[i] = me.color;
-    // 뒤집기 후 즉시 5목 검사
     const win = findWinLine(room.board, W, x, y, me.color, room.winLength);
-    if (win) {
-      room.winLine = win;
-      room.winnerUserId = userId;
-      room.winnerTeam = me.team;
-      setTimeout(() => endGame(io, room, win), 50);
-    }
+    if (win) setWinner(room, win, me.color);
     return { ok: true, effect: { type: "flip", x, y, color: me.color } };
   }
 
   if (cardId === "move") {
-    // 내 돌 1개 → 빈 칸. payload: { fromX, fromY, toX, toY }
+    // 내 돌 1개 → 빈 칸 (벽·투명돌 칸 불가)
     const fx = Number(payload.fromX), fy = Number(payload.fromY);
     const tx = Number(payload.toX), ty = Number(payload.toY);
-    if (![fx,fy,tx,ty].every(n => Number.isInteger(n) && n >= 0 && n < W)) return { ok: false, error: "INVALID_COORD" };
+    if (!inBoard(W, fx, fy, tx, ty)) return { ok: false, error: "INVALID_COORD" };
     const fi = idx(W, fx, fy), ti = idx(W, tx, ty);
     if (room.board[fi] !== me.color) return { ok: false, error: "NOT_OWN_STONE" };
     if (room.board[ti] !== 0) return { ok: false, error: "TARGET_OCCUPIED" };
+    if (walled(tx, ty)) return { ok: false, error: "TARGET_WALLED" };
+    if (ghosted(tx, ty)) return { ok: false, error: "GHOST_HERE" };
     room.board[fi] = 0;
     room.board[ti] = me.color;
-    // 이동 후 5목 검사
+    // 방패는 돌을 따라감
+    const sk = `${fx},${fy}`;
+    if (room.shields.has(sk)) { room.shields.set(`${tx},${ty}`, room.shields.get(sk)); room.shields.delete(sk); }
     const win = findWinLine(room.board, W, tx, ty, me.color, room.winLength);
-    if (win) {
-      room.winLine = win;
-      room.winnerUserId = userId;
-      room.winnerTeam = me.team;
-      setTimeout(() => endGame(io, room, win), 50);
-    }
+    if (win) setWinner(room, win, me.color);
     return { ok: true, effect: { type: "move", fromX: fx, fromY: fy, toX: tx, toY: ty } };
   }
 
   if (cardId === "replay") {
-    // 다음 차례 같은 사람 한 번 더
+    if (room.replayNext) return { ok: false, error: "REPLAY_ALREADY" };
     room.replayNext = true;
     return { ok: true, effect: { type: "replay" } };
   }
 
   if (cardId === "lightning") {
-    // 랜덤 적 돌 1개 제거 (없으면 실패)
+    // 무작위 적 돌 1개 제거 (방패 돌 제외)
     const candidates = [];
     for (let i = 0; i < room.board.length; i++) {
       const v = room.board[i];
-      if (v === 0 || v === me.color) continue;
-      if (me.team != null) {
-        const owner = [...room.players.values()].find(p => p.color === v);
-        if (owner && owner.team === me.team) continue;
-      }
+      if (!isEnemyStone(room, me, v)) continue;
+      if (isShielded(room, i % W, Math.floor(i / W))) continue;
       candidates.push(i);
     }
     if (candidates.length === 0) return { ok: false, error: "NO_TARGET" };
     const i = candidates[Math.floor(Math.random() * candidates.length)];
     room.board[i] = 0;
-    const x = i % W, y = Math.floor(i / W);
-    return { ok: true, effect: { type: "lightning", x, y } };
+    return { ok: true, effect: { type: "lightning", x: i % W, y: Math.floor(i / W) } };
   }
 
-  if (cardId === "wall") {
-    // 빈 칸 1개 → 봉쇄
+  if (cardId === "wall" || cardId === "ghost") {
     const x = Number(payload.x), y = Number(payload.y);
-    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= W || y >= W) return { ok: false, error: "INVALID_COORD" };
-    const i = idx(W, x, y);
-    if (room.board[i] !== 0) return { ok: false, error: "OCCUPIED" };
+    if (!inBoard(W, x, y)) return { ok: false, error: "INVALID_COORD" };
+    if (room.board[idx(W, x, y)] !== 0) return { ok: false, error: "OCCUPIED" };
     const key = `${x},${y}`;
-    if (room.walls.has(key)) return { ok: false, error: "WALL_ALREADY" };
-    if (room.ghosts.has(key)) return { ok: false, error: "GHOST_HERE" };
-    room.walls.set(key, { placedByUserId: userId, expireAtTurn: room.turnCount + WALL_DURATION_TURNS + 1 });
-    return { ok: true, effect: { type: "wall", x, y } };
+    if (walled(x, y)) return { ok: false, error: "WALL_ALREADY" };
+    if (ghosted(x, y)) return { ok: false, error: "GHOST_HERE" };
+    if (cardId === "wall") {
+      room.walls.set(key, { placedByUserId: userId, expireAtTurn: room.turnCount + WALL_DURATION_TURNS + 1 });
+      return { ok: true, effect: { type: "wall", x, y } };
+    }
+    room.ghosts.set(key, { ownerId: userId, color: me.color, expireAtTurn: room.turnCount + GHOST_REVEAL_TURNS + 1 });
+    return { ok: true, effect: { type: "ghost", x, y, owner: userId } };
   }
 
   if (cardId === "push") {
-    // 인접 돌 1칸 밀기. payload: { fromX, fromY, toX, toY }
+    // 인접 돌 1칸 밀기 (상하좌우)
     const fx = Number(payload.fromX), fy = Number(payload.fromY);
     const tx = Number(payload.toX), ty = Number(payload.toY);
-    if (![fx,fy,tx,ty].every(n => Number.isInteger(n) && n >= 0 && n < W)) return { ok: false, error: "INVALID_COORD" };
+    if (!inBoard(W, fx, fy, tx, ty)) return { ok: false, error: "INVALID_COORD" };
     const fi = idx(W, fx, fy), ti = idx(W, tx, ty);
     if (room.board[fi] === 0) return { ok: false, error: "EMPTY_FROM" };
     if (room.board[ti] !== 0) return { ok: false, error: "TARGET_OCCUPIED" };
-    // 인접만 (상하좌우 1칸)
-    const dx = Math.abs(tx - fx), dy = Math.abs(ty - fy);
-    if (dx + dy !== 1) return { ok: false, error: "NOT_ADJACENT" };
-    // 도착이 벽이면 실패
-    if (room.walls.has(`${tx},${ty}`)) return { ok: false, error: "TARGET_WALLED" };
+    if (Math.abs(tx - fx) + Math.abs(ty - fy) !== 1) return { ok: false, error: "NOT_ADJACENT" };
+    if (walled(tx, ty)) return { ok: false, error: "TARGET_WALLED" };
+    if (ghosted(tx, ty)) return { ok: false, error: "GHOST_HERE" };
+    // 방패 돌은 적이 못 밂 (내 돌·아군 돌은 밀 수 있고 방패도 따라감)
     const pushedColor = room.board[fi];
+    const sk = `${fx},${fy}`;
+    if (room.shields.has(sk) && isEnemyStone(room, me, pushedColor)) return { ok: false, error: "SHIELDED" };
     room.board[fi] = 0;
     room.board[ti] = pushedColor;
-    // 밀친 결과 5목 만들어졌는지 검사 (그 돌의 주인 기준)
-    const ownerOfPushed = [...room.players.values()].find(p => p.color === pushedColor);
-    if (ownerOfPushed) {
-      const win = findWinLine(room.board, W, tx, ty, pushedColor, room.winLength);
-      if (win) {
-        room.winLine = win;
-        room.winnerUserId = [...room.players.entries()].find(([uid, p]) => p.color === pushedColor)?.[0] || null;
-        room.winnerTeam = ownerOfPushed.team;
-        setTimeout(() => endGame(io, room, win), 50);
-      }
-    }
+    if (room.shields.has(sk)) { room.shields.set(`${tx},${ty}`, room.shields.get(sk)); room.shields.delete(sk); }
+    const win = findWinLine(room.board, W, tx, ty, pushedColor, room.winLength);
+    if (win) setWinner(room, win, pushedColor);
     return { ok: true, effect: { type: "push", fromX: fx, fromY: fy, toX: tx, toY: ty } };
   }
 
-  if (cardId === "ghost") {
-    // 빈 칸 1개 → 1턴 후 공개되는 돌
+  if (cardId === "cross") {
+    // 고른 칸의 상하좌우 4칸 적 돌 제거 (가운데 칸은 그대로, 방패 돌 제외)
     const x = Number(payload.x), y = Number(payload.y);
-    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= W || y >= W) return { ok: false, error: "INVALID_COORD" };
-    const i = idx(W, x, y);
-    if (room.board[i] !== 0) return { ok: false, error: "OCCUPIED" };
-    const key = `${x},${y}`;
-    if (room.walls.has(key) || room.ghosts.has(key)) return { ok: false, error: "BLOCKED" };
-    room.ghosts.set(key, { ownerId: userId, color: me.color, expireAtTurn: room.turnCount + GHOST_REVEAL_TURNS + 1 });
-    return { ok: true, effect: { type: "ghost", x, y, owner: userId } };
+    if (!inBoard(W, x, y)) return { ok: false, error: "INVALID_COORD" };
+    const removed = [];
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, ny = y + dy;
+      if (!inBoard(W, nx, ny)) continue;
+      const v = room.board[idx(W, nx, ny)];
+      if (!isEnemyStone(room, me, v) || isShielded(room, nx, ny)) continue;
+      removed.push({ x: nx, y: ny });
+    }
+    if (removed.length === 0) return { ok: false, error: "NO_TARGET" };
+    for (const c of removed) room.board[idx(W, c.x, c.y)] = 0;
+    return { ok: true, effect: { type: "cross", x, y, removed } };
+  }
+
+  if (cardId === "swap") {
+    // 내 돌 ↔ 바로 옆(8방향) 적 돌 자리 바꾸기
+    const fx = Number(payload.fromX), fy = Number(payload.fromY);
+    const tx = Number(payload.toX), ty = Number(payload.toY);
+    if (!inBoard(W, fx, fy, tx, ty)) return { ok: false, error: "INVALID_COORD" };
+    if (Math.max(Math.abs(tx - fx), Math.abs(ty - fy)) !== 1) return { ok: false, error: "NOT_ADJACENT" };
+    const fi = idx(W, fx, fy), ti = idx(W, tx, ty);
+    if (room.board[fi] !== me.color) return { ok: false, error: "NOT_OWN_STONE" };
+    const ev = room.board[ti];
+    if (ev === 0) return { ok: false, error: "EMPTY_CELL" };
+    if (!isEnemyStone(room, me, ev)) return { ok: false, error: "OWN_TEAM_STONE" };
+    if (isShielded(room, tx, ty)) return { ok: false, error: "SHIELDED" };
+    room.board[fi] = ev;
+    room.board[ti] = me.color;
+    const sk = `${fx},${fy}`;
+    if (room.shields.has(sk)) { room.shields.set(`${tx},${ty}`, room.shields.get(sk)); room.shields.delete(sk); }
+    const w = findWinAmong(room, [{ x: tx, y: ty }, { x: fx, y: fy }], me.color);
+    if (w) setWinner(room, w.line, w.color);
+    return { ok: true, effect: { type: "swap", fromX: fx, fromY: fy, toX: tx, toY: ty } };
+  }
+
+  if (cardId === "tornado") {
+    // 고른 칸 중심 3×3 안의 돌을 무작위로 섞음 (벽·투명돌·방패 칸은 그대로)
+    const x = Number(payload.x), y = Number(payload.y);
+    if (!inBoard(W, x, y)) return { ok: false, error: "INVALID_COORD" };
+    const cells = [];
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const nx = x + dx, ny = y + dy;
+      if (!inBoard(W, nx, ny) || walled(nx, ny) || ghosted(nx, ny) || isShielded(room, nx, ny)) continue;
+      cells.push({ x: nx, y: ny });
+    }
+    const vals = cells.map(c => room.board[idx(W, c.x, c.y)]);
+    const stones = vals.filter(v => v !== 0).length;
+    if (stones === 0 || stones === cells.length) return { ok: false, error: "NOTHING_TO_SHUFFLE" };
+    // 같은 배치가 나오면 다시 섞기 (최대 10번)
+    const before = vals.join(",");
+    for (let t = 0; t < 10; t++) { shuffleArr(vals); if (vals.join(",") !== before) break; }
+    cells.forEach((c, k) => { room.board[idx(W, c.x, c.y)] = vals[k]; });
+    const w = findWinAmong(room, cells, me.color);
+    if (w) setWinner(room, w.line, w.color);
+    return { ok: true, effect: { type: "tornado", x, y } };
+  }
+
+  if (cardId === "shield") {
+    // 내 돌 1개를 한 바퀴(모두 한 번씩 둘 때까지) 동안 보호
+    const x = Number(payload.x), y = Number(payload.y);
+    if (!inBoard(W, x, y)) return { ok: false, error: "INVALID_COORD" };
+    const v = room.board[idx(W, x, y)];
+    if (v === 0) return { ok: false, error: "EMPTY_CELL" };
+    if (isEnemyStone(room, me, v)) return { ok: false, error: "NOT_OWN_STONE" };
+    if (isShielded(room, x, y)) return { ok: false, error: "SHIELD_ALREADY" };
+    room.shields.set(`${x},${y}`, { ownerId: userId, expireAtTurn: room.turnCount + room.playerOrder.length + 1 });
+    return { ok: true, effect: { type: "shield", x, y } };
+  }
+
+  if (cardId === "timeThief") {
+    const target = nextEnemyUid(room, me);
+    if (!target) return { ok: false, error: "NO_TARGET" };
+    if (room.timeThiefFor === target) return { ok: false, error: "ALREADY_STOLEN" };
+    room.timeThiefFor = target;
+    return { ok: true, effect: { type: "timeThief", targetId: target, targetName: room.players.get(target)?.name || "?" } };
+  }
+
+  if (cardId === "lucky") {
+    // 카드 2장 (가득 차면 그만큼만) — 이 카드는 이미 손에서 빠진 상태
+    const space = MAX_CARDS_PER_PLAYER - me.cards.length;
+    const n = Math.min(2, space);
+    const got = [];
+    for (let k = 0; k < n; k++) { const c = drawRandomCard(); me.cards.push(c); got.push(c); }
+    return { ok: true, effect: { type: "lucky", count: n } };
+  }
+
+  if (cardId === "peek") {
+    // 적들의 카드 보기 — 쓴 사람에게만 내용 전달
+    const list = [];
+    for (const uid of room.playerOrder) {
+      const p = room.players.get(uid);
+      if (!p || uid === userId) continue;
+      if (me.team != null && p.team === me.team) continue;
+      list.push({ userId: uid, name: p.name, cards: (p.cards || []).slice() });
+    }
+    if (list.length === 0) return { ok: false, error: "NO_TARGET" };
+    return { ok: true, effect: { type: "peek" }, private: { peek: list } };
+  }
+
+  if (cardId === "steal") {
+    // 카드가 있는 적 중 무작위 1명에게서 무작위 카드 1장
+    if (me.cards.length >= MAX_CARDS_PER_PLAYER) return { ok: false, error: "HAND_FULL" };
+    const victims = room.playerOrder.filter(uid => {
+      const p = room.players.get(uid);
+      if (!p || uid === userId || !(p.cards || []).length) return false;
+      return !(me.team != null && p.team === me.team);
+    });
+    if (victims.length === 0) return { ok: false, error: "NO_TARGET" };
+    const vid = victims[Math.floor(Math.random() * victims.length)];
+    const vp = room.players.get(vid);
+    const card = vp.cards.splice(Math.floor(Math.random() * vp.cards.length), 1)[0];
+    me.cards.push(card);
+    emitMyCards(io, room, vid);
+    return { ok: true, effect: { type: "steal", victimId: vid, victimName: vp.name }, private: { stolen: card } };
   }
 
   return { ok: false, error: "UNKNOWN_CARD" };
@@ -609,64 +831,18 @@ function placeStone(io, room, userId, x, y) {
     return endGame(io, room, null, "BOARD_FULL");
   }
 
-  // 턴 카운트 + 카드 지급 (초딩 모드)
-  room.turnCount = (room.turnCount || 0) + 1;
-
-  // 만료된 벽 제거
-  if (room.walls && room.walls.size > 0) {
-    for (const [k, v] of room.walls) {
-      if (room.turnCount >= v.expireAtTurn) room.walls.delete(k);
-    }
-  }
-  // 만료된 ghost → 실제 돌로 변환 + 5목 검사
-  if (room.ghosts && room.ghosts.size > 0) {
-    const revealed = [];
-    for (const [k, g] of room.ghosts) {
-      if (room.turnCount >= g.expireAtTurn) {
-        const [gx, gy] = k.split(",").map(Number);
-        const gi = idx(room.boardSize, gx, gy);
-        if (room.board[gi] === 0) {
-          room.board[gi] = g.color;
-          revealed.push({ x: gx, y: gy, color: g.color, ownerId: g.ownerId });
-        }
-        room.ghosts.delete(k);
-      }
-    }
-    // 공개된 돌마다 5목 검사
-    for (const r of revealed) {
-      io.to(socketRoomName(room.id)).emit("omok:ghostReveal", r);
-      const win = findWinLine(room.board, room.boardSize, r.x, r.y, r.color, room.winLength);
-      if (win) {
-        room.winLine = win;
-        room.winnerUserId = r.ownerId;
-        const ownerP = room.players.get(r.ownerId);
-        room.winnerTeam = ownerP?.team ?? null;
-        setTimeout(() => endGame(io, room, win), 50);
-        return { ok: true };
-      }
-    }
-  }
-
-  if (room.specialMode === "kid" && room.turnCount % CARDS_DRAW_INTERVAL === 0) {
-    // 살아있는 모든 플레이어에게 카드 1장 (인벤토리 가득찬 사람은 스킵)
-    for (const uid of room.playerOrder) {
-      const p = room.players.get(uid);
-      if (!p) continue;
-      if ((p.cards || []).length >= MAX_CARDS_PER_PLAYER) continue;
-      p.cards.push(drawRandomCard());
-      emitMyCards(io, room, uid);
-    }
-    io.to(socketRoomName(room.id)).emit("omok:cardDraw", { turn: room.turnCount });
-  }
+  // 턴 마무리 (턴 수·벽/방패 만료·투명돌 공개·카드 지급)
+  if (endTurnCommon(io, room)) return { ok: true };
 
   // 재행동: 같은 플레이어가 한 번 더 두기
   if (room.replayNext) {
     room.replayNext = false;
-    startTurn(io, room);
   } else {
     room.currentTurnIdx = (room.currentTurnIdx + 1) % room.playerOrder.length;
-    startTurn(io, room);
   }
+  startTurn(io, room);
+  // 초딩 모드: 벽이 사라지거나 투명돌이 공개된 걸 화면에 알림 (전엔 다른 카드를 쓸 때까지 옛 벽이 남아 보였음)
+  if (room.specialMode === "kid") broadcastRoomState(io, room);
 
   return { ok: true };
 }
@@ -678,7 +854,10 @@ function countNonZero(arr) {
 }
 
 function endGame(io, room, winLine, reason = "WIN") {
+  if (room.status === "ended") return { ok: true }; // 두 번 끝내기 방지
   room.status = "ended";
+  room.replayNext = false;
+  room.timeThiefFor = null;
   clearTurnTimer(room);
   clearBotTimer(room);
 
@@ -693,6 +872,8 @@ function endGame(io, room, winLine, reason = "WIN") {
     winLength: room.winLength,
     historyLen: room.history.length,
     history: room.history.slice(0),
+    // 초딩 모드: 카드로 바뀐 실제 최종 판 (결과 화면 마지막 장면용)
+    finalBoard: room.specialMode === "kid" ? Array.from(room.board) : null,
     boardSize: room.boardSize,
     mode: room.mode,
     players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
@@ -767,6 +948,8 @@ export function registerOmok(io, supabaseAdmin) {
           replayNext: false,     // 다음 턴 한 번 더 두기 플래그
           walls: new Map(),      // key="x,y" → { placedByUserId, expireAtTurn }
           ghosts: new Map(),     // key="x,y" → { ownerId, color, expireAtTurn }
+          shields: new Map(),    // key="x,y" → { ownerId, expireAtTurn } (방패)
+          timeThiefFor: null,    // 시간도둑 대상 userId
           turnDeadline: null,
           turnTimer: null,
           botTimer: null,
@@ -819,8 +1002,9 @@ export function registerOmok(io, supabaseAdmin) {
             clearEmptyRoomTimer(room);
             socket.join(socketRoomName(roomId));
             omokUserRoom.set(me.id, roomId);
-            cb?.({ ok: true, roomId, inviteCode: room.inviteCode, room: publicRoom(room), reconnected: true });
+            cb?.({ ok: true, roomId, inviteCode: room.inviteCode, room: publicRoom(room, me.id), reconnected: true });
             broadcastRoomState(io, room);
+            if (room.specialMode === "kid") emitMyCards(io, room, me.id); // 재접속하면 내 카드 다시 보여줌
             // 모두 끊겨 멈춰 있던 판(타이머 없음)이면 다시 진행
             if (room.status === "playing") {
               const curBot = room.players.get(room.playerOrder[room.currentTurnIdx])?.isBot;
@@ -964,6 +1148,8 @@ export function registerOmok(io, supabaseAdmin) {
       room.replayNext = false;
       room.walls = new Map();
       room.ghosts = new Map();
+      room.shields = new Map();
+      room.timeThiefFor = null;
       room.board = new Int8Array(room.boardSize * room.boardSize);
       room.history = [];
       room.lastMove = null;
@@ -973,15 +1159,10 @@ export function registerOmok(io, supabaseAdmin) {
 
       reassignColorsAndTeams(room);
 
-      // 초딩 모드: 시작 시 각 플레이어 카드 1장
-      if (room.specialMode === "kid") {
-        for (const uid of room.playerOrder) {
-          const p = room.players.get(uid);
-          if (p) {
-            p.cards = [drawRandomCard()];
-            emitMyCards(io, room, uid);
-          }
-        }
+      // 초딩 모드: 시작 시 각 플레이어 카드 1장 (일반 모드면 지난 판 카드 비움)
+      for (const uid of room.playerOrder) {
+        const p = room.players.get(uid);
+        if (p) p.cards = room.specialMode === "kid" ? [drawRandomCard()] : [];
       }
 
       cb?.({ ok: true });
@@ -993,7 +1174,11 @@ export function registerOmok(io, supabaseAdmin) {
         winLength: room.winLength,
         players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
       });
+      // 카드는 gameStart 뒤에 보냄 — 화면이 gameStart 때 카드 칸을 비우기 때문에
+      // 먼저 보내면 첫 카드가 안 보였음 (5턴 뒤 다음 카드 받을 때까지 빈 칸)
+      if (room.specialMode === "kid") for (const uid of room.playerOrder) emitMyCards(io, room, uid);
       startTurn(io, room);
+      if (room.specialMode === "kid") broadcastRoomState(io, room); // 지난 판 벽·투명돌 표시 지우기
     });
 
     // ===== placeStone =====
@@ -1020,92 +1205,45 @@ export function registerOmok(io, supabaseAdmin) {
       const player = room.players.get(me.id);
       if (!player) return cb?.({ ok: false, error: "NOT_PLAYER" });
       const cardId = String(payload?.cardId || "");
+      if (!SPECIAL_CARD_IDS.has(cardId)) return cb?.({ ok: false, error: "UNKNOWN_CARD" });
       const cardIdx = (player.cards || []).indexOf(cardId);
       if (cardIdx < 0) return cb?.({ ok: false, error: "CARD_NOT_OWNED" });
 
-      const result = applyCardEffect(io, room, me.id, cardId, payload || {});
-      if (!result.ok) return cb?.(result);
-
-      // 카드 소모
+      // 카드를 먼저 손에서 빼고 효과 적용 (럭키박스·훔치기가 빈자리를 셀 수 있게). 실패하면 되돌림
       player.cards.splice(cardIdx, 1);
+      const result = applyCardEffect(io, room, me.id, cardId, payload || {});
+      if (!result.ok) { player.cards.splice(cardIdx, 0, cardId); return cb?.(result); }
+
       emitMyCards(io, room, me.id);
-      // 보드 변경된 카드 (폭탄/뒤집기/이동/밀기/번개) — 클라 보드 동기화
-      const boardChangingCards = new Set(["bomb", "flip", "move", "push", "lightning"]);
-      const includeBoard = boardChangingCards.has(cardId);
       io.to(socketRoomName(room.id)).emit("omok:cardUsed", {
         userId: me.id, name: player.name, cardId,
         effect: result.effect || null,
-        board: includeBoard ? Array.from(room.board) : null,
+        board: BOARD_CHANGING_CARDS.has(cardId) ? Array.from(room.board) : null,
       });
 
-      // 카드 사용 = 한 액션 = 그 턴 종료 (재행동만 예외)
-      if (cardId === "replay") {
-        // replay: 그 턴 계속 — 다음 placeStone 후 한 번 더 자기 차례
-        // (replayNext 플래그는 applyCardEffect에서 설정됨)
-        broadcastRoomState(io, room);
-        cb?.({ ok: true });
+      // 카드로 누군가 5목을 만들었으면 바로 끝냄 (전엔 50ms 늦게 끝내서 그 사이 다음 차례가 시작되고
+      // 투명돌 공개가 승자를 덮어쓰거나 끝내기가 두 번 일어날 수 있었음)
+      if (room.winLine) {
+        endGame(io, room, room.winLine);
+        cb?.({ ok: true, ...(result.private || {}) });
         return;
       }
 
-      // 일반 카드: 그 턴 종료 (turnCount++ + 만료/지급 + 다음 차례)
+      // 공짜 행동 카드: 턴 계속 (같은 사람이 이어서 돌을 두거나 카드를 더 씀)
+      if (FREE_ACTION_CARDS.has(cardId)) {
+        broadcastRoomState(io, room);
+        cb?.({ ok: true, ...(result.private || {}) });
+        return;
+      }
+
+      // 일반 카드: 그 턴 종료 (돌을 두지 않음)
       clearTurnTimer(room);
-      room.turnCount = (room.turnCount || 0) + 1;
-      // 벽 만료
-      if (room.walls && room.walls.size > 0) {
-        for (const [k, v] of room.walls) {
-          if (room.turnCount >= v.expireAtTurn) room.walls.delete(k);
-        }
-      }
-      // ghost 만료 + 5목 검사
-      let gameEnded = false;
-      if (room.ghosts && room.ghosts.size > 0) {
-        const revealed = [];
-        for (const [k, g] of room.ghosts) {
-          if (room.turnCount >= g.expireAtTurn) {
-            const [gx, gy] = k.split(",").map(Number);
-            const gi = idx(room.boardSize, gx, gy);
-            if (room.board[gi] === 0) {
-              room.board[gi] = g.color;
-              revealed.push({ x: gx, y: gy, color: g.color, ownerId: g.ownerId });
-            }
-            room.ghosts.delete(k);
-          }
-        }
-        for (const r of revealed) {
-          io.to(socketRoomName(room.id)).emit("omok:ghostReveal", r);
-          const win = findWinLine(room.board, room.boardSize, r.x, r.y, r.color, room.winLength);
-          if (win) {
-            room.winLine = win;
-            room.winnerUserId = r.ownerId;
-            const ownerP = room.players.get(r.ownerId);
-            room.winnerTeam = ownerP?.team ?? null;
-            setTimeout(() => endGame(io, room, win), 50);
-            gameEnded = true;
-            break;
-          }
-        }
-      }
-      if (gameEnded) { broadcastRoomState(io, room); cb?.({ ok: true }); return; }
-      // 5턴마다 카드 지급
-      if (room.turnCount % CARDS_DRAW_INTERVAL === 0) {
-        for (const uid of room.playerOrder) {
-          const p = room.players.get(uid);
-          if (!p) continue;
-          if ((p.cards || []).length >= MAX_CARDS_PER_PLAYER) continue;
-          p.cards.push(drawRandomCard());
-          emitMyCards(io, room, uid);
-        }
-        io.to(socketRoomName(room.id)).emit("omok:cardDraw", { turn: room.turnCount });
-      }
-      // 다음 차례 (replayNext 우선)
-      if (room.replayNext) {
-        room.replayNext = false;
-      } else {
-        room.currentTurnIdx = (room.currentTurnIdx + 1) % room.playerOrder.length;
-      }
-      broadcastRoomState(io, room);
-      cb?.({ ok: true });
+      cb?.({ ok: true, ...(result.private || {}) });
+      if (endTurnCommon(io, room)) { broadcastRoomState(io, room); return; }
+      if (room.replayNext) room.replayNext = false;
+      else room.currentTurnIdx = (room.currentTurnIdx + 1) % room.playerOrder.length;
       startTurn(io, room);
+      broadcastRoomState(io, room);
     });
 
     // ===== requestState =====
@@ -1117,8 +1255,9 @@ export function registerOmok(io, supabaseAdmin) {
       // 진행중이라면 보드 전체 + history 함께 보내서 즉시 복원 가능
       const payload = {
         ok: true,
-        room: publicRoom(room),
+        room: publicRoom(room, me.id),
       };
+      if (room.specialMode === "kid") payload.myCards = (room.players.get(me.id)?.cards || []).slice();
       if (room.status === "playing" || room.status === "ended") {
         payload.boardArray = Array.from(room.board);
         payload.history = room.history.slice(0);
@@ -1255,8 +1394,7 @@ export function registerOmok(io, supabaseAdmin) {
             timedOut: false,
             disconnected: true,
           });
-          room.currentTurnIdx = (room.currentTurnIdx + 1) % room.playerOrder.length;
-          startTurn(io, room);
+          passTurn(io, room);
         }
         broadcastRoomState(io, room);
         // 모두 끊기면 일정 시간 뒤 정리
@@ -1301,6 +1439,7 @@ function leavePlayer(io, room, userId, forced) {
     }
     if (wasTurn) {
       clearTurnTimer(room);
+      room.replayNext = false; // 나간 사람의 재행동이 다음 사람에게 넘어가지 않게
       startTurn(io, room);
     }
     // 남은 인원이 모드 최소 인원보다 적으면 무승부 종료

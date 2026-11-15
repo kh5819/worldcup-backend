@@ -43,7 +43,7 @@ export function lbcDonation(bcId, platform, raw) {
   let amount = null, beam = null;
   if (platform === "chzzk") { const n = Number(String(d.payAmount ?? "").replace(/[,\s]/g, "")); amount = Number.isSafeInteger(n) && n > 0 && n <= 1e8 ? n : null; } // 원
   else if (platform === "soop") { const n = Number(d.balloons); amount = Number.isSafeInteger(n) && n > 0 && n <= 1e6 ? n * SOOP_BALLOON_KRW : null; } // 별풍선 1개 = 100원
-  else if (platform === "cime") { const n = Number(d.payAmountNumber ?? d.payAmount); beam = Number.isFinite(n) && n > 0 && n <= 1e8 ? n : null; } // 빔 → 원 환산은 스트리머 설정
+  else if (platform === "cime") { const n = Number(String(d.payAmountNumber ?? d.payAmount ?? "").replace(/[,\s]/g, "")) || NaN; beam = Number.isFinite(n) && n > 0 && n <= 1e8 ? n : null; } // 빔 → 원 환산은 스트리머 설정
   if (amount == null && beam == null) return null;
   const donor = clean(d.donatorNickname, 16), text = clean(d.donationText, 80), t = now();
   // 치지직·씨미는 후원마다 고유 번호가 없음 → 같은 내용이 3초 안에 또 오면 같은 후원으로 봄 (SOOP은 연달아 쏘기가 많아 안 거름)
