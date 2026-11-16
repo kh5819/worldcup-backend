@@ -54,6 +54,7 @@ import { registerGolf } from "./golf.js";
 import { registerAppleMulti } from "./apple-multi.js";
 import { registerBlockBlastMulti } from "./blockblast-multi.js";
 import { registerBlockRoyale } from "./blockroyale-multi.js";
+import { registerAugScores } from "./aug-scores.js";
 import { registerDuoWars } from "./duowars.js"; // 플듀 대전쟁 (2026-11-13)
 import { registerYacht } from "./yacht.js"; // 플듀 증강 야추 (2026-11-15)
 import { registerYut } from "./yut.js"; // 플듀 증강 윷놀이 (2026-11-15)
@@ -11185,6 +11186,7 @@ registerGolf(io, supabaseAdmin);
 registerAppleMulti(io, supabaseAdmin);
 registerBlockBlastMulti(io, supabaseAdmin);
 registerBlockRoyale(io, supabaseAdmin, app);
+registerAugScores(app, supabaseAdmin, { getOptionalUser }); // 증강 모드 랭킹(사과·블록블래스트) 2026-11-16
 registerDuoWars(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k), logStreamer: (o) => _logStreamerChat(o) }); // 플듀 대전쟁 (스트리머 모드: 채팅·후원 연결)
 registerPublicRooms(app, io);
 
