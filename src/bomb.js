@@ -66,8 +66,8 @@ function tickRoom(io, room) {
     if (itemsKey !== room.sentItems) { extra.items = g.itemsArr(); room.sentItems = itemsKey; }
     // 지뢰는 주인(팀)에게만 보여서 스냅샷을 사람마다 따로
     const hasHidden = g.bombs.some(b => b.hidden);
-    if (!hasHidden) { const s = { ...g.snapshot(null), ...extra }; io.to(chan(room.id)).volatile.emit("bomb:snap", s); }
-    else for (const [uid, sid] of sockets(room)) io.to(sid).volatile.emit("bomb:snap", { ...g.snapshot(uid), ...extra });
+    if (!hasHidden) { const s = { ...g.snapshot(null), ...extra }; io.to(chan(room.id)).emit("bomb:snap", s); }
+    else for (const [uid, sid] of sockets(room)) io.to(sid).emit("bomb:snap", { ...g.snapshot(uid), ...extra });
     // 내 능력치는 4틱마다
     if (room.tickN % 4 === 0) for (const m of room.members.values()) if (!m.isBot && m.sockId && m.connected) io.to(m.sockId).emit("bomb:me", g.meState(m.id));
   }

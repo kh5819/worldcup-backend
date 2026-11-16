@@ -177,6 +177,7 @@ export class BombGame {
     if (!p || !p.alive || this.phase !== "play") return { ok: false, error: "CANT" };
     const x = opts.x ?? Math.round(p.x), y = opts.y ?? Math.round(p.y);
     if (!inb(x, y) || this.tiles[idx(x, y)] !== T_FLOOR || this.bombAt(x, y)) return { ok: false, error: "OCCUPIED" };
+    if (this.bombs.some(b => b.x === x && b.y === y && b.kind === "mine" && (b.owner === uid || (this.teamMode && b.team === p.team)))) return { ok: false, error: "OCCUPIED" }; // 내(우리 팀) 지뢰 위엔 못 놓음
     if (!opts.free && this.bombs.filter(b => b.owner === uid && !b.free).length >= p.maxBombs) return { ok: false, error: "MAX_BOMBS" };
     let kind = opts.kind || "normal", range = opts.range ?? p.range;
     if (!opts.kind && !opts.free) {
@@ -297,6 +298,8 @@ export class BombGame {
         for (const q of this.players.values()) { if (!q.alive || q.team === p.team) continue; const d = Math.abs(q.x - p.x) + Math.abs(q.y - p.y); if (d <= 6 && d < bd) { bd = d; best = q; } }
         if (!best) return { ok: false, error: "NO_TARGET" };
         const tx = best.x, ty = best.y; best.x = p.x; best.y = p.y; p.x = tx; p.y = ty;
+        // 유령 걸음 중인 사람과 바꾸면 상자·벽 속에 들어갈 수 있음 → 가까운 빈칸으로
+        for (const q of [p, best]) { const cx = Math.round(q.x), cy = Math.round(q.y); if (!q.ghost && this.tiles[idx(cx, cy)] !== T_FLOOR) { const c = this.nearestFree(cx, cy); if (c) { q.x = c[0]; q.y = c[1]; } } }
         return { ok: true, fx: { other: best.id } };
       }
     }
@@ -409,8 +412,10 @@ export class BombGame {
       if (p.ghost && p.ghost <= this.t) { p.ghost = 0; const cx = Math.round(p.x), cy = Math.round(p.y); if (this.tiles[idx(cx, cy)] !== T_FLOOR) { const c = this.nearestFree(cx, cy); if (c) { p.x = c[0]; p.y = c[1]; } } }
       // 순간이동 패드
       const si = this.sp[idx(Math.round(p.x), Math.round(p.y))];
-      if ((si === SP.TP_A || si === SP.TP_B) && !p.tpLock) { const o = this.otherPad(Math.round(p.x), Math.round(p.y), si); if (o) { const fx = p.x, fy = p.y; p.x = o[0]; p.y = o[1]; p.tpLock = true; this.emit("tp", { uid: p.id, fx, fy, x: o[0], y: o[1] }); } }
+      // 패드 가운데쯤 올라서야 타고, 한 번 타면 2초 동안은 다시 안 탐(왔다 갔다 무한 반복 방지)
+      if ((si === SP.TP_A || si === SP.TP_B) && !p.tpLock && !(p.tpAt > this.t - 2) && Math.abs(p.x - Math.round(p.x)) < 0.3 && Math.abs(p.y - Math.round(p.y)) < 0.3) { const o = this.otherPad(Math.round(p.x), Math.round(p.y), si); if (o) { const fx = p.x, fy = p.y; p.x = o[0]; p.y = o[1]; p.tpLock = true; p.tpAt = this.t; if (p.bot) p.bot.path = null; this.emit("tp", { uid: p.id, fx, fy, x: o[0], y: o[1] }); } }
       else if (si !== SP.TP_A && si !== SP.TP_B) p.tpLock = false;
+      else if (p.tpAt > this.t - 2) p.tpLock = true; // 다시 탈 수 없는 동안 밟은 패드는 한 번 내려와야 탐
       // 아이템
       const ii = idx(Math.round(p.x), Math.round(p.y)), it = this.items.get(ii);
       if (it && Math.abs(p.x - Math.round(p.x)) < 0.45 && Math.abs(p.y - Math.round(p.y)) < 0.45) { this.items.delete(ii); this.giveItem(p, it); this.emit("item", { uid: p.id, it, x: Math.round(p.x), y: Math.round(p.y) }); }
@@ -663,6 +668,7 @@ function bfs(g, p, sx, sy, dm, okCell, maxD = 30) {
       const nx = x + DIRS[dd][0], ny = y + DIRS[dd][1]; if (!inb(nx, ny)) continue;
       const n = idx(nx, ny); if (dist[n] >= 0) continue;
       if (g.solidFor(p, nx, ny)) continue;
+      if (g.sp[n] === SP.TP_A || g.sp[n] === SP.TP_B) continue; // 봇은 순간이동 패드를 밟지 않음
       const arrive = (d + 1) / sp;
       if (dm[n] < arrive + 0.35 && dm[n] > arrive - 0.6) continue; // 그때 불길이면 못 감
       if (dm[n] === 0) continue;
