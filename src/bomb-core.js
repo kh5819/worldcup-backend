@@ -413,7 +413,7 @@ export class BombGame {
       // 순간이동 패드
       const si = this.sp[idx(Math.round(p.x), Math.round(p.y))];
       // 패드 가운데쯤 올라서야 타고, 한 번 타면 2초 동안은 다시 안 탐(왔다 갔다 무한 반복 방지)
-      if ((si === SP.TP_A || si === SP.TP_B) && !p.tpLock && !(p.tpAt > this.t - 2) && Math.abs(p.x - Math.round(p.x)) < 0.3 && Math.abs(p.y - Math.round(p.y)) < 0.3) { const o = this.otherPad(Math.round(p.x), Math.round(p.y), si); if (o) { const fx = p.x, fy = p.y; p.x = o[0]; p.y = o[1]; p.tpLock = true; p.tpAt = this.t; if (p.bot) p.bot.path = null; this.emit("tp", { uid: p.id, fx, fy, x: o[0], y: o[1] }); } }
+      if ((si === SP.TP_A || si === SP.TP_B) && !p.tpLock && !(p.tpAt > this.t - 2) && Math.abs(p.x - Math.round(p.x)) < 0.3 && Math.abs(p.y - Math.round(p.y)) < 0.3) { let o = this.otherPad(Math.round(p.x), Math.round(p.y), si); if (o) { o = this.padExit(o, p.dir); const fx = p.x, fy = p.y; p.x = o[0]; p.y = o[1]; p.tpLock = true; p.tpAt = this.t; if (p.bot) p.bot.path = null; this.emit("tp", { uid: p.id, fx, fy, x: o[0], y: o[1] }); } }
       else if (si !== SP.TP_A && si !== SP.TP_B) p.tpLock = false;
       else if (p.tpAt > this.t - 2) p.tpLock = true; // 다시 탈 수 없는 동안 밟은 패드는 한 번 내려와야 탐
       // 아이템
@@ -590,6 +590,10 @@ export class BombGame {
 
   // ---------------- 도우미 ----------------
   freeNeighbor(x, y) { for (const [dx, dy] of shuffle([[1, 0], [-1, 0], [0, 1], [0, -1]], this.rng)) { const nx = x + dx, ny = y + dy; if (inb(nx, ny) && this.tiles[idx(nx, ny)] === T_FLOOR && !this.bombAtAny(nx, ny)) return [nx, ny]; } return null; }
+  // 도착 패드 바로 앞 빈칸 (가던 방향 먼저) — 패드 위에 서지 않아 다시 타지는 일이 없음
+  padExit(o, dir) { const order = [dir, 1, 2, 3, 4].filter((d, i, a) => d >= 1 && d <= 4 && a.indexOf(d) === i);
+    for (const d of order) { const x = o[0] + DIRS[d][0], y = o[1] + DIRS[d][1]; const v = this.sp[idx(x, y)]; if (inb(x, y) && this.tiles[idx(x, y)] === T_FLOOR && !this.bombAtAny(x, y) && v !== SP.TP_A && v !== SP.TP_B) return [x, y]; }
+    return o; }
   nearestFree(x, y) { for (let r = 1; r < 8; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) { const nx = x + dx, ny = y + dy; if (inb(nx, ny) && this.tiles[idx(nx, ny)] === T_FLOOR && !this.bombAtAny(nx, ny)) return [nx, ny]; } return null; }
   randomFree() { for (let k = 0; k < 80; k++) { const x = 1 + Math.floor(this.rng() * (W - 2)), y = 1 + Math.floor(this.rng() * (H - 2)); const i = idx(x, y); if (this.tiles[i] === T_FLOOR && !this.items.has(i) && !this.bombAtAny(x, y)) return [x, y]; } return null; }
   otherPad(x, y, v) { for (let i = 0; i < W * H; i++) if (this.sp[i] === v && i !== idx(x, y) && this.tiles[i] === T_FLOOR && !this.bombAtAny(i % W, (i / W) | 0)) return [i % W, (i / W) | 0]; return null; }
