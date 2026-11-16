@@ -34,3 +34,9 @@ create table if not exists public.blockblast_aug_scores (
 create unique index if not exists ux_blockblast_aug_scores_user on public.blockblast_aug_scores (user_id);
 create index if not exists idx_blockblast_aug_scores_score on public.blockblast_aug_scores (score desc, created_at) where flagged = false;
 alter table public.blockblast_aug_scores enable row level security;
+
+-- (같은 날 추가) 비로그인(게스트)도 증강 랭킹에: user_id 비워도 되게 + 게스트 번호 칸
+alter table public.apple_aug_scores alter column user_id drop not null, add column if not exists guest_id text;
+create unique index if not exists ux_apple_aug_scores_guest on public.apple_aug_scores (guest_id) where guest_id is not null;
+alter table public.blockblast_aug_scores alter column user_id drop not null, add column if not exists guest_id text;
+create unique index if not exists ux_blockblast_aug_scores_guest on public.blockblast_aug_scores (guest_id) where guest_id is not null;

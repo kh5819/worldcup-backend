@@ -15878,7 +15878,7 @@ app.get("/dodge/leaderboard/me", async (req, res) => {
 // 로그인 유저만 공식 랭킹. 유저당 1 row UPSERT (최고점만 갱신).
 // 랭킹은 TOP 10만 노출 (하드 캡).
 // ============================================================
-const APPLE_TOP_LIMIT = 10;
+const APPLE_TOP_LIMIT = 50;
 
 async function fetchAppleLeaderboard(supabase, { dailyOnly = false }) {
   const base = supabase
@@ -16090,7 +16090,7 @@ app.get("/apple/leaderboard/me", async (req, res) => {
 // 2026-05-21
 // 로그인 유저만. UPSERT (난이도 X, 한 종류). TOP 10.
 // ============================================================
-const BLOCKBLAST_TOP_LIMIT = 10;
+const BLOCKBLAST_TOP_LIMIT = 50;
 
 async function fetchBlockBlastLeaderboard(supabase, { dailyOnly = false }) {
   const base = supabase
