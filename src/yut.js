@@ -89,9 +89,12 @@ function sync(io, room) {
       clearTimers(room); room.timerKey = key;
       const m = room.players.get(g.cur.uid);
       if (room.turnSec > 0 && !isAuto(m)) {
-        room.turnDeadline = now() + room.turnSec * 1000;
-        const tn = g.turnNo;
-        room.turnTimer = setTimeout(() => { room.turnTimer = null; if (g.turnNo === tn && g.phase === "play") autoTurn(io, room, tn, true); }, room.turnSec * 1000 + 300);
+        // 같은 차례에 다시 들어오면(새로고침) 남은 시간 그대로 — 단 최소 10초
+        const full = now() + room.turnSec * 1000;
+        room.turnDeadline = room.dlTurn === g.turnNo && room.dlAt ? Math.min(full, Math.max(room.dlAt, now() + 10000)) : full;
+        room.dlTurn = g.turnNo; room.dlAt = room.turnDeadline;
+        const tn = g.turnNo, ms = room.turnDeadline - now();
+        room.turnTimer = setTimeout(() => { room.turnTimer = null; if (g.turnNo === tn && g.phase === "play") autoTurn(io, room, tn, true); }, ms + 300);
       } else room.turnDeadline = null;
       if (m && (m.isBot || m.left)) scheduleBot(io, room, g.turnNo);
       else if (m && !m.connected) room.dcTimer = setTimeout(() => { room.dcTimer = null; scheduleBot(io, room, g.turnNo, 0); }, DC_AUTO_MS);
@@ -154,7 +157,7 @@ function startGame(io, room) {
   // 팀전 순서: 팀을 번갈아 (엔진이 팀 순서대로 돌고 팀 안에서 번갈아 던짐)
   const players = room.order.map(uid => { const m = room.players.get(uid); return { id: uid, name: m.name, team: m.team, isBot: m.isBot }; });
   room.game = new YutGame(players, { mode: room.mode, pieces: room.pieces, backdo: room.backdo, maxAugs: room.maxAugs, pickEvery: room.pickEvery });
-  room.status = "playing"; room.result = null; room.timerKey = null;
+  room.status = "playing"; room.result = null; room.timerKey = null; room.dlTurn = 0; room.dlAt = 0;
   emitAll(io, room, "yut:start", { mode: room.mode });
   room.game.start();
   sync(io, room);
@@ -213,6 +216,7 @@ export function registerYut(io, supabaseAdmin) {
     const myRoom = () => { const id = userRoom.get(me.id); const r = id ? rooms.get(id) : null; return r && (r.players.has(me.id) || r.spectators.has(me.id)) ? r : null; };
     const guard = (fn) => (pl, cb) => { const reply = typeof cb === "function" ? cb : () => {}; const fail = (e) => { console.error("[yut]", e); try { reply({ ok: false, error: "INTERNAL" }); } catch {} }; try { const r = fn(pl || {}, reply); if (r && r.catch) r.catch(fail); } catch (e) { fail(e); } };
     let win = 0, cnt = 0; const tooFast = () => { const t = now(); if (t - win > 1000) { win = t; cnt = 0; } return ++cnt > 15; };
+    let hwin = 0, hcnt = 0; const hoverFast = () => { const t = now(); if (t - hwin > 1000) { hwin = t; hcnt = 0; } return ++hcnt > 12; }; // 미리보기는 따로 셈 (이동 버튼이 막히지 않게)
 
     socket.on("yut:createRoom", guard(async (pl, cb) => {
       { const f = createFlight("yut", me.id, cb); if (!f) return; cb = f; }
@@ -264,6 +268,7 @@ export function registerYut(io, supabaseAdmin) {
       if (room.players.size >= room.maxPlayers) return cb({ ok: false, error: "ROOM_FULL" });
       const t0 = [...room.players.values()].filter(x => x.team === 0).length;
       const m = newMember(me.id, name, { avatar, isGuest: me.isGuest, sockId: socket.id, team: room.teamMode === "team" ? (t0 > room.players.size - t0 ? 1 : 0) : room.players.size });
+      room.spectators.delete(me.id); // 관전하다 빈자리로 들어온 경우
       room.players.set(me.id, m); room.order.push(me.id);
       attach(io, socket, room, m);
       cb({ ok: true, code: room.inviteCode, me: me.id, meta: META });
@@ -279,7 +284,12 @@ export function registerYut(io, supabaseAdmin) {
     });
     socket.on("yut:setOpts", hostLobby((room, pl) => {
       if (pl.mode === "classic" || pl.mode === "augment") room.mode = pl.mode;
-      if (pl.teamMode === "team" || pl.teamMode === "ffa") { room.teamMode = pl.teamMode; if (!limits(room).includes(room.maxPlayers)) room.maxPlayers = Math.max(room.players.size, room.teamMode === "team" ? 4 : 4); if (!limits(room).includes(room.maxPlayers)) room.maxPlayers = limits(room).find(n => n >= room.players.size) || limits(room).at(-1); }
+      if ((pl.teamMode === "team" || pl.teamMode === "ffa") && pl.teamMode !== room.teamMode) {
+        if (pl.teamMode === "ffa" && room.players.size > 6) return { ok: false, error: "FFA_MAX6" };
+        room.teamMode = pl.teamMode;
+        if (!limits(room).includes(room.maxPlayers)) room.maxPlayers = limits(room).find(n => n >= Math.max(room.maxPlayers, room.players.size)) || limits(room).at(-1);
+        room.order.forEach((uid, i) => (room.players.get(uid).team = room.teamMode === "team" ? i % 2 : i)); // 팀전이면 번갈아 두 팀으로
+      }
       if (pl.maxPlayers !== undefined) { const n = Number(pl.maxPlayers); if (!limits(room).includes(n)) return { ok: false, error: "BAD_MAX" }; if (n < room.players.size) return { ok: false, error: "BELOW_CURRENT" }; room.maxPlayers = n; }
       if ([2, 3, 4].includes(Number(pl.pieces))) room.pieces = Number(pl.pieces);
       if (typeof pl.backdo === "boolean") room.backdo = pl.backdo;
@@ -339,7 +349,7 @@ export function registerYut(io, supabaseAdmin) {
     socket.on("yut:pick", act((g, pl) => pl.refresh ? g.refreshOffer(me.id) : g.pick(me.id, String(pl.id || ""))));
     // 지금 고르는 말·길 미리 보기를 다른 사람에게 (판정 없음)
     socket.on("yut:hover", (pl) => {
-      if (tooFast()) return;
+      if (hoverFast()) return;
       const room = myRoom(); if (!room?.game?.cur || room.game.cur.uid !== me.id) return;
       const pieceId = pl?.pieceId ? String(pl.pieceId).slice(0, 20) : null;
       const to = Number.isInteger(pl?.to) && pl.to >= -1 && pl.to <= 99 ? pl.to : null;

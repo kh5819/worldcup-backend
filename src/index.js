@@ -57,6 +57,8 @@ import { registerBlockRoyale } from "./blockroyale-multi.js";
 import { registerDuoWars } from "./duowars.js"; // 플듀 대전쟁 (2026-11-13)
 import { registerYacht } from "./yacht.js"; // 플듀 증강 야추 (2026-11-15)
 import { registerYut } from "./yut.js"; // 플듀 증강 윷놀이 (2026-11-15)
+import { registerChess } from "./chess.js"; // 플듀 증강 체스 (2026-11-16)
+import { registerBomb } from "./bomb.js"; // DUO BOMB ARENA (2026-11-16)
 import { registerPublicRooms, addPublicList } from "./public-rooms.js";
 import { installLobbyBurstGuard } from "./lobby-burst-guard.js";
 import { registerRaisingPvp } from "./raising-pvp.js";
@@ -11160,6 +11162,8 @@ registerOxGame(io, supabaseAdmin);
 registerOmok(io, supabaseAdmin);
 registerYacht(io, supabaseAdmin); // 플듀 증강 야추
 registerYut(io, supabaseAdmin); // 플듀 증강 윷놀이
+registerChess(io, supabaseAdmin); // 플듀 증강 체스
+registerBomb(io, supabaseAdmin); // DUO BOMB ARENA
 
 // =========================
 // 난장 카드게임 — 독립 모듈 등록 (cg:* 이벤트 prefix)
