@@ -48,9 +48,11 @@ export class TerritoryGame {
     this.emit("start");
     if (this.mode === "augment") this.startPick(0); else this.phase = "play";
   }
+  // 증강 받을 수 있는 사람: 나가지 않았고, 5개 미만이고, 완전히 탈락하지 않음(부활 대기 중이면 받음)
+  canPick(p) { return !p.gone && p.augs.length < MAX_AUGS && !(p.outAt != null && !p.alive && !p.respawnAt); }
   startPick(idx) {
     this.phase = "pick"; this.pickIdx = idx; this.pickDeadline = Date.now() + PICK_MS;
-    for (const p of this.P) { if (p.gone || p.augs.length >= MAX_AUGS) { p.offer = null; p.picked = true; continue; } p.offer = rollOffer(idx, p.augs.map(a => a.id), this.rng); p.picked = !p.offer.length; p.refresh = 1; }
+    for (const p of this.P) { if (!this.canPick(p)) { p.offer = null; p.picked = true; continue; } p.offer = rollOffer(idx, p.augs.map(a => a.id), this.rng); p.picked = !p.offer.length; p.refresh = 1; }
     this.emit("pick", { idx });
     if (this.P.every(p => p.picked)) this.endPick();
   }
@@ -205,7 +207,7 @@ export class TerritoryGame {
     // 경기 시간·고르기
     if (this.t >= this.duration) { this.finish("time"); return true; }
     if (!this.respawn) { const teams = new Set(this.P.filter(p => p.alive).map(p => p.team)); if (this.P.length > 1 && teams.size <= 1) { this.finish("survivor"); return true; } }
-    if (this.mode === "augment" && this.t >= this.nextPickAt && this.duration - this.t > 20 && this.P.some(p => !p.gone && p.augs.length < MAX_AUGS)) this.startPick(this.pickIdx + 1);
+    if (this.mode === "augment" && this.t >= this.nextPickAt && this.duration - this.t > 20 && this.P.some(p => this.canPick(p))) this.startPick(this.pickIdx + 1);
     return true;
   }
   /** 칸 들어가기 처리: entries = [[플레이어, 칸, noCollide]] — 이동·대시·순간이동 공용 */

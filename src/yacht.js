@@ -164,6 +164,7 @@ function startPick(io, room, idx) {
   room.pickDeadline = now() + PICK_SEC * 1000;
   for (const uid of activeIds(room)) {
     const p = room.players.get(uid);
+    if (isDone(p)) { p.offer = null; p.picked = true; continue; } // 칸을 다 채워 끝난 사람은 안 고름
     p.offer = Y.rollOffer(idx, p.augs.map(a => a.id));
     p.picked = !p.offer.length;
   }
