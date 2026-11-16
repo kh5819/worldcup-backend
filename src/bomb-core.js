@@ -8,7 +8,7 @@ export const W = 15, H = 13, TICK = 0.05;
 export const T_FLOOR = 0, T_WALL = 1, T_BOX = 2;
 // 특수 바닥: 1 얼음 · 2~5 컨베이어(위·오른·아래·왼) · 6 화산 분출구 · 7/8 순간이동 패드 · 9 덤불
 export const SP = { ICE: 1, CV_U: 2, CV_R: 3, CV_D: 4, CV_L: 5, VENT: 6, TP_A: 7, TP_B: 8, BUSH: 9 };
-export const THEMES = ["classic", "ice", "jungle", "toy", "volcano", "space"];
+export const THEMES = ["classic", "ice", "jungle", "toy", "volcano"]; // 우주(순간이동 패드)는 11-16 삭제
 export const ITEMS = ["bomb", "fire", "speed", "kick", "glove", "shield", "dash", "special"];
 export const SPECIAL_KINDS = ["pierce", "ice", "giant", "mine", "split", "moving", "chain"];
 const DIRS = [[0, 0], [0, -1], [1, 0], [0, 1], [-1, 0]]; // 0 없음 1 위 2 오른 3 아래 4 왼
