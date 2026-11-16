@@ -8,6 +8,8 @@
 import { createFlight } from "./create-flight.js";
 import { addPublicList } from "./public-rooms.js";
 import { BRGame, encodeBoard } from "./br-core.js";
+// 증강 모드(2026-11-16): 고르기는 사람마다 따로(내 판만 잠깐 멈춤), 서버가 같은 엔진으로 고르기·능력까지 다시 돌려 확인
+const hasAug = (p, id) => !!p?.game?.aug?.list?.includes(id);
 
 const rooms = new Map(), invites = new Map(), userRoom = new Map();
 export const BR = {
@@ -21,7 +23,7 @@ const isBig = (r) => r.order.length >= BR.bigAt;
 const clampName = (s) => String(s || "익명").slice(0, 14);
 const genCode = () => { for (let i = 0; i < 50; i++) { const c = String(Math.floor(Math.random() * 1e6)).padStart(6, "0"); if (!invites.has(c)) return c; } return String(Math.floor(Math.random() * 1e7)).padStart(7, "0"); };
 function newPlayer(name, isGuest, avatar, socketId, idx, ip) { return { name: clampName(name), isGuest: !!isGuest, avatar_url: avatar || null, connected: true, socketId, idx, ip, ready: false, team: null, status: "active", wantSpec: false, target: "random", manual: null, curTarget: null, game: null, board: "0|", rev: 0, gseq: 0, inbox: [], kos: 0, assists: 0, recv: 0, sent: 0, maxAtk: 0, tetra: 0, tspins: 0, perfects: 0, place: 0, deadAt: 0, survived: 0, comeback: 0, hits: new Map(), bucket: BR.lockCap, bucketAt: 0, lastLock: 0, invalid: 0, resyncs: 0, dirtyRow: true, dirtyBoard: false, watch: null, watchers: 0, lastCur: 0, vis: null, dcTimer: null }; }
-const pub = (u, p) => ({ playerId: u, idx: p.idx, nickname: p.name, isGuest: p.isGuest, avatar_url: p.avatar_url, connected: p.connected, ready: p.ready, team: p.team, status: p.status, wantSpec: p.wantSpec, place: p.place, kos: p.kos, assists: p.assists, sent: p.sent, score: p.game?.score || 0, lines: p.game?.lines || 0, maxCombo: p.game?.maxCombo || 0, pieces: p.game?.pieces || 0, survived: p.survived, maxAtk: p.maxAtk, tetra: p.tetra, tspins: p.tspins, perfects: p.perfects });
+const pub = (u, p) => ({ playerId: u, idx: p.idx, nickname: p.name, isGuest: p.isGuest, avatar_url: p.avatar_url, connected: p.connected, ready: p.ready, team: p.team, status: p.status, wantSpec: p.wantSpec, place: p.place, kos: p.kos, assists: p.assists, sent: p.sent, score: p.game?.score || 0, lines: p.game?.lines || 0, maxCombo: p.game?.maxCombo || 0, pieces: p.game?.pieces || 0, survived: p.survived, maxAtk: p.maxAtk, tetra: p.tetra, tspins: p.tspins, perfects: p.perfects, augs: p.game?.aug?.list || p.game?.augs || [] });
 const pubOpts = (r) => { const { password, ...o } = r.opts; return { ...o, hasPassword: !!password }; };
 const pubRoom = (r) => ({ id: r.id, inviteCode: r.inviteCode, hostUserId: r.hostUserId, status: r.status, opts: pubOpts(r), startsAt: r.startsAt, deadline: r.deadline, total: r.total, players: r.order.map((u) => pub(u, r.players.get(u))) });
 const emitRoom = (io, r) => io.to(sr(r.id)).emit("br:roomState", pubRoom(r));
@@ -88,7 +90,7 @@ function finish(io, r, reason) {
   const mvp = order.slice().sort((a, b) => { const x = r.players.get(a), y = r.players.get(b); return (y.kos * 3 + y.sent) - (x.kos * 3 + x.sent) || (y.game?.score || 0) - (x.game?.score || 0); })[0] || null;
   io.to(sr(r.id)).emit("br:ended", { reason, mode: r.opts.mode, winTeam: r.winTeam ?? null, total: r.total, durationSec: Math.round((now - r.startsAt) / 1000), mvp, ranking, rematch: r.opts.rematch });
   emitRoom(io, r); r.onFinish?.(r, ranking, now);
-  for (const p of r.players.values()) { p.game = p.game ? { score: p.game.score, lines: p.game.lines, maxCombo: p.game.maxCombo, pieces: p.game.pieces, height: () => 0, pendingGarbage: () => 0 } : null; p.inbox = []; p.hits = new Map(); }
+  for (const p of r.players.values()) { p.game = p.game ? { score: p.game.score, lines: p.game.lines, maxCombo: p.game.maxCombo, pieces: p.game.pieces, augs: p.game.aug?.list || [], height: () => 0, pendingGarbage: () => 0 } : null; p.inbox = []; p.hits = new Map(); }
 }
 function leave(io, r, uid) {
   if (!r.players.has(uid)) return; const wasHost = r.hostUserId === uid, p = r.players.get(uid); if (p.dcTimer) { clearTimeout(p.dcTimer); p.dcTimer = null; }
@@ -115,12 +117,25 @@ function pickTarget(r, uid, p) {
 }
 // 후반으로 갈수록 공격이 세짐 (배틀로얄·팀전만)
 const stageMul = (r) => { const a = actives(r).length, t = r.total; if (t < 3) return 1; if (a <= 2) return 1.5; if (a <= 5 && t > 5) return 1.25; if (a <= 10 && t > 10) return 1.1; return 1; };
-function deliver(io, r, uid, p, raw) {
-  if (r.opts.mode === "score") return; p.atkFrac = (p.atkFrac || 0) + raw * r.opts.atkMul * stageMul(r); const n = Math.min(20, Math.floor(p.atkFrac)); if (n <= 0) return; p.atkFrac -= n;
-  const t = pickTarget(r, uid, p); if (!t) return; const [tu, tp] = t, now = Date.now(); p.curTarget = tu; p.sent += n; p.maxAtk = Math.max(p.maxAtk, n); p.dirtyRow = true; tp.recv += n;
+function sendPk(io, uid, p, tu, tp, n) {
+  const now = Date.now(); p.sent += n; p.maxAtk = Math.max(p.maxAtk, n); p.dirtyRow = true; tp.recv += n;
   const pk = { s: ++tp.gseq, n, at: now }; tp.inbox.push(pk); const h = tp.hits.get(uid) || { n: 0, at: 0 }; h.n += n; h.at = now; tp.hits.set(uid, h); tp.dirtyRow = true;
   if (tp.socketId) io.to(tp.socketId).emit("br:garbage", { s: pk.s, n, f: p.idx, d: BR.garbageDelay });
   if (p.socketId) io.to(p.socketId).emit("br:hit", { to: tp.idx, n });
+}
+const augFx = (io, p, d) => { if (p?.socketId) io.to(p.socketId).emit("br:augFx", d); };
+function deliver(io, r, uid, p, raw) {
+  if (r.opts.mode === "score") return; p.atkFrac = (p.atkFrac || 0) + raw * r.opts.atkMul * stageMul(r) * (hasAug(p, "amp") ? 1.3 : 1); let n = Math.min(20, Math.floor(p.atkFrac)); if (n <= 0) return; p.atkFrac -= n;
+  const t = pickTarget(r, uid, p); if (!t) return; const [tu, tp] = t; p.curTarget = tu;
+  if (hasAug(p, "hunter") && tp.game?.height?.() >= 12) n += 1;
+  if (hasAug(tp, "dodge") && Math.random() < 0.2) { augFx(io, tp, { k: "dodge", n, f: p.idx }); augFx(io, p, { k: "dodged", n, to: tp.idx }); }
+  else {
+    sendPk(io, uid, p, tu, tp, n);
+    // 가시 갑옷: 받은 공격의 1/3을 보낸 사람에게 되돌림 (되돌린 공격은 다시 튕기지 않음)
+    if (hasAug(tp, "thorn") && p.status === "active") { const back = Math.floor(n / 3); if (back > 0) { sendPk(io, tu, tp, uid, p, back); augFx(io, tp, { k: "thorn", n: back, to: p.idx }); } }
+  }
+  // 분산 탄두: 다른 상대 1명에게 1줄 더
+  if (hasAug(p, "split")) { const o = actives(r).filter(([u, x]) => u !== uid && u !== tu && x.connected && (r.opts.mode !== "team" || x.team !== p.team)); if (o.length) { const [ou, op] = o[Math.floor(Math.random() * o.length)]; sendPk(io, uid, p, ou, op, 1); } }
 }
 function resync(io, p, reason) { p.rev++; p.resyncs++; const g = p.game; if (!g) return; for (const k of p.inbox) g.addGarbage(k.n, k.s, Date.now() - k.at >= BR.garbageDelay); p.inbox = []; g.takeEvents(); if (p.socketId) io.to(p.socketId).emit("br:resync", { rev: p.rev, gseq: p.gseq, state: g.save(), reason }); }
 function sendBoardToWatchers(io, r, uid, p) { const g = p.game, msg = { i: p.idx, s: p.board, n: g.pieces, q: g.next(5), h: g.hold, st: [g.score, g.lines, g.level, Math.max(0, g.combo), g.b2b ? 1 : 0], c: g.cur ? [g.cur.p, g.cur.r, g.cur.x, g.cur.y, g.pieces] : null, g: g.pendingGarbage() }; for (const w of r.players.values()) if (w.watch === uid && w.connected && w.socketId) io.to(w.socketId).emit("br:watchBoard", msg); }
@@ -160,7 +175,7 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
         // (2026-11-12) 게스트도 방 만들기 가능 — 도배는 index.js 소켓 가드가 막음
         const old = myRoom(); if (old) leave(io, old, me.id);
         const id = `br_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, inviteCode = genCode();
-        const r = { id, inviteCode, hostUserId: me.id, status: "lobby", opts: { mode: "battle", maxPlayers: 50, isPublic: false, password: "", allowSpectate: true, countdown: 5, atkMul: 1, startLevel: 1, gameTimeSec: 0, teamCount: 2, rematch: true }, startsAt: null, deadline: null, total: 0, nextIdx: 0, players: new Map(), order: [], emptyTimer: null, gameTimer: null, tickTimer: null, net: { tick: 0 }, onFinish: (rr, rk, now) => saveRecords(supabaseAdmin, rr, rk, now) };
+        const r = { id, inviteCode, hostUserId: me.id, status: "lobby", opts: { mode: "battle", maxPlayers: 50, isPublic: false, password: "", allowSpectate: true, countdown: 5, atkMul: 1, startLevel: 1, gameTimeSec: 0, teamCount: 2, rematch: true, aug: false }, startsAt: null, deadline: null, total: 0, nextIdx: 0, players: new Map(), order: [], emptyTimer: null, gameTimer: null, tickTimer: null, net: { tick: 0 }, onFinish: (rr, rk, now) => saveRecords(supabaseAdmin, rr, rk, now) };
         rooms.set(id, r); invites.set(inviteCode, id);
         const d = await profile(me); r.players.set(me.id, newPlayer(d.nickname || payload?.nickname || "방장", false, d.avatar_url, socket.id, r.nextIdx++)); r.players.get(me.id).ready = true; r.order.push(me.id); attachSocket(r, r.players.get(me.id));
         cb({ ok: true, roomId: id, inviteCode, playerId: me.id, room: pubRoom(r) }); emitRoom(io, r);
@@ -200,7 +215,7 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
       if (BR.modes.includes(o?.mode) && q.mode !== o.mode) { q.mode = o.mode; q.gameTimeSec = o.mode === "score" ? 120 : 0; for (const p of r.players.values()) p.team = null; }
       if (o?.gameTimeSec !== undefined && (q.mode === "score" ? BR.timeScore : BR.timeBattle).includes(+o.gameTimeSec)) q.gameTimeSec = +o.gameTimeSec;
       if (BR.countdown.includes(+o?.countdown)) q.countdown = +o.countdown; if (BR.atkMul.includes(+o?.atkMul)) q.atkMul = +o.atkMul; if (BR.startLv.includes(+o?.startLevel)) q.startLevel = +o.startLevel;
-      for (const k of ["isPublic", "allowSpectate", "rematch"]) if (typeof o?.[k] === "boolean") q[k] = o[k];
+      for (const k of ["isPublic", "allowSpectate", "rematch", "aug"]) if (typeof o?.[k] === "boolean") q[k] = o[k];
       if (typeof o?.password === "string") q.password = o.password.slice(0, 20);
       emitRoom(io, r); cb({ ok: true });
     });
@@ -217,7 +232,7 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
       clearTimers(r); r.status = "playing"; r.winTeam = null; r.total = entries.length; r.startsAt = Date.now() + r.opts.countdown * 1000; r.deadline = r.opts.gameTimeSec ? r.startsAt + r.opts.gameTimeSec * 1000 : null;
       const shared = (Math.random() * 0xffffffff) >>> 0;
       for (const u of r.order) { const p = r.players.get(u), spec = p.wantSpec; Object.assign(p, { status: spec ? "spec" : "active", place: 0, deadAt: 0, survived: 0, kos: 0, assists: 0, recv: 0, sent: 0, maxAtk: 0, tetra: 0, tspins: 0, perfects: 0, hits: new Map(), inbox: [], gseq: 0, rev: 0, atkFrac: 0, invalid: 0, resyncs: 0, bucket: BR.lockCap, bucketAt: r.startsAt, lastLock: 0, watch: null, watchers: 0, manual: null, curTarget: null, dirtyRow: true, dirtyBoard: true, board: "0|" });
-        const seed = r.opts.mode === "score" ? shared : (Math.random() * 0xffffffff) >>> 0; p.game = spec ? null : new BRGame({ seed, startLevel: r.opts.startLevel }); p.game?.takeEvents();
+        const seed = r.opts.mode === "score" ? shared : (Math.random() * 0xffffffff) >>> 0; p.game = spec ? null : new BRGame({ seed, startLevel: r.opts.startLevel, aug: r.opts.aug ? (r.opts.mode === "score" ? 2 : 1) : 0 }); p.game?.takeEvents();
         if (p.socketId) io.to(p.socketId).emit("br:start", { room: pubRoom(r), seed: spec ? null : seed, serverNow: Date.now() }); }
       startTicks(io, r);
       if (r.opts.gameTimeSec) r.gameTimer = setTimeout(() => { const x = rooms.get(r.id); if (x && x.status === "playing") finish(io, x, "TIME_UP"); }, r.opts.countdown * 1000 + r.opts.gameTimeSec * 1000);
@@ -234,6 +249,7 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
       const k = Math.min(+d.k || 0, p.gseq), m = Math.min(+d.m || 0, k);
       for (let i = 0; i < p.inbox.length;) { const x = p.inbox[i]; if (x.s <= k || now - x.at > BR.forceAck) { g.addGarbage(x.n, x.s, false); p.inbox.splice(i, 1); } else i++; }
       g.matureUpTo(m); for (const x of g.garbage) if (now - (x.at0 ??= now) > BR.forceAck) x.m = true;
+      if (g.augDue()) { p.invalid++; return resync(io, p, "AUG"); }
       const snap = g.save(), okRun = g.replay(d.o); p.lastLock = now;
       // 잘못된 조작이면 도중에 움직인 것까지 전부 되돌림
       if (!okRun) { p.game = BRGame.load(snap); p.invalid++; if (p.invalid >= BR.maxInvalid) { console.warn("[br] 잘못된 조작 반복", me.id); return kill(io, r, me.id, "dead", "INVALID"); } return resync(io, p, "INVALID"); }
@@ -242,6 +258,15 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
       if (atk) deliver(io, r, me.id, p, atk);
       if (g.dead) return kill(io, r, me.id);
       if (d.h && d.h !== g.hash()) resync(io, p, "HASH");
+    });
+    // 증강 고르기: { i: 몇 번째, id, rr: 새로고침 썼는지(0/1), n: 조각 번호, v: 동기화 번호 }
+    socket.on("br:augPick", (d) => {
+      const r = myRoom(); if (!r || r.status !== "playing" || !r.opts.aug) return; const p = r.players.get(me.id); if (!p || p.status !== "active" || !p.game?.aug || p.socketId !== socket.id || typeof d !== "object" || !d) return; const g = p.game;
+      if (d.v !== p.rev) return; if (+d.i < g.aug.n || !g.augDue()) return; // 이미 반영됨(중복)·고를 때가 아님 → 조용히 무시
+      const t = Date.now(); if (t - (p.lastPick || 0) < 150) return; p.lastPick = t; // 연타 막기
+      if (+d.i !== g.aug.n || +d.n !== g.pieces || typeof d.id !== "string" || !g.augPick(d.id, +d.rr || 0)) { p.invalid++; return resync(io, p, "AUG"); }
+      g.takeEvents(); p.dirtyRow = true; p.lastLock = Math.max(p.lastLock, Date.now());
+      io.to(sr(r.id)).emit("br:augGot", { i: p.idx, id: d.id });
     });
     // 내 브라우저 판에서 탈락 (보관하다 막힌 경우 등). 스스로 포기하는 건 언제든 가능
     socket.on("br:dead", () => { const r = myRoom(); if (!r || r.status !== "playing" || r.players.get(me.id)?.socketId !== socket.id) return; kill(io, r, me.id); });

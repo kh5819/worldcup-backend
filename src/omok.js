@@ -20,6 +20,7 @@
 import { createFlight } from "./create-flight.js";
 import { addPublicRooms } from "./public-rooms.js";
 import { chooseOmokMove, OMOK_BOT_LEVELS } from "./omok-bot.js";
+import { OMOK_AUGS, AUG_BY_ID, AUG_ONLY_CARDS, AUG_PICK_SEC, AUG_PICK_MOVES, MAX_AUG_HAND, MAX_AUGS, MAX_USES_PER_TURN, hasAug, rollOffer, applyAug, bestOf, randomPoolCard, senseOn, bonusEvery } from "./omok-augs.js";
 
 // ===== Room storage =====
 const omokRooms = new Map();      // roomId → room
@@ -94,12 +95,14 @@ const SPECIAL_CARDS = [
   { id: "lucky",   emoji: "🎁", name: "럭키박스", weight: 5  }, // 공짜 행동
   { id: "peek",    emoji: "👀", name: "엿보기",   weight: 5  }, // 공짜 행동
 ];
-const SPECIAL_CARD_IDS = new Set(SPECIAL_CARDS.map(c => c.id));
+const SPECIAL_CARD_IDS = new Set([...SPECIAL_CARDS.map(c => c.id), ...AUG_ONLY_CARDS]); // 증강 전용 카드도 사용 검사 통과 (초딩 모드는 뽑기에서 안 나오고 useCard에서 막음)
 const SPECIAL_CARDS_TOTAL_WEIGHT = SPECIAL_CARDS.reduce((s, c) => s + c.weight, 0);
 // 턴을 끝내지 않는 카드 (쓰고 나서 돌을 두거나 다른 카드를 더 쓸 수 있음)
-const FREE_ACTION_CARDS = new Set(["replay", "timeThief", "lucky", "peek", "steal"]);
+const FREE_ACTION_CARDS = new Set(["replay", "timeThief", "lucky", "peek", "steal", "focus"]);
 // 보드를 바꾸는 카드 — 쓰면 모두에게 보드 전체를 다시 보냄
-const BOARD_CHANGING_CARDS = new Set(["bomb", "flip", "move", "push", "lightning", "cross", "swap", "tornado"]);
+const BOARD_CHANGING_CARDS = new Set(["bomb", "flip", "move", "push", "lightning", "cross", "swap", "tornado", "rewind"]);
+// 카드를 쓰는 모드 (초딩·증강)
+const cardMode = (room) => room.specialMode === "kid" || room.specialMode === "aug";
 // 카드 효과 지속 턴 수
 const WALL_DURATION_TURNS = 1;   // 2→1
 const GHOST_REVEAL_TURNS = 1;    // 2→1
@@ -220,7 +223,26 @@ function isEnemyStone(room, me, v) {
   return true;
 }
 function isShielded(room, x, y) {
-  return !!(room.shields && room.shields.has(`${x},${y}`));
+  if (room.shields && room.shields.has(`${x},${y}`)) return true;
+  return room.specialMode === "aug" && isSolid(room, x, y);
+}
+// 증강 '철벽 진형': 주인이 가진 색의 돌이 4개 이상 이어져 있으면 보호
+function runLen(board, W, x, y, color) {
+  let best = 0;
+  for (const [dx, dy] of DIRS) {
+    let n = 1, cx = x + dx, cy = y + dy;
+    while (cx >= 0 && cy >= 0 && cx < W && cy < W && board[idx(W, cx, cy)] === color) { n++; cx += dx; cy += dy; }
+    cx = x - dx; cy = y - dy;
+    while (cx >= 0 && cy >= 0 && cx < W && cy < W && board[idx(W, cx, cy)] === color) { n++; cx -= dx; cy -= dy; }
+    if (n > best) best = n;
+  }
+  return best;
+}
+function isSolid(room, x, y) {
+  const v = room.board[idx(room.boardSize, x, y)];
+  if (!v) return false;
+  const owner = room.players.get(ownerIdOfColor(room, v));
+  return hasAug(owner, "pSolid") && runLen(room.board, room.boardSize, x, y, v) >= 4;
 }
 function inBoard(W, ...nums) {
   return nums.every(n => Number.isInteger(n) && n >= 0 && n < W);
@@ -292,6 +314,8 @@ function publicPlayer(userId, p) {
     color: p.color,
     team: p.team,
     cardCount: (p.cards || []).length, // 카드 개수만 공개 (내용 비공개)
+    augs: (p.augs || []).slice(),       // 증강 모드: 고른 증강은 모두에게 공개
+    moves: p.myMoves || 0,
     isBot: !!p.isBot,
     botLevel: p.isBot ? p.botLevel : null,
   };
@@ -315,6 +339,11 @@ function publicRoom(room, viewerUserId = null) {
   // 방패 — 모두에게 공개 (어떤 돌이 보호 중인지 알아야 폭탄 대상에서 뺌)
   const shields = [];
   if (room.shields) for (const [key, v] of room.shields) shields.push({ key, expireAtTurn: v.expireAtTurn });
+  // 증강 '철벽 진형'으로 보호 중인 돌도 방패처럼 표시 (카드 고를 때 빛나는 칸에서 빠지게)
+  if (room.specialMode === "aug" && room.status === "playing") {
+    const W = room.boardSize;
+    for (let i = 0; i < room.board.length; i++) { const x = i % W, y = (i / W) | 0; if (room.board[i] && !room.shields.has(`${x},${y}`) && isSolid(room, x, y)) shields.push({ key: `${x},${y}`, expireAtTurn: null, solid: true }); }
+  }
   return {
     id: room.id,
     inviteCode: room.inviteCode,
@@ -340,6 +369,8 @@ function publicRoom(room, viewerUserId = null) {
     ghosts,
     shields,
     timeThiefUserId: room.timeThiefFor || null,
+    augPick: room.pick ? { round: room.pick.round, deadline: room.pick.deadline, userId: room.pick.uid, name: room.players.get(room.pick.uid)?.name || "" } : null,
+    augLog: room.specialMode === "aug" ? (room.augLog || []).slice(-12) : undefined,
   };
 }
 
@@ -396,6 +427,11 @@ function broadcastRoomState(io, room) {
 // ===== 게임 진행 =====
 function startTurn(io, room) {
   if (room.status !== "playing") return;
+  // 증강 모드: 고르는 중이면 차례를 시작하지 않음 / 고를 때가 됐으면 고르기부터
+  if (room.specialMode === "aug") {
+    if (room.pick) return resendPick(io, room);
+  }
+  room.turnUses = 0; // 이번 차례 카드 사용 횟수
 
   // 연결된 플레이어 찾을 때까지 인덱스 진행 (skip disconnected)
   let safety = room.playerOrder.length;
@@ -411,11 +447,17 @@ function startTurn(io, room) {
   if (!turnPlayer?.connected || !hasConnectedHuman(room)) {
     return;
   }
+  // 증강 모드: 이번 차례 사람이 고를 때가 됐으면 그 사람만 먼저 고름
+  if (room.specialMode === "aug" && pickDueFor(turnPlayer)) return beginPick(io, room, turnUid);
   clearBotTimer(room);
 
   // 시간도둑: 이번 차례가 대상이면 제한 시간 절반 (재행동으로 이어지는 같은 사람 차례엔 다시 안 깎음)
   let sec = room.turnTimeSec;
   let timeStolen = false;
+  if (room.specialMode === "aug") {
+    if (hasAug(turnPlayer, "pTime")) sec = Math.ceil(sec * 1.5);
+    if (room.playerOrder.some(u => u !== turnUid && hasAug(room.players.get(u), "pPress"))) sec = Math.max(TIME_THIEF_MIN_SEC, Math.floor(sec * 0.75));
+  }
   if (room.timeThiefFor && room.timeThiefFor === turnUid) {
     sec = Math.max(TIME_THIEF_MIN_SEC, Math.ceil(sec / 2));
     room.timeThiefFor = null;
@@ -434,6 +476,7 @@ function startTurn(io, room) {
   room.turnTimer = setTimeout(() => onTurnTimeout(io, room, turnUid), sec * 1000);
 
   if (turnPlayer.isBot) scheduleBot(io, room, turnUid);
+  else if (room.specialMode === "aug") sendSense(io, room, turnUid);
 }
 
 // ===== AI 봇 =====
@@ -450,7 +493,7 @@ function botTurn(io, room, uid, histLen) {
   room.botTimer = null;
   if (!omokRooms.has(room.id) || room.status !== "playing") return;
   // 그 사이 차례가 바뀌었거나 이미 착수가 일어났으면 무시
-  if (room.playerOrder[room.currentTurnIdx] !== uid || room.history.length !== histLen) return;
+  if (room.playerOrder[room.currentTurnIdx] !== uid || room.history.length !== histLen || room.pick) return;
   if (!hasConnectedHuman(room)) return;
   const bot = room.players.get(uid);
   if (!bot) return;
@@ -482,7 +525,7 @@ function passTurn(io, room) {
   if (endTurnCommon(io, room)) return;
   room.currentTurnIdx = (room.currentTurnIdx + 1) % room.playerOrder.length;
   startTurn(io, room);
-  if (room.specialMode === "kid") broadcastRoomState(io, room);
+  if (cardMode(room)) broadcastRoomState(io, room);
 }
 
 // 한 턴이 끝날 때 공통 처리: 턴 수 +1, 벽·방패 만료, 투명돌 공개(+승리 검사), 카드 지급.
@@ -513,7 +556,8 @@ function endTurnCommon(io, room) {
     }
     for (const r of revealed) io.to(socketRoomName(room.id)).emit("omok:ghostReveal", r);
     for (const r of revealed) {
-      const win = findWinLine(room.board, room.boardSize, r.x, r.y, r.color, room.winLength);
+      let win = findWinLine(room.board, room.boardSize, r.x, r.y, r.color, room.winLength);
+      if (win) win = resolveWin(io, room, win, r.color);
       if (win) {
         room.winLine = win;
         room.winnerUserId = r.ownerId;
@@ -535,6 +579,177 @@ function endTurnCommon(io, room) {
     io.to(socketRoomName(room.id)).emit("omok:cardDraw", { turn: room.turnCount });
   }
   return false;
+}
+
+// ===== 증강 모드 (1대1) =====
+function emitToUser(io, userId, ev, data) {
+  for (const [, s] of io.sockets.sockets) if (s.user?.id === userId) s.emit(ev, data);
+}
+function logAug(io, room, entry) {
+  room.augLog = room.augLog || [];
+  const e = { at: Date.now(), turn: room.turnCount || 0, ...entry };
+  room.augLog.push(e); if (room.augLog.length > 60) room.augLog.splice(0, room.augLog.length - 60);
+  io.to(socketRoomName(room.id)).emit("omok:augEvent", e);
+}
+// (2026-11-16 사용자 요청) 증강 고르기는 '각자 따로': 내 돌이 0·5·10·15개가 된 뒤 '내 차례가 올 때' 나만 고름.
+// 상대 화면엔 고르기 창이 안 뜨고 "상대가 증강 고르는 중"만 보임. 고르는 동안 내 차례 시계는 멈춤
+function pickDueFor(p) {
+  if (!p) return false;
+  const k = p.pickIdx || 0;
+  if (k >= AUG_PICK_MOVES.length || (p.augs || []).length >= MAX_AUGS) return false;
+  return (p.myMoves || 0) >= AUG_PICK_MOVES[k];
+}
+function offerView(p) {
+  return { offers: (p.augOffer || []).map(id => AUG_BY_ID.get(id)), refresh: p.augRefresh || 0, picked: !!p.augPicked };
+}
+let PICK_SEQ = 0;
+function beginPick(io, room, uid) {
+  const p = room.players.get(uid); if (!p) return;
+  clearTurnTimer(room); clearBotTimer(room);
+  const round = (p.pickIdx || 0) + 1, seq = ++PICK_SEQ;
+  room.turnDeadline = null;
+  const lucky = hasAug(p, "pLuck");
+  p.augOffer = rollOffer(p, room, lucky ? 4 : 3);
+  p.augRefresh = lucky ? 2 : 1;
+  p.augPicked = false;
+  if (!p.augOffer.length) { p.pickIdx = AUG_PICK_MOVES.length; return startTurn(io, room); } // 고를 게 없으면 넘어감
+  room.pick = { uid, round, seq, deadline: Date.now() + AUG_PICK_SEC * 1000, timer: null };
+  room.pick.timer = setTimeout(() => finishPick(io, room, seq), AUG_PICK_SEC * 1000 + 300);
+  // 봇·끊긴 사람은 조금 뒤 자동
+  if (p.isBot || !p.connected) setTimeout(() => { if (room.pick && room.pick.seq === seq && !p.augPicked) pickAug(io, room, uid, bestOf(p.augOffer)); }, 600 + Math.random() * 1200);
+  io.to(socketRoomName(room.id)).emit("omok:augPhase", { picking: true, round, deadline: room.pick.deadline, userId: uid, name: p.name });
+  resendPick(io, room);
+  broadcastRoomState(io, room);
+}
+function resendPick(io, room) {
+  if (!room.pick) return;
+  const p = room.players.get(room.pick.uid);
+  if (p && !p.isBot) emitToUser(io, room.pick.uid, "omok:augOffer", { round: room.pick.round, deadline: room.pick.deadline, ...offerView(p) });
+}
+function pickAug(io, room, uid, id) {
+  const p = room.players.get(uid);
+  if (!room.pick) return { ok: false, error: "NOT_PICKING" };
+  if (!p) return { ok: false, error: "NOT_PLAYER" };
+  if (room.pick.uid !== uid) return { ok: false, error: "NOT_YOUR_PICK" };
+  if (p.augPicked) return { ok: false, error: "ALREADY_PICKED" };
+  if (!(p.augOffer || []).includes(id)) return { ok: false, error: "NOT_OFFERED" };
+  const r = applyAug(p, id, room);
+  p.augPicked = true; p.augOffer = [];
+  emitMyCards(io, room, uid);
+  logAug(io, room, { type: "pick", userId: uid, name: p.name, augId: id, cards: r.cards });
+  finishPick(io, room, room.pick.seq);
+  return { ok: true, augId: id, cards: r.cards };
+}
+function refreshAug(io, room, uid) {
+  const p = room.players.get(uid);
+  if (!room.pick || room.pick.uid !== uid || !p || p.augPicked) return { ok: false, error: "NOT_PICKING" };
+  if ((p.augRefresh || 0) <= 0) return { ok: false, error: "NO_REFRESH" };
+  p.augRefresh--;
+  p.augOffer = rollOffer(p, room, hasAug(p, "pLuck") ? 4 : 3);
+  return { ok: true, ...offerView(p) };
+}
+function finishPick(io, room, seq) {
+  if (!room.pick || room.pick.seq !== seq || room.status !== "playing") return;
+  if (room.pick.timer) clearTimeout(room.pick.timer);
+  const { uid, round } = room.pick;
+  const p = room.players.get(uid);
+  // 시간 안에 못 고르면 가장 좋은 등급으로 자동
+  if (p && !p.augPicked && p.augOffer?.length) { const id = bestOf(p.augOffer); const r = applyAug(p, id, room); p.augPicked = true; p.augOffer = []; emitMyCards(io, room, uid); logAug(io, room, { type: "pick", userId: uid, name: p.name, augId: id, cards: r.cards, auto: true }); }
+  if (p) p.pickIdx = (p.pickIdx || 0) + 1;
+  room.pick = null;
+  io.to(socketRoomName(room.id)).emit("omok:augPhase", { picking: false, round, userId: uid });
+  startTurn(io, room); // 같은 사람 차례가 이제 시작 (고를 게 더 있으면 이어서 고름)
+  broadcastRoomState(io, room);
+}
+// 이기는 줄이 생겼을 때: 상대에게 '최후의 반격'이 남아 있으면 그 줄 가운데 돌을 없애고 계속.
+// 끝까지 이기는 줄이 남으면 그 줄을, 다 막혔으면 null
+function resolveWin(io, room, line, color) {
+  if (room.specialMode !== "aug" || !line) return line;
+  const W = room.boardSize;
+  const winnerUid = ownerIdOfColor(room, color);
+  const winner = room.players.get(winnerUid);
+  let cur = line;
+  for (let guard = 0; cur && guard < 4; guard++) {
+    const blockerUid = room.playerOrder.find(u => {
+      const q = room.players.get(u);
+      return q && u !== winnerUid && q.color !== color && !(winner && winner.team != null && q.team === winner.team) && hasAug(q, "pSecond") && !q.secondUsed;
+    });
+    if (!blockerUid) return cur;
+    const q = room.players.get(blockerUid);
+    q.secondUsed = true;
+    const mid = cur[Math.floor(cur.length / 2)];
+    room.board[idx(W, mid.x, mid.y)] = 0;
+    room.shields.delete(`${mid.x},${mid.y}`);
+    logAug(io, room, { type: "second", userId: blockerUid, name: q.name, x: mid.x, y: mid.y, board: Array.from(room.board) });
+    const again = findWinAmong(room, cur.filter(c => c !== mid), color);
+    cur = again ? again.line : null;
+  }
+  if (!cur) { room.winLine = null; room.winnerUserId = null; room.winnerTeam = null; }
+  return cur;
+}
+// 돌을 둔 뒤: 내 돌 수, 연속 착수, 카드 수집, 상대의 긴급 방어
+function afterAugPlace(io, room, uid, player, x, y) {
+  player.myMoves = (player.myMoves || 0) + 1;
+  const every = bonusEvery(player);
+  if (every && player.myMoves % every === 0 && !room.replayNext) {
+    room.replayNext = true;
+    logAug(io, room, { type: "bonus", userId: uid, name: player.name });
+  }
+  if (hasAug(player, "pCollect") && player.myMoves % 6 === 0 && player.cards.length < MAX_AUG_HAND) {
+    player.cards.push(randomPoolCard()); emitMyCards(io, room, uid);
+    logAug(io, room, { type: "collect", userId: uid, name: player.name });
+  }
+  // 긴급 방어: 상대가 (N-1)목을 만들면 그 끝 빈 칸에 벽 (상대의 다음 차례까지)
+  const W = room.boardSize, need = room.winLength, color = player.color;
+  if (room.board[idx(W, x, y)] !== color) return; // 반격으로 방금 돌이 사라졌으면 볼 것 없음
+  for (const qid of room.playerOrder) {
+    const q = room.players.get(qid);
+    if (!q || qid === uid || q.color === color || !hasAug(q, "pInstinct") || (q.instinctNext || 0) > room.turnCount) continue;
+    for (const [dx, dy] of DIRS) {
+      let a = 0, cx = x + dx, cy = y + dy;
+      while (inBoard(W, cx, cy) && room.board[idx(W, cx, cy)] === color) { a++; cx += dx; cy += dy; }
+      const e1 = { x: cx, y: cy };
+      let b = 0; cx = x - dx; cy = y - dy;
+      while (inBoard(W, cx, cy) && room.board[idx(W, cx, cy)] === color) { b++; cx -= dx; cy -= dy; }
+      const e2 = { x: cx, y: cy };
+      if (a + b + 1 !== need - 1) continue;
+      const ok = [e1, e2].filter(e => inBoard(W, e.x, e.y) && room.board[idx(W, e.x, e.y)] === 0 && !room.walls.has(`${e.x},${e.y}`) && !room.ghosts.has(`${e.x},${e.y}`));
+      if (!ok.length) continue;
+      const e = ok[Math.floor(Math.random() * ok.length)];
+      room.walls.set(`${e.x},${e.y}`, { placedByUserId: qid, expireAtTurn: room.turnCount + 3 });
+      q.instinctNext = room.turnCount + 3 * room.playerOrder.length;
+      logAug(io, room, { type: "instinct", userId: qid, name: q.name, x: e.x, y: e.y });
+      return;
+    }
+  }
+}
+// 이 색이 다음에 두면 N목(win)·(N-1)목(four)이 되는 빈 칸
+function threatCells(room, color) {
+  const W = room.boardSize, need = room.winLength, win = [], four = [];
+  for (let i = 0; i < room.board.length; i++) {
+    if (room.board[i] !== 0) continue;
+    const x = i % W, y = (i / W) | 0;
+    if (room.walls.has(`${x},${y}`) || room.ghosts.has(`${x},${y}`)) continue;
+    room.board[i] = color;
+    const n = runLen(room.board, W, x, y, color);
+    room.board[i] = 0;
+    if (n >= need) win.push({ x, y }); else if (n === need - 1 && need >= 4) four.push({ x, y });
+  }
+  return { win, four: four.slice(0, 40) };
+}
+function sendSense(io, room, uid) {
+  const p = room.players.get(uid);
+  const def = senseOn(p, "pDefSense"), atk = senseOn(p, "pAtkSense");
+  if (!def && !atk) return;
+  const out = { turn: room.turnCount };
+  if (atk) out.atk = threatCells(room, p.color);
+  if (def) {
+    const enemyColors = [...new Set(room.playerOrder.map(u => room.players.get(u)).filter(q => q && q.color !== p.color && !(p.team != null && q.team === p.team)).map(q => q.color))];
+    const w = [], f = [];
+    for (const c of enemyColors) { const t = threatCells(room, c); w.push(...t.win); f.push(...t.four); }
+    out.def = { win: w, four: f.slice(0, 40) };
+  }
+  emitToUser(io, uid, "omok:augHints", out);
 }
 
 function onTurnTimeout(io, room, expectedTurnUid) {
@@ -779,10 +994,33 @@ function applyCardEffect(io, room, userId, cardId, payload) {
     return { ok: true, effect: { type: "steal", victimId: vid, victimName: vp.name }, private: { stolen: card } };
   }
 
+  if (cardId === "focus") {
+    // 지금 가장 좋은 자리 1곳 (AI '어려움'이 고르는 수) — 쓴 사람에게만
+    const mv = chooseOmokMove(room, userId, "hard");
+    if (!mv) return { ok: false, error: "NO_TARGET" };
+    return { ok: true, effect: { type: "focus" }, private: { focus: { x: mv.x, y: mv.y } } };
+  }
+
+  if (cardId === "rewind") {
+    // 상대가 마지막에 둔 돌(아직 그 자리에 있는 것)을 없앰. 방패·철벽 돌은 못 없앰
+    for (let k = room.history.length - 1; k >= 0; k--) {
+      const h = room.history[k];
+      if (h.userId === userId) continue;
+      const hp = room.players.get(h.userId);
+      if (hp && me.team != null && hp.team === me.team) continue;
+      if (room.board[idx(W, h.x, h.y)] !== h.color) return { ok: false, error: "NO_TARGET" }; // 이미 바뀐 돌
+      if (isShielded(room, h.x, h.y)) return { ok: false, error: "SHIELDED" };
+      room.board[idx(W, h.x, h.y)] = 0;
+      return { ok: true, effect: { type: "rewind", x: h.x, y: h.y } };
+    }
+    return { ok: false, error: "NO_TARGET" };
+  }
+
   return { ok: false, error: "UNKNOWN_CARD" };
 }
 
 function placeStone(io, room, userId, x, y) {
+  if (room.pick) return { ok: false, error: "PICKING" };
   const turnUid = room.playerOrder[room.currentTurnIdx];
   if (turnUid !== userId) return { ok: false, error: "NOT_YOUR_TURN" };
   if (!Number.isInteger(x) || !Number.isInteger(y)) return { ok: false, error: "INVALID_COORD" };
@@ -814,8 +1052,9 @@ function placeStone(io, room, userId, x, y) {
     moveIndex: room.history.length - 1,
   });
 
-  // 승리 검사 (호스트가 정한 N목 기준)
-  const win = findWinLine(room.board, room.boardSize, x, y, player.color, room.winLength);
+  // 승리 검사 (호스트가 정한 N목 기준) — 증강 '최후의 반격'이 막을 수 있음
+  let win = findWinLine(room.board, room.boardSize, x, y, player.color, room.winLength);
+  if (win) win = resolveWin(io, room, win, player.color);
   if (win) {
     room.winLine = win;
     room.winnerUserId = userId;
@@ -831,6 +1070,8 @@ function placeStone(io, room, userId, x, y) {
     return endGame(io, room, null, "BOARD_FULL");
   }
 
+  if (room.specialMode === "aug") afterAugPlace(io, room, userId, player, x, y);
+
   // 턴 마무리 (턴 수·벽/방패 만료·투명돌 공개·카드 지급)
   if (endTurnCommon(io, room)) return { ok: true };
 
@@ -842,7 +1083,7 @@ function placeStone(io, room, userId, x, y) {
   }
   startTurn(io, room);
   // 초딩 모드: 벽이 사라지거나 투명돌이 공개된 걸 화면에 알림 (전엔 다른 카드를 쓸 때까지 옛 벽이 남아 보였음)
-  if (room.specialMode === "kid") broadcastRoomState(io, room);
+  if (cardMode(room)) broadcastRoomState(io, room);
 
   return { ok: true };
 }
@@ -860,6 +1101,7 @@ function endGame(io, room, winLine, reason = "WIN") {
   room.timeThiefFor = null;
   clearTurnTimer(room);
   clearBotTimer(room);
+  if (room.pick) { if (room.pick.timer) clearTimeout(room.pick.timer); room.pick = null; }
 
   const winnerP = room.winnerUserId ? room.players.get(room.winnerUserId) : null;
   io.to(socketRoomName(room.id)).emit("omok:gameEnd", {
@@ -873,7 +1115,8 @@ function endGame(io, room, winLine, reason = "WIN") {
     historyLen: room.history.length,
     history: room.history.slice(0),
     // 초딩 모드: 카드로 바뀐 실제 최종 판 (결과 화면 마지막 장면용)
-    finalBoard: room.specialMode === "kid" ? Array.from(room.board) : null,
+    finalBoard: cardMode(room) ? Array.from(room.board) : null,
+    augLog: room.specialMode === "aug" ? (room.augLog || []).slice(-30) : null,
     boardSize: room.boardSize,
     mode: room.mode,
     players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
@@ -904,7 +1147,7 @@ export function registerOmok(io, supabaseAdmin) {
           if (old) leavePlayer(io, old, me.id, true);
         }
 
-        const mode = (!guestAiOnly && ALLOWED_MODES.includes(payload?.mode)) ? payload.mode : "1v1";
+        const mode = (!guestAiOnly && payload?.specialMode !== "aug" && ALLOWED_MODES.includes(payload?.mode)) ? payload.mode : "1v1";
         const boardSize = ALLOWED_BOARD_SIZES.includes(Number(payload?.boardSize))
           ? Number(payload.boardSize) : 15;
         const turnTimeSec = ALLOWED_TURN_SECS.includes(Number(payload?.turnTimeSec))
@@ -913,7 +1156,8 @@ export function registerOmok(io, supabaseAdmin) {
           ? Number(payload.winLength) : 5;
         const ffaSize = Math.min(MAX_PLAYERS_HARD_CAP, Math.max(2, Number(payload?.ffaSize) || 8));
         const maxPlayers = modeMaxPlayers(mode, ffaSize);
-        const specialMode = (!guestAiOnly && payload?.specialMode === "kid") ? "kid" : "off";
+        // 증강 모드는 1대1 전용 (게스트 AI 대결도 가능), 초딩 모드는 기존대로
+        const specialMode = payload?.specialMode === "aug" ? "aug" : (!guestAiOnly && payload?.specialMode === "kid") ? "kid" : "off";
 
         const roomId = `om_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const inviteCode = genInviteCode();
@@ -1002,9 +1246,10 @@ export function registerOmok(io, supabaseAdmin) {
             clearEmptyRoomTimer(room);
             socket.join(socketRoomName(roomId));
             omokUserRoom.set(me.id, roomId);
-            cb?.({ ok: true, roomId, inviteCode: room.inviteCode, room: publicRoom(room, me.id), reconnected: true });
+            cb?.({ ok: true, roomId, inviteCode: room.inviteCode, room: publicRoom(room, me.id), reconnected: true, augMeta: room.specialMode === "aug" ? OMOK_AUGS : undefined });
             broadcastRoomState(io, room);
-            if (room.specialMode === "kid") emitMyCards(io, room, me.id); // 재접속하면 내 카드 다시 보여줌
+            if (cardMode(room)) emitMyCards(io, room, me.id); // 재접속하면 내 카드 다시 보여줌
+            if (room.pick) resendPick(io, room);
             // 모두 끊겨 멈춰 있던 판(타이머 없음)이면 다시 진행
             if (room.status === "playing") {
               const curBot = room.players.get(room.playerOrder[room.currentTurnIdx])?.isBot;
@@ -1059,10 +1304,12 @@ export function registerOmok(io, supabaseAdmin) {
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_HOST" });
       if (room.status !== "lobby") return cb?.({ ok: false, error: "GAME_ALREADY_STARTED" });
-      if (room.guestAiOnly) return cb?.({ ok: false, error: "NOT_ALLOWED" });
+      if (room.guestAiOnly && (Object.keys(payload || {}).some(k => k !== "specialMode") || (payload.specialMode !== "aug" && payload.specialMode !== "off"))) return cb?.({ ok: false, error: "NOT_ALLOWED" });
 
       let changed = false;
 
+      if (payload?.specialMode === "aug" && room.players.size > 2) return cb?.({ ok: false, error: "AUG_1V1_ONLY" });
+      if (payload?.mode && ALLOWED_MODES.includes(payload.mode) && payload.mode !== "1v1" && (payload.specialMode ?? room.specialMode) === "aug") return cb?.({ ok: false, error: "AUG_1V1_ONLY" });
       if (payload?.mode && ALLOWED_MODES.includes(payload.mode)) {
         // 모드 변경 시 maxPlayers도 재계산 — 현재 인원 초과 시 거부
         const newMax = modeMaxPlayers(payload.mode, room.ffaSize || 8);
@@ -1100,8 +1347,9 @@ export function registerOmok(io, supabaseAdmin) {
         }
       }
       if (payload?.specialMode !== undefined) {
-        const sm = (payload.specialMode === "kid") ? "kid" : "off";
+        const sm = payload.specialMode === "aug" ? "aug" : (payload.specialMode === "kid" && !room.guestAiOnly) ? "kid" : "off";
         if (room.specialMode !== sm) { room.specialMode = sm; changed = true; }
+        if (sm === "aug" && room.mode !== "1v1") { room.mode = "1v1"; room.maxPlayers = 2; room.ffaSize = null; reassignColorsAndTeams(room); changed = true; }
       }
       if (changed) broadcastRoomState(io, room);
       cb?.({ ok: true, room: publicRoom(room) });
@@ -1162,8 +1410,13 @@ export function registerOmok(io, supabaseAdmin) {
       // 초딩 모드: 시작 시 각 플레이어 카드 1장 (일반 모드면 지난 판 카드 비움)
       for (const uid of room.playerOrder) {
         const p = room.players.get(uid);
-        if (p) p.cards = room.specialMode === "kid" ? [drawRandomCard()] : [];
+        if (p) {
+          p.cards = room.specialMode === "kid" ? [drawRandomCard()] : [];
+          p.augs = []; p.augOffer = []; p.augPicked = false; p.augRefresh = 0; p.myMoves = 0; p.secondUsed = false; p.instinctNext = 0; p.pickIdx = 0;
+        }
       }
+      if (room.pick?.timer) clearTimeout(room.pick.timer);
+      room.pick = null; room.augLog = []; room.turnUses = 0;
 
       cb?.({ ok: true });
       io.to(socketRoomName(room.id)).emit("omok:gameStart", {
@@ -1173,12 +1426,13 @@ export function registerOmok(io, supabaseAdmin) {
         turnTimeSec: room.turnTimeSec,
         winLength: room.winLength,
         players: room.playerOrder.map(uid => publicPlayer(uid, room.players.get(uid))),
+        augMeta: room.specialMode === "aug" ? OMOK_AUGS : undefined,
       });
       // 카드는 gameStart 뒤에 보냄 — 화면이 gameStart 때 카드 칸을 비우기 때문에
       // 먼저 보내면 첫 카드가 안 보였음 (5턴 뒤 다음 카드 받을 때까지 빈 칸)
-      if (room.specialMode === "kid") for (const uid of room.playerOrder) emitMyCards(io, room, uid);
-      startTurn(io, room);
-      if (room.specialMode === "kid") broadcastRoomState(io, room); // 지난 판 벽·투명돌 표시 지우기
+      if (cardMode(room)) for (const uid of room.playerOrder) emitMyCards(io, room, uid);
+      startTurn(io, room); // 증강 모드면 여기서 첫 증강 고르기가 시작됨
+      if (cardMode(room)) broadcastRoomState(io, room); // 지난 판 벽·투명돌 표시 지우기
     });
 
     // ===== placeStone =====
@@ -1199,13 +1453,15 @@ export function registerOmok(io, supabaseAdmin) {
       const room = roomId ? omokRooms.get(roomId) : null;
       if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
       if (room.status !== "playing") return cb?.({ ok: false, error: "NOT_PLAYING" });
-      if (room.specialMode !== "kid") return cb?.({ ok: false, error: "NOT_KID_MODE" });
+      if (!cardMode(room)) return cb?.({ ok: false, error: "NOT_KID_MODE" });
+      if (room.pick) return cb?.({ ok: false, error: "PICKING" });
       const turnUid = room.playerOrder[room.currentTurnIdx];
       if (turnUid !== me.id) return cb?.({ ok: false, error: "NOT_YOUR_TURN" });
       const player = room.players.get(me.id);
       if (!player) return cb?.({ ok: false, error: "NOT_PLAYER" });
       const cardId = String(payload?.cardId || "");
       if (!SPECIAL_CARD_IDS.has(cardId)) return cb?.({ ok: false, error: "UNKNOWN_CARD" });
+      if (room.specialMode === "aug" && (room.turnUses || 0) >= MAX_USES_PER_TURN) return cb?.({ ok: false, error: "USE_LIMIT" });
       const cardIdx = (player.cards || []).indexOf(cardId);
       if (cardIdx < 0) return cb?.({ ok: false, error: "CARD_NOT_OWNED" });
 
@@ -1213,6 +1469,7 @@ export function registerOmok(io, supabaseAdmin) {
       player.cards.splice(cardIdx, 1);
       const result = applyCardEffect(io, room, me.id, cardId, payload || {});
       if (!result.ok) { player.cards.splice(cardIdx, 0, cardId); return cb?.(result); }
+      room.turnUses = (room.turnUses || 0) + 1;
 
       emitMyCards(io, room, me.id);
       io.to(socketRoomName(room.id)).emit("omok:cardUsed", {
@@ -1224,9 +1481,15 @@ export function registerOmok(io, supabaseAdmin) {
       // 카드로 누군가 5목을 만들었으면 바로 끝냄 (전엔 50ms 늦게 끝내서 그 사이 다음 차례가 시작되고
       // 투명돌 공개가 승자를 덮어쓰거나 끝내기가 두 번 일어날 수 있었음)
       if (room.winLine) {
-        endGame(io, room, room.winLine);
-        cb?.({ ok: true, ...(result.private || {}) });
-        return;
+        // 증강 '최후의 반격'이 막으면 계속 진행
+        const color = room.board[idx(room.boardSize, room.winLine[0].x, room.winLine[0].y)];
+        const fin = resolveWin(io, room, room.winLine, color);
+        if (fin) {
+          setWinner(room, fin, color);
+          endGame(io, room, fin);
+          cb?.({ ok: true, ...(result.private || {}) });
+          return;
+        }
       }
 
       // 공짜 행동 카드: 턴 계속 (같은 사람이 이어서 돌을 두거나 카드를 더 씀)
@@ -1246,6 +1509,16 @@ export function registerOmok(io, supabaseAdmin) {
       broadcastRoomState(io, room);
     });
 
+    // ===== 증강 고르기 / 새로고침 =====
+    socket.on("omok:pickAug", (payload, cb) => {
+      try {
+        const room = omokRooms.get(omokUserRoom.get(me.id));
+        if (!room || room.status !== "playing" || room.specialMode !== "aug") return cb?.({ ok: false, error: "NOT_PLAYING" });
+        if (payload?.refresh) return cb?.(refreshAug(io, room, me.id));
+        cb?.(pickAug(io, room, me.id, String(payload?.augId || "")));
+      } catch (e) { console.error("[omok:pickAug]", e); cb?.({ ok: false, error: "INTERNAL" }); }
+    });
+
     // ===== requestState =====
     socket.on("omok:requestState", (_payload, cb) => {
       const roomId = omokUserRoom.get(me.id);
@@ -1257,7 +1530,8 @@ export function registerOmok(io, supabaseAdmin) {
         ok: true,
         room: publicRoom(room, me.id),
       };
-      if (room.specialMode === "kid") payload.myCards = (room.players.get(me.id)?.cards || []).slice();
+      if (cardMode(room)) payload.myCards = (room.players.get(me.id)?.cards || []).slice();
+      if (room.pick && room.pick.uid === me.id) { const mp = room.players.get(me.id); if (mp) payload.augOffer = { round: room.pick.round, deadline: room.pick.deadline, ...offerView(mp) }; }
       if (room.status === "playing" || room.status === "ended") {
         payload.boardArray = Array.from(room.board);
         payload.history = room.history.slice(0);
@@ -1386,7 +1660,13 @@ export function registerOmok(io, supabaseAdmin) {
       } else if (room.status === "playing") {
         // 진행중: 자기 차례면 즉시 패스, 아니면 그냥 끊김 표시
         const turnUid = room.playerOrder[room.currentTurnIdx];
-        if (turnUid === me.id) {
+        if (room.pick && room.pick.uid === me.id) {
+          // 증강 고르는 중에 끊김: 잠시 뒤 자동으로 고름
+          const seq = room.pick.seq;
+          setTimeout(() => { if (room.pick && room.pick.seq === seq && !p.augPicked && !p.connected && p.augOffer?.length) pickAug(io, room, me.id, bestOf(p.augOffer)); }, 1500);
+        } else if (room.pick) {
+          // 상대가 고르는 중 — 내 차례 아님, 그대로
+        } else if (turnUid === me.id) {
           clearTurnTimer(room);
           io.to(socketRoomName(room.id)).emit("omok:turnPass", {
             userId: me.id,
@@ -1437,7 +1717,15 @@ function leavePlayer(io, room, userId, forced) {
       // 자기 차례에 나감 — 다음 차례로
       if (room.currentTurnIdx >= room.playerOrder.length) room.currentTurnIdx = 0;
     }
-    if (wasTurn) {
+    if (room.pick && room.pick.uid === userId) {
+      // 고르던 사람이 나감 → 고르기 취소하고 다음 사람 차례
+      if (room.pick.timer) clearTimeout(room.pick.timer);
+      room.pick = null; room.replayNext = false;
+      if (room.currentTurnIdx >= room.playerOrder.length) room.currentTurnIdx = 0;
+      startTurn(io, room);
+    } else if (room.pick) {
+      // 다른 사람이 고르는 중 — 그대로
+    } else if (wasTurn) {
       clearTurnTimer(room);
       room.replayNext = false; // 나간 사람의 재행동이 다음 사람에게 넘어가지 않게
       startTurn(io, room);

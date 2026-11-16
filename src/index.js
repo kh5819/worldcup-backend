@@ -58,6 +58,8 @@ import { registerDuoWars } from "./duowars.js"; // 플듀 대전쟁 (2026-11-13)
 import { registerYacht } from "./yacht.js"; // 플듀 증강 야추 (2026-11-15)
 import { registerYut } from "./yut.js"; // 플듀 증강 윷놀이 (2026-11-15)
 import { registerChess } from "./chess.js"; // 플듀 증강 체스 (2026-11-16)
+import { registerOthello } from "./othello.js"; // 플듀 증강 오셀로 (2026-11-16)
+import { registerTerritory } from "./territory.js"; // DUO TERRITORY 증강 땅따먹기 (2026-11-16)
 import { registerBomb } from "./bomb.js"; // DUO BOMB ARENA (2026-11-16)
 import { registerPublicRooms, addPublicList } from "./public-rooms.js";
 import { installLobbyBurstGuard } from "./lobby-burst-guard.js";
@@ -11163,6 +11165,8 @@ registerOmok(io, supabaseAdmin);
 registerYacht(io, supabaseAdmin); // 플듀 증강 야추
 registerYut(io, supabaseAdmin); // 플듀 증강 윷놀이
 registerChess(io, supabaseAdmin); // 플듀 증강 체스
+registerOthello(io, supabaseAdmin); // 플듀 증강 오셀로
+registerTerritory(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO TERRITORY (스트리머 후원: 대전쟁과 같은 연결 함수, 키 "dw_tr_코드")
 registerBomb(io, supabaseAdmin); // DUO BOMB ARENA
 
 // =========================
@@ -14798,7 +14802,7 @@ const chatBridges = new Map();
 
 // 스트리머 채팅연동 사용 로그 (운영자 admin 탭에서 확인) — 실패해도 게임 흐름엔 영향 없음
 // 콘텐츠(DB) 없이 쓰는 스트리머 모드(예: 그려봐)는 종류만 프론트가 알려 줌 — 허용 목록만 저장
-const STREAMER_LOG_MODES = { duowars: "플듀 대전쟁 스트리머 모드", draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", lifebc_don: "인생 방송국 후원 방송 모드", mafia: "플듀 마피아 스트리머 모드", ptest: "심리테스트 시청자 참여", bingo: "빙고 시청자 참여", raising: "플듀 키우기 스트리머 모드" };
+const STREAMER_LOG_MODES = { duowars: "플듀 대전쟁 스트리머 모드", territory: "증강 땅따먹기 스트리머 모드", draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", lifebc_don: "인생 방송국 후원 방송 모드", mafia: "플듀 마피아 스트리머 모드", ptest: "심리테스트 시청자 참여", bingo: "빙고 시청자 참여", raising: "플듀 키우기 스트리머 모드" };
 async function _logStreamerChat({ platform, channelId, nickname, contentId, roomCode, hostUserId, hostNick, contentMode }) {
   try {
     if (!platform || !channelId) return; // 식별자 없으면 기록 안 함
@@ -14848,7 +14852,7 @@ async function _logStreamerChat({ platform, channelId, nickname, contentId, room
 }
 
 // ===== 플듀 대전쟁 스트리머 모드: 채팅·후원 연결 (대전쟁 방 코드별, 본인 토큰만 사용) =====
-async function _dwLinkChat({ platform, key, accessToken, channelId, nickname, hostUserId, roomCode, onDonation, onChat, onClose, soopUrl }) {
+async function _dwLinkChat({ platform, key, accessToken, channelId, nickname, hostUserId, roomCode, onDonation, onChat, onClose, soopUrl, contentMode = "duowars" }) {
   _dwUnlinkChat(key);
   // 서버 보호: 대전쟁 방송 연결은 동시에 150개까지 (방을 여러 개 만들어 연결을 쌓는 것 막기)
   let dwCount = 0; for (const k of chatBridges.keys()) if (String(k).startsWith("dw_")) dwCount++;
@@ -14864,7 +14868,7 @@ async function _dwLinkChat({ platform, key, accessToken, channelId, nickname, ho
     chatBridges.set(key, bridge);
     try { await bridge.connect(); }
     catch (e) { bridge.dwHooks = null; try { bridge.disconnect(); } catch (_) {} chatBridges.delete(key); return { ok: false, error: e.message }; }
-    _logStreamerChat({ platform: "soop", channelId: m[1], nickname: bridge.bjNick, roomCode, hostUserId, hostNick: nickname, contentMode: "duowars" });
+    _logStreamerChat({ platform: "soop", channelId: m[1], nickname: bridge.bjNick, roomCode, hostUserId, hostNick: nickname, contentMode });
     return { ok: true, subscribed: true, donationSubscribed: true, donationError: null, nickname: bridge.bjNick || m[1] };
   }
   if (platform === "chzzk") {
@@ -14880,7 +14884,7 @@ async function _dwLinkChat({ platform, key, accessToken, channelId, nickname, ho
   chatBridges.set(key, bridge);
   try { await bridge.connect(); }
   catch (e) { chatBridges.delete(key); return { ok: false, error: e.message }; }
-  _logStreamerChat({ platform, channelId: bridge.channelId || channelId, nickname, roomCode, hostUserId, hostNick: nickname, contentMode: "duowars" });
+  _logStreamerChat({ platform, channelId: bridge.channelId || channelId, nickname, roomCode, hostUserId, hostNick: nickname, contentMode });
   return { ok: true, subscribed: !!bridge.subscribed, donationSubscribed: !!bridge.donationSubscribed, donationError: bridge.donationError || null, nickname };
 }
 function _dwUnlinkChat(key) {
