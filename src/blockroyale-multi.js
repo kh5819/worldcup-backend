@@ -175,7 +175,7 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
         // (2026-11-12) 게스트도 방 만들기 가능 — 도배는 index.js 소켓 가드가 막음
         const old = myRoom(); if (old) leave(io, old, me.id);
         const id = `br_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, inviteCode = genCode();
-        const r = { id, inviteCode, hostUserId: me.id, status: "lobby", opts: { mode: "battle", maxPlayers: 50, isPublic: false, password: "", allowSpectate: true, countdown: 5, atkMul: 1, startLevel: 1, gameTimeSec: 0, teamCount: 2, rematch: true, aug: false }, startsAt: null, deadline: null, total: 0, nextIdx: 0, players: new Map(), order: [], emptyTimer: null, gameTimer: null, tickTimer: null, net: { tick: 0 }, onFinish: (rr, rk, now) => saveRecords(supabaseAdmin, rr, rk, now) };
+        const r = { id, inviteCode, hostUserId: me.id, status: "lobby", opts: { mode: "battle", maxPlayers: 50, isPublic: false, password: "", allowSpectate: true, countdown: 5, atkMul: 1, startLevel: 1, gameTimeSec: 0, teamCount: 2, rematch: true, aug: payload?.aug === true }, startsAt: null, deadline: null, total: 0, nextIdx: 0, players: new Map(), order: [], emptyTimer: null, gameTimer: null, tickTimer: null, net: { tick: 0 }, onFinish: (rr, rk, now) => saveRecords(supabaseAdmin, rr, rk, now) };
         rooms.set(id, r); invites.set(inviteCode, id);
         const d = await profile(me); r.players.set(me.id, newPlayer(d.nickname || payload?.nickname || "방장", false, d.avatar_url, socket.id, r.nextIdx++)); r.players.get(me.id).ready = true; r.order.push(me.id); attachSocket(r, r.players.get(me.id));
         cb({ ok: true, roomId: id, inviteCode, playerId: me.id, room: pubRoom(r) }); emitRoom(io, r);
@@ -207,7 +207,7 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
       } catch (e) { console.error("[br:joinRoom]", e); cb({ ok: false, error: "INTERNAL" }); }
     });
 
-    socket.on("br:listRooms", (_p, cb) => { cb = fn(cb); const list = [...rooms.values()].filter((r) => r.opts.isPublic && r.status !== "ended").slice(0, 30).map((r) => ({ code: r.inviteCode, mode: r.opts.mode, n: r.order.length, max: r.opts.maxPlayers, status: r.status, spectate: r.opts.allowSpectate, locked: !!r.opts.password, host: r.players.get(r.hostUserId)?.name || "" })); cb({ ok: true, list }); });
+    socket.on("br:listRooms", (_p, cb) => { cb = fn(cb); const list = [...rooms.values()].filter((r) => r.opts.isPublic && r.status !== "ended").slice(0, 30).map((r) => ({ code: r.inviteCode, mode: r.opts.mode, n: r.order.length, max: r.opts.maxPlayers, status: r.status, spectate: r.opts.allowSpectate, locked: !!r.opts.password, aug: !!r.opts.aug, host: r.players.get(r.hostUserId)?.name || "" })); cb({ ok: true, list }); });
 
     socket.on("br:setOptions", (o, cb) => {
       cb = fn(cb); const r = hostRoom(cb); if (!r) return; if (r.status === "playing") return cb({ ok: false, error: "NOT_LOBBY" }); const q = r.opts;

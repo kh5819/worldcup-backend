@@ -21,6 +21,8 @@ const PROGRESS_THROTTLE_MS = 700;
 const SNAPSHOT_THROTTLE_MS = 1500;
 const MAX_NICK_LEN = 14;
 const TOTAL_BLOCKS_DEFINED = 17;  // 17종 폴리오미노
+// 증강 모드(2026-11-16): 판정·증강은 각자 브라우저(혼자 하기와 같음). 고르기는 각자 내 줄 수로만, 그 사람 판·세트 시간만 멈춤
+const cleanAugs = (v) => (Array.isArray(v) ? v.slice(0, 6).map((x) => String(x).slice(0, 24)) : null);
 
 // ===== util =====
 function genInviteCode() {
@@ -35,6 +37,7 @@ function clearEmptyRoomTimer(room) {
   if (room?.emptyRoomTimer) { clearTimeout(room.emptyRoomTimer); room.emptyRoomTimer = null; }
 }
 function clearGameTimer(room) {
+  if (room?.finalTimer) { clearTimeout(room.finalTimer); room.finalTimer = null; }
   if (room?.gameTimer) { clearTimeout(room.gameTimer); room.gameTimer = null; }
   stopBoard(room);
 }
@@ -73,6 +76,7 @@ function newPlayerState(name, isGuest, avatarUrl, socketId) {
     combo: 1,
     maxCombo: 1,
     boardMask: [],   // boolean[100] — 자기 보드 채워진 셀 (관전용)
+    augs: [],        // 증강 모드: 고른 증강 id (결과 표시용)
     // 결과
     status: "active",       // active | eliminated | left
     eliminatedAt: 0,
@@ -101,6 +105,7 @@ function publicPlayer(userId, p) {
     eliminatedAt: p.eliminatedAt,
     eliminatedRank: p.eliminatedRank,
     lastActionMs: p.lastActionMs,
+    augs: p.augs || [],
   };
 }
 
@@ -113,6 +118,7 @@ function publicRoom(room) {
     maxPlayers: room.maxPlayers,
     gameTimeSec: room.gameTimeSec,
     blockTimeSec: room.blockTimeSec ?? 30,
+    aug: !!room.aug,
     seed: room.seed || null,
     gameDeadline: room.gameDeadline || null,
     startedAt: room.startedAt || null,
@@ -195,10 +201,22 @@ function checkAndMaybeFinish(io, room) {
   const active = activeCount(room);
   // 모두 탈락 또는 한 명만 살아남으면 종료
   if (active <= 1 && room.players.size >= 2) {
-    finishGame(io, room, active === 1 ? "LAST_STANDING" : "ALL_ELIMINATED");
+    beginFinish(io, room, active === 1 ? "LAST_STANDING" : "ALL_ELIMINATED");
   }
 }
 
+
+// 끝내기 전 마지막 점수 받기 (2026-11-16): 점수는 0.6~0.7초 간격으로만 받아서 끝나는 순간 딴 점수가 결과에서 빠질 수 있었음.
+// → 끝날 때 "blockblast:finalCall" 을 보내 모두 멈추고 마지막 점수를 받은 뒤(최대 0.9초) 결과를 냄
+const FINAL_WAIT_MS = 900;
+function beginFinish(io, room, reason) {
+  if (room.status !== "playing" || room.finalTimer) return;
+  room.finalWait = new Set([...room.players.entries()].filter(([, p]) => p.status === "active" && p.connected).map(([u]) => u));
+  if (!room.finalWait.size) return finishGame(io, room, reason);
+  room.finalReason = reason;
+  io.to(socketRoomName(room.id)).emit("blockblast:finalCall", {});
+  room.finalTimer = setTimeout(() => { room.finalTimer = null; const r = bbRooms.get(room.id); if (r && r.status === "playing") finishGame(io, r, reason); }, FINAL_WAIT_MS);
+}
 function finishGame(io, room, reason) {
   if (room.status === "ended") return;
   room.status = "ended";
@@ -357,6 +375,7 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
         const bt = Number(payload.blockTimeSec);
         if (ALLOWED_BLOCK_TIME.includes(bt)) room.blockTimeSec = bt;
       }
+      if (typeof payload?.aug === "boolean") room.aug = payload.aug;
       broadcastRoomState(io, room);
       cb?.({ ok: true });
     });
@@ -398,6 +417,7 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
         p.score = 0; p.linesCleared = 0; p.blocksPlaced = 0;
         p.combo = 1; p.maxCombo = 1;
         p.boardMask = [];
+        p.augs = [];
         p.status = "active";
         p.eliminatedAt = 0; p.eliminatedRank = 0;
         p.lastActionMs = Date.now();
@@ -411,6 +431,7 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
         gameTimeSec: room.gameTimeSec,
         gameDeadline: room.gameDeadline,
         blockTimeSec: room.blockTimeSec ?? 30,
+        aug: !!room.aug,
         players: room.playerOrder.map(uid => slim(room, publicPlayer(uid, room.players.get(uid)))),
         big: isBig(room),
       });
@@ -421,7 +442,7 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
       if (room.gameTimeSec > 0) {
         room.gameTimer = setTimeout(() => {
           const r = bbRooms.get(room.id);
-          if (r && r.status === "playing") finishGame(io, r, "TIME_UP");
+          if (r && r.status === "playing") beginFinish(io, r, "TIME_UP");
         }, room.gameTimeSec * 1000);
       }
 
@@ -444,6 +465,7 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
       p.blocksPlaced = Math.max(0, Math.min(9999, safeNumber(payload?.blocksPlaced, p.blocksPlaced)));
       p.combo = Math.max(1, Math.min(50, safeNumber(payload?.combo, p.combo)));
       p.maxCombo = Math.max(p.maxCombo, Math.min(50, safeNumber(payload?.maxCombo, p.maxCombo)));
+      if (room.aug) { const a = cleanAugs(payload?.augs); if (a) p.augs = a; }
       p.lastActionMs = now;
       if (isBig(room)) return;   // 대규모 방: 1초마다 순위표로 모아서 보냄
 
@@ -456,6 +478,22 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
         maxCombo: p.maxCombo,
         lastActionMs: p.lastActionMs,
       });
+    });
+
+    // 끝날 때 마지막 점수 (간격 제한 없음, 끝내는 중에만)
+    socket.on("blockblast:finalScore", (payload) => {
+      const roomId = bbUserRoom.get(me.id);
+      const room = roomId ? bbRooms.get(roomId) : null;
+      if (!room || room.status !== "playing" || !room.finalTimer) return;
+      const p = room.players.get(me.id);
+      if (!p || p.status !== "active" || p.socketId !== socket.id) return;
+      p.score = Math.max(0, Math.min(999999, safeNumber(payload?.score, p.score)));
+      p.linesCleared = Math.max(0, Math.min(9999, safeNumber(payload?.linesCleared, p.linesCleared)));
+      p.blocksPlaced = Math.max(0, Math.min(9999, safeNumber(payload?.blocksPlaced, p.blocksPlaced)));
+      p.maxCombo = Math.max(p.maxCombo, Math.min(50, safeNumber(payload?.maxCombo, p.maxCombo)));
+      if (room.aug) { const a = cleanAugs(payload?.augs); if (a) p.augs = a; }
+      room.finalWait?.delete(me.id);
+      if (room.finalWait && !room.finalWait.size) { clearTimeout(room.finalTimer); room.finalTimer = null; finishGame(io, room, room.finalReason || "TIME_UP"); }
     });
 
     // 보드 스냅샷 (관전용)
@@ -494,6 +532,7 @@ export function registerBlockBlastMulti(io, supabaseAdmin) {
       p.linesCleared = Math.max(0, Math.min(9999, safeNumber(payload?.linesCleared, p.linesCleared)));
       p.blocksPlaced = Math.max(0, Math.min(9999, safeNumber(payload?.blocksPlaced, p.blocksPlaced)));
       p.maxCombo = Math.max(p.maxCombo, Math.min(50, safeNumber(payload?.maxCombo, p.maxCombo)));
+      if (room.aug) { const a = cleanAugs(payload?.augs); if (a) p.augs = a; }
       p.status = "eliminated";
       p.eliminatedAt = Date.now();
       room.eliminatedCount += 1;

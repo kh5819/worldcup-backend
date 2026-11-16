@@ -27,6 +27,17 @@ const SNAPSHOT_THROTTLE_MS = 1500; // 보드 스냅샷 (관전용 미니보드)
 const MAX_NICK_LEN = 14;
 const COLS = 17;
 const ROWS = 10;
+// 증강 모드(2026-11-16): 판정·증강은 각자 브라우저(혼자 하기와 같음). 고르는 동안·시간 정지 중엔 그 사람 시계만 멈추고
+// 추가 시간(+40초까지)도 있어 사람마다 끝나는 때가 다름 → 각자 시간이 끝나면 giveUp(timeUp)으로 알리고, 모두 끝나면 결과.
+// 끊긴 사람 때문에 무한정 기다리지 않게 최대 시간 = 제한 + 40초(추가) + 60초(고르기 5번) + 15초(여유)
+const AUG_EXTRA_SEC = 40 + 60 + 15;
+const scoreCap = (room) => (room.aug ? 99999 : 9999);
+const cleanAugs = (v) => (Array.isArray(v) ? v.slice(0, 6).map((x) => String(x).slice(0, 24)) : null);
+function checkAllDone(io, room) {
+  if (!room.aug || room.status !== "playing") return;
+  const still = [...room.players.values()].some((p) => p.status === "playing" && p.connected);
+  if (!still) finishGame(io, room, "ALL_DONE");
+}
 
 // ===== util =====
 function genInviteCode() {
@@ -41,9 +52,11 @@ function clearEmptyRoomTimer(room) {
   if (room?.emptyRoomTimer) { clearTimeout(room.emptyRoomTimer); room.emptyRoomTimer = null; }
 }
 function clearGameTimer(room) {
+  if (room?.finalTimer) { clearTimeout(room.finalTimer); room.finalTimer = null; }
   if (room?.gameTimer) { clearTimeout(room.gameTimer); room.gameTimer = null; }
   if (room?.boardTimer) { clearInterval(room.boardTimer); room.boardTimer = null; }
 }
+const payload_ok = (v) => !!v && typeof v === "object";
 function safeNumber(v, dflt = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : dflt;
@@ -67,6 +80,7 @@ function newPlayerState(name, isGuest, avatarUrl, socketId) {
     combo: 1,
     maxCombo: 1,
     removedMask: [],   // boolean[170] — true=제거됨 (관전 미니보드용)
+    augs: [],          // 증강 모드: 고른 증강 id (결과 표시용)
     // 결과
     status: "playing",        // playing | finished | left
     finishedAt: 0,
@@ -85,7 +99,7 @@ function publicPlayer(userId, p, lite = false) {
   if (lite) return {
     playerId: userId, nickname: p.name, isGuest: p.isGuest, avatar_url: p.avatar_url || null,
     connected: p.connected, score: p.score, applesCleared: p.applesCleared, combo: p.combo,
-    maxCombo: p.maxCombo, status: p.status, finishedAt: p.finishedAt, lastActionMs: p.lastActionMs,
+    maxCombo: p.maxCombo, status: p.status, finishedAt: p.finishedAt, lastActionMs: p.lastActionMs, augs: p.augs || [],
   };
   return {
     playerId: userId,
@@ -101,6 +115,7 @@ function publicPlayer(userId, p, lite = false) {
     status: p.status,
     finishedAt: p.finishedAt,
     lastActionMs: p.lastActionMs,
+    augs: p.augs || [],
   };
 }
 
@@ -112,6 +127,7 @@ function publicRoom(room) {
     status: room.status,
     maxPlayers: room.maxPlayers,
     timeLimitSec: room.timeLimitSec || 120,
+    aug: !!room.aug,
     seed: room.seed || null,
     startedAt: room.startedAt || null,
     endedAt: room.endedAt || null,
@@ -203,8 +219,21 @@ function leavePlayer(io, room, userId) {
     return;
   }
   broadcastRoomState(io, room);
+  checkAllDone(io, room);
 }
 
+
+// 끝내기 전 마지막 점수 받기 (2026-11-16): 점수는 0.6~0.7초 간격으로만 받아서 끝나는 순간 딴 점수가 결과에서 빠질 수 있었음.
+// → 끝날 때 "apple:finalCall" 을 보내 모두 멈추고 마지막 점수를 받은 뒤(최대 0.9초) 결과를 냄
+const FINAL_WAIT_MS = 900;
+function beginFinish(io, room, reason) {
+  if (room.status !== "playing" || room.finalTimer) return;
+  room.finalWait = new Set([...room.players.entries()].filter(([, p]) => p.status === "playing" && p.connected).map(([u]) => u));
+  if (!room.finalWait.size) return finishGame(io, room, reason);
+  room.finalReason = reason;
+  io.to(socketRoomName(room.id)).emit("apple:finalCall", {});
+  room.finalTimer = setTimeout(() => { room.finalTimer = null; const r = appleRooms.get(room.id); if (r && r.status === "playing") finishGame(io, r, reason); }, FINAL_WAIT_MS);
+}
 function finishGame(io, room, reason) {
   if (room.status === "ended") return;
   room.status = "ended";
@@ -255,12 +284,13 @@ export function registerAppleMulti(io, supabaseAdmin) {
         const requestedTL = Number(payload?.timeLimitSec);
         const timeLimitSec = ALLOWED_TIME_LIMIT_SEC.includes(requestedTL)
           ? requestedTL : 120; // 기본 2분
+        const aug = payload?.aug === true;
 
         const roomId = `ap_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const inviteCode = genInviteCode();
         const room = {
           id: roomId, inviteCode, hostUserId: me.id,
-          status: "lobby", maxPlayers, timeLimitSec,
+          status: "lobby", maxPlayers, timeLimitSec, aug,
           seed: null,
           createdAt: Date.now(), startedAt: null, endedAt: null,
           players: new Map(), playerOrder: [],
@@ -304,6 +334,8 @@ export function registerAppleMulti(io, supabaseAdmin) {
           socket.join(socketRoomName(roomId));
           appleUserRoom.set(me.id, roomId);
           clearEmptyRoomTimer(room);
+          // 증강 게임 도중 새로고침: 화면은 대기실로 돌아가 이어서 못 하므로 지금 점수로 끝남 처리 (남은 사람이 끝나면 바로 결과)
+          if (room.aug && room.status === "playing" && p.status === "playing") { p.status = "finished"; p.finishedAt = Date.now(); io.to(socketRoomName(room.id)).emit("apple:peerFinish", { playerId: me.id }); setTimeout(() => checkAllDone(io, room), 0); }
           cb?.({ ok: true, roomId, inviteCode: room.inviteCode, playerId: me.id, room: publicRoom(room), rejoined: true });
           broadcastRoomState(io, room);
           return;
@@ -360,6 +392,7 @@ export function registerAppleMulti(io, supabaseAdmin) {
         const t = Number(payload.timeLimitSec);
         if (ALLOWED_TIME_LIMIT_SEC.includes(t)) room.timeLimitSec = t;
       }
+      if (typeof payload?.aug === "boolean") room.aug = payload.aug;
       broadcastRoomState(io, room);
       cb?.({ ok: true });
     });
@@ -385,6 +418,7 @@ export function registerAppleMulti(io, supabaseAdmin) {
         p.combo = 1;
         p.maxCombo = 1;
         p.removedMask = [];
+        p.augs = [];
         p.status = "playing";
         p.finishedAt = 0;
         p.lastActionMs = Date.now();
@@ -398,6 +432,7 @@ export function registerAppleMulti(io, supabaseAdmin) {
       io.to(socketRoomName(room.id)).emit("apple:gameStart", {
         startedAt: room.startedAt,
         timeLimitSec: room.timeLimitSec,
+        aug: !!room.aug,
         seed: room.seed,
         cols: COLS,
         rows: ROWS,
@@ -410,8 +445,8 @@ export function registerAppleMulti(io, supabaseAdmin) {
       if (isBig(room)) room.boardTimer = setInterval(() => boardTick(io, room), BOARD_TICK_MS);
       room.gameTimer = setTimeout(() => {
         const r = appleRooms.get(room.id);
-        if (r && r.status === "playing") finishGame(io, r, "TIME_UP");
-      }, room.timeLimitSec * 1000);
+        if (r && r.status === "playing") beginFinish(io, r, "TIME_UP");
+      }, (room.timeLimitSec + (room.aug ? AUG_EXTRA_SEC : 0)) * 1000);
 
       cb?.({ ok: true, startedAt: room.startedAt, seed: room.seed });
     });
@@ -428,7 +463,8 @@ export function registerAppleMulti(io, supabaseAdmin) {
       if (now - p.lastProgressEmit < PROGRESS_THROTTLE_MS) return;
       p.lastProgressEmit = now;
 
-      p.score = Math.max(0, Math.min(9999, safeNumber(payload?.score, p.score)));
+      p.score = Math.max(0, Math.min(scoreCap(room), safeNumber(payload?.score, p.score)));
+      if (room.aug) { const a = cleanAugs(payload?.augs); if (a) p.augs = a; }
       p.applesCleared = Math.max(0, Math.min(170, safeNumber(payload?.applesCleared, p.applesCleared)));
       p.combo = Math.max(1, Math.min(50, safeNumber(payload?.combo, p.combo)));
       const newMaxCombo = Math.max(p.maxCombo, safeNumber(payload?.maxCombo, p.maxCombo));
@@ -444,6 +480,21 @@ export function registerAppleMulti(io, supabaseAdmin) {
         maxCombo: p.maxCombo,
         lastActionMs: p.lastActionMs,
       });
+    });
+
+    // ----- 끝날 때 마지막 점수 (간격 제한 없음, 끝내는 중에만) -----
+    socket.on("apple:finalScore", (payload) => {
+      const roomId = appleUserRoom.get(me.id);
+      const room = roomId ? appleRooms.get(roomId) : null;
+      if (!room || room.status !== "playing" || !room.finalTimer) return;
+      const p = room.players.get(me.id);
+      if (!p || p.status !== "playing" || p.socketId !== socket.id) return;
+      p.score = Math.max(0, Math.min(scoreCap(room), safeNumber(payload?.score, p.score)));
+      p.applesCleared = Math.max(0, Math.min(170, safeNumber(payload?.applesCleared, p.applesCleared)));
+      p.maxCombo = Math.max(p.maxCombo, Math.min(50, safeNumber(payload?.maxCombo, p.maxCombo)));
+      if (room.aug) { const a = cleanAugs(payload?.augs); if (a) p.augs = a; }
+      room.finalWait?.delete(me.id);
+      if (room.finalWait && !room.finalWait.size) { clearTimeout(room.finalTimer); room.finalTimer = null; finishGame(io, room, room.finalReason || "TIME_UP"); }
     });
 
     // ----- 보드 스냅샷 (관전 미니보드, 더 느린 throttle) -----
@@ -496,10 +547,19 @@ export function registerAppleMulti(io, supabaseAdmin) {
       if (!room || room.status !== "playing") return cb?.({ ok: false, error: "NOT_PLAYING" });
       const p = room.players.get(me.id);
       if (!p) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      // 증강: 내 시간이 끝나 마지막 점수를 같이 보냄 (점수 간격 제한에 걸려 빠지지 않게)
+      if (room.aug && payload_ok(_payload)) {
+        p.score = Math.max(p.score, Math.min(scoreCap(room), safeNumber(_payload.score, p.score)));
+        p.applesCleared = Math.max(p.applesCleared, Math.min(170, safeNumber(_payload.applesCleared, p.applesCleared)));
+        p.maxCombo = Math.max(p.maxCombo, Math.min(50, safeNumber(_payload.maxCombo, p.maxCombo)));
+        const a = cleanAugs(_payload.augs); if (a) p.augs = a;
+        socket.to(socketRoomName(room.id)).emit("apple:peerUpdate", { playerId: me.id, score: p.score, applesCleared: p.applesCleared, combo: p.combo, maxCombo: p.maxCombo, lastActionMs: p.lastActionMs });
+      }
       p.status = "finished";
       p.finishedAt = Date.now();
       io.to(socketRoomName(room.id)).emit("apple:peerFinish", { playerId: me.id });
       cb?.({ ok: true });
+      checkAllDone(io, room);
     });
 
     // ----- 자발 퇴장 -----
@@ -550,6 +610,7 @@ export function registerAppleMulti(io, supabaseAdmin) {
       } else {
         io.to(socketRoomName(room.id)).emit("apple:peerUpdate", { playerId: me.id, connected: false });
         maybeScheduleEmptyRoomDelete(io, room);
+        checkAllDone(io, room);
       }
     });
   });
