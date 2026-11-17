@@ -28,7 +28,14 @@ const ROUND_INTRO_MS = 1500;
 const EMPTY_ROOM_TTL_MS = 30_000;
 
 const CATEGORY_IDS = Object.keys(OX_QUESTIONS);
-function isValidCategory(c) { return c === "random" || !!OX_QUESTIONS[c]; }
+function isValidCategory(c) { return c === "random" || c === "custom" || !!OX_QUESTIONS[c]; }
+// ✏️ 직접 질문 (2026-11-17): 대기실에서 각자 질문을 써 넣고, 게임 때 섞어서 한 라운드에 하나씩
+// · 한 사람 7개 · 방 전체 60개 · 4~70자 · 같은 문장 중복 금지
+// · 누가 냈는지는 결과 때 공개 → 방 상태(모두에게 같은 내용)엔 개수만, 목록은 각자 요청(ox:customList, 방장은 전체)
+const CUSTOM_PER_USER = 7, CUSTOM_MAX = 60, CUSTOM_MIN_LEN = 4, CUSTOM_MAX_LEN = 70;
+const CUSTOM_LABEL = { ko: "✏️ 직접 질문", ja: "✏️ 手作り質問", en: "✏️ Custom questions" };
+function cleanQuestion(t) { return String(t ?? "").normalize("NFC").replace(/[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff<>]/g, "").replace(/\s+/g, " ").trim(); }
+function customCounts(room) { const byUser = {}; for (const q of room.customQuestions || []) byUser[q.authorId] = (byUser[q.authorId] || 0) + 1; return { total: (room.customQuestions || []).length, byUser, perUser: CUSTOM_PER_USER, max: CUSTOM_MAX }; }
 function isValidLang(lang) { return ALLOWED_LANGS.includes(lang); }
 function resolveCategory(roomCat) {
   if (roomCat !== "random") return roomCat;
@@ -98,6 +105,7 @@ function publicRoom(room) {
     inputSec: room.inputSec,
     category: room.category,
     lang: room.lang || "ko",
+    custom: customCounts(room),
     effectiveCategory: room.roundData?.effectiveCategory || null,
     currentRoundIdx: room.currentRoundIdx,
     phase: room.roundData?.phase || (room.status === "lobby" ? "lobby" : null),
@@ -131,8 +139,8 @@ function startNextRound(io, room) {
   if (room.status !== "playing") return;
   if (room.currentRoundIdx >= room.totalRounds) return endGame(io, room);
 
-  const effectiveCat = resolveCategory(room.category);
-  const picked = pickRandomQuestion(effectiveCat, room.seenQuestionIds, room.lang);
+  const effectiveCat = room.category === "custom" ? "custom" : resolveCategory(room.category);
+  const picked = room.category === "custom" ? (room.customDeck || []).shift() || null : pickRandomQuestion(effectiveCat, room.seenQuestionIds, room.lang);
   if (!picked) return endGame(io, room);
   room.seenQuestionIds.add(picked.id);
 
@@ -141,6 +149,7 @@ function startNextRound(io, room) {
     effectiveCategory: effectiveCat,
     questionId: picked.id,
     question: picked.question,
+    author: picked.authorName ? { id: picked.authorId, name: picked.authorName } : null,
     answers: new Map(),       // userId -> "O"|"X"
     predictions: new Map(),   // predictorId -> Map(targetId -> "O"|"X")
     finished: new Set(),      // userIds 완료 누른 사람
@@ -148,7 +157,7 @@ function startNextRound(io, room) {
     timer: null,
   };
 
-  const catLabel = getOxCategoriesByLang(room.lang).find(c => c.id === effectiveCat)?.label || effectiveCat;
+  const catLabel = effectiveCat === "custom" ? (CUSTOM_LABEL[room.lang] || CUSTOM_LABEL.ko) : (getOxCategoriesByLang(room.lang).find(c => c.id === effectiveCat)?.label || effectiveCat);
 
   io.to(socketRoomName(room.id)).emit("ox:roundStart", {
     roundIdx: room.currentRoundIdx,
@@ -294,6 +303,7 @@ function finishRound(io, room, timedOut) {
     totalRounds: room.totalRounds,
     isLastRound,
     question: room.roundData.question,
+    questionAuthor: room.roundData.author || null,
     answers: answersArr,
     predictions: predictionsArr,
     scores: scoresArr,
@@ -409,6 +419,7 @@ export function registerOxGame(io, supabaseAdmin) {
           phaseTimer: null,
           emptyRoomTimer: null,
           seenQuestionIds: new Set(),
+          customQuestions: [],
         };
         oxRooms.set(roomId, room);
         oxInvites.set(inviteCode, roomId);
@@ -521,6 +532,46 @@ export function registerOxGame(io, supabaseAdmin) {
       broadcastRoomState(io, room);
     });
 
+    // ✏️ 직접 질문 — 추가 / 지우기 / 목록 (대기실·결과 화면에서만)
+    const myOxRoom = () => { const id = oxUserRoom.get(me.id); const r = id ? oxRooms.get(id) : null; return r && r.players.has(me.id) ? r : null; };
+    const customList = (room) => (room.customQuestions || []).filter(q => q.authorId === me.id || room.hostUserId === me.id).map(q => ({ id: q.id, text: q.text, mine: q.authorId === me.id, authorName: q.authorName }));
+    let qAt = 0;
+    socket.on("ox:customAdd", (payload, cb) => {
+      const room = myOxRoom();
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.status === "playing") return cb?.({ ok: false, error: "GAME_IN_PROGRESS" });
+      const t = Date.now(); if (t - qAt < 400) return cb?.({ ok: false, error: "TOO_FAST" }); qAt = t;
+      if (typeof payload?.text !== "string") return cb?.({ ok: false, error: "TOO_SHORT", min: CUSTOM_MIN_LEN }); // 글자만 받음 (객체를 보내면 [object Object]가 질문이 됐음)
+      const text = cleanQuestion(payload?.text);
+      if (text.length < CUSTOM_MIN_LEN) return cb?.({ ok: false, error: "TOO_SHORT", min: CUSTOM_MIN_LEN });
+      if (text.length > CUSTOM_MAX_LEN) return cb?.({ ok: false, error: "TOO_LONG", max: CUSTOM_MAX_LEN });
+      room.customQuestions = room.customQuestions || [];
+      if (room.customQuestions.length >= CUSTOM_MAX) return cb?.({ ok: false, error: "ROOM_FULL_QUESTIONS", max: CUSTOM_MAX });
+      if (room.customQuestions.filter(q => q.authorId === me.id).length >= CUSTOM_PER_USER) return cb?.({ ok: false, error: "MY_LIMIT", max: CUSTOM_PER_USER });
+      const key = text.replace(/[\s?!.~]/g, "");
+      if (room.customQuestions.some(q => q.text.replace(/[\s?!.~]/g, "") === key)) return cb?.({ ok: false, error: "DUPLICATE" });
+      const p = room.players.get(me.id);
+      room.customQuestions.push({ id: "cq" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text, authorId: me.id, authorName: p?.name || "익명" });
+      cb?.({ ok: true, list: customList(room) });
+      broadcastRoomState(io, room);
+    });
+    socket.on("ox:customRemove", (payload, cb) => {
+      const room = myOxRoom();
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.status === "playing") return cb?.({ ok: false, error: "GAME_IN_PROGRESS" });
+      const qs = room.customQuestions || []; const i = qs.findIndex(q => q.id === String(payload?.id || ""));
+      if (i < 0) return cb?.({ ok: false, error: "NOT_FOUND" });
+      if (qs[i].authorId !== me.id && room.hostUserId !== me.id) return cb?.({ ok: false, error: "NOT_ALLOWED" }); // 내 질문 또는 방장만
+      qs.splice(i, 1);
+      cb?.({ ok: true, list: customList(room) });
+      broadcastRoomState(io, room);
+    });
+    socket.on("ox:customList", (_payload, cb) => {
+      const room = myOxRoom();
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      cb?.({ ok: true, list: customList(room) });
+    });
+
     socket.on("ox:startGame", (_payload, cb) => {
       const roomId = oxUserRoom.get(me.id);
       const room = roomId ? oxRooms.get(roomId) : null;
@@ -530,6 +581,13 @@ export function registerOxGame(io, supabaseAdmin) {
       // rematch: ended 상태에서 새 게임 허용
       if (room.status === "ended") { room.endedAt = null; }
       if (room.players.size < MIN_PLAYERS) return cb?.({ ok: false, error: "NOT_ENOUGH_PLAYERS", min: MIN_PLAYERS });
+      if (room.category === "custom") {
+        const qs = room.customQuestions || [];
+        if (qs.length < room.totalRounds) return cb?.({ ok: false, error: "NOT_ENOUGH_QUESTIONS", have: qs.length, need: room.totalRounds });
+        const deck = qs.map(q => ({ id: q.id, question: q.text, authorId: q.authorId, authorName: q.authorName }));
+        for (let i = deck.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [deck[i], deck[j]] = [deck[j], deck[i]]; }
+        room.customDeck = deck;
+      }
 
       for (const p of room.players.values()) p.score = 0;
       room.status = "playing";
