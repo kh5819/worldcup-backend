@@ -8,38 +8,42 @@
 import { createFlight } from "./create-flight.js";
 import { addPublicList } from "./public-rooms.js";
 import { BRGame, encodeBoard } from "./br-core.js";
+// 보스 레이드(2026-11-18): mode "raid" — 보스 상태·피해·공격은 br-raid.js, 판 검증은 기존 그대로. 다른 모드에선 r.raid 가 없음
+import { Raid } from "./br-raid.js";
+import { BOSS_IDS } from "./br-raid-data.js";
 // 증강 모드(2026-11-16): 고르기는 사람마다 따로(내 판만 잠깐 멈춤), 서버가 같은 엔진으로 고르기·능력까지 다시 돌려 확인
 const hasAug = (p, id) => !!p?.game?.aug?.list?.includes(id);
 
 const rooms = new Map(), invites = new Map(), userRoom = new Map();
 export const BR = {
-  modes: ["battle", "score", "team"], maxPlayers: 50, timeBattle: [0, 180, 300, 600], timeScore: [120, 180, 300], countdown: [3, 5, 10], atkMul: [0.5, 1, 1.5, 2], startLv: [1, 5, 10], teams: [2],
+  modes: ["battle", "score", "team", "raid"], maxPlayers: 50, timeBattle: [0, 180, 300, 600], timeScore: [120, 180, 300], countdown: [3, 5, 10], atkMul: [0.5, 1, 1.5, 2], startLv: [1, 5, 10], teams: [2],
   emptyTtl: 30_000, grace: 20_000, lobbyGrace: 8000, afk: 40_000, tickBig: 1000, tickSmall: 250, bigAt: 9, garbageDelay: 1200, forceAck: 6000,
   lockCap: 25, lockRefill: 12, maxOps: 800, koWindow: 20_000, focusLimit: 14, maxInvalid: 25, specExtra: 30,
 };
-const STATUS = { active: 0, dead: 1, left: 2, spec: 3 };
+const STATUS = { active: 0, dead: 1, left: 2, spec: 3, down: 4 };
 const sr = (id) => `br:${id}`, srB = (id) => `br:${id}:boards`;
 const isBig = (r) => r.order.length >= BR.bigAt;
 const clampName = (s) => String(s || "익명").slice(0, 14);
 const genCode = () => { for (let i = 0; i < 50; i++) { const c = String(Math.floor(Math.random() * 1e6)).padStart(6, "0"); if (!invites.has(c)) return c; } return String(Math.floor(Math.random() * 1e7)).padStart(7, "0"); };
-function newPlayer(name, isGuest, avatar, socketId, idx, ip) { return { name: clampName(name), isGuest: !!isGuest, avatar_url: avatar || null, connected: true, socketId, idx, ip, ready: false, team: null, status: "active", wantSpec: false, target: "random", manual: null, curTarget: null, game: null, board: "0|", rev: 0, gseq: 0, inbox: [], kos: 0, assists: 0, recv: 0, sent: 0, maxAtk: 0, tetra: 0, tspins: 0, perfects: 0, place: 0, deadAt: 0, survived: 0, comeback: 0, hits: new Map(), bucket: BR.lockCap, bucketAt: 0, lastLock: 0, invalid: 0, resyncs: 0, dirtyRow: true, dirtyBoard: false, watch: null, watchers: 0, lastCur: 0, vis: null, dcTimer: null }; }
-const pub = (u, p) => ({ playerId: u, idx: p.idx, nickname: p.name, isGuest: p.isGuest, avatar_url: p.avatar_url, connected: p.connected, ready: p.ready, team: p.team, status: p.status, wantSpec: p.wantSpec, place: p.place, kos: p.kos, assists: p.assists, sent: p.sent, score: p.game?.score || 0, lines: p.game?.lines || 0, maxCombo: p.game?.maxCombo || 0, pieces: p.game?.pieces || 0, survived: p.survived, maxAtk: p.maxAtk, tetra: p.tetra, tspins: p.tspins, perfects: p.perfects, augs: p.game?.aug?.list || p.game?.augs || [] });
+function newPlayer(name, isGuest, avatar, socketId, idx, ip) { return { name: clampName(name), isGuest: !!isGuest, avatar_url: avatar || null, connected: true, socketId, idx, ip, ready: false, team: null, status: "active", wantSpec: false, target: "random", manual: null, curTarget: null, game: null, board: "0|", rev: 0, gseq: 0, inbox: [], kos: 0, assists: 0, recv: 0, sent: 0, maxAtk: 0, tetra: 0, tspins: 0, perfects: 0, place: 0, deadAt: 0, survived: 0, comeback: 0, hits: new Map(), bucket: BR.lockCap, bucketAt: 0, lastLock: 0, invalid: 0, resyncs: 0, dirtyRow: true, dirtyBoard: false, watch: null, watchers: 0, lastCur: 0, vis: null, dcTimer: null, raidTarget: "auto", raidSt: null, raidC: null }; }
+const pub = (u, p) => ({ playerId: u, idx: p.idx, nickname: p.name, isGuest: p.isGuest, avatar_url: p.avatar_url, connected: p.connected, ready: p.ready, team: p.team, status: p.status, wantSpec: p.wantSpec, place: p.place, kos: p.kos, assists: p.assists, sent: p.sent, score: p.game?.score || 0, lines: p.game?.lines || 0, maxCombo: p.game?.maxCombo || 0, pieces: p.game?.pieces || 0, survived: p.survived, maxAtk: p.maxAtk, tetra: p.tetra, tspins: p.tspins, perfects: p.perfects, augs: p.game?.aug?.list || p.game?.augs || [], dmg: p.raidC?.dmg || 0, rescue: Math.round(p.raidC?.rescue || 0), revives: p.raidC?.revives || 0, missions: p.raidC?.missions || 0, partDmg: p.raidC?.parts || 0, shieldDmg: p.raidC?.shield || 0 });
 const pubOpts = (r) => { const { password, ...o } = r.opts; return { ...o, hasPassword: !!password }; };
 const pubRoom = (r) => ({ id: r.id, inviteCode: r.inviteCode, hostUserId: r.hostUserId, status: r.status, opts: pubOpts(r), startsAt: r.startsAt, deadline: r.deadline, total: r.total, players: r.order.map((u) => pub(u, r.players.get(u))) });
 const emitRoom = (io, r) => io.to(sr(r.id)).emit("br:roomState", pubRoom(r));
 const actives = (r) => [...r.players.entries()].filter(([, p]) => p.status === "active");
-const row = (p) => [p.idx, p.game?.score || 0, p.game?.lines || 0, p.kos, Math.max(0, p.game?.combo ?? 0), STATUS[p.status] ?? 1, p.game ? p.game.height() : 0, p.sent, p.connected ? 1 : 0, p.place, p.game?.pendingGarbage?.() || 0];
+const row = (p) => [p.idx, p.game?.score || 0, p.game?.lines || 0, p.kos, Math.max(0, p.game?.combo ?? 0), STATUS[p.status] ?? 1, p.game ? p.game.height() : 0, p.sent, p.connected ? 1 : 0, p.place, p.game?.pendingGarbage?.() || 0, p.raidC?.dmg || 0];
 
 // 방 순위: 경기 방식마다 따로
 export function rankOf(r) {
   const list = r.order.filter((u) => r.players.get(u)?.status !== "spec"), P = (u) => r.players.get(u);
   const byScore = (a, b) => (P(b).game?.score || 0) - (P(a).game?.score || 0) || (P(b).game?.lines || 0) - (P(a).game?.lines || 0) || (P(a).game?.pieces || 0) - (P(b).game?.pieces || 0) || P(b).survived - P(a).survived;
   if (r.opts.mode === "score") return list.sort(byScore);
+  if (r.opts.mode === "raid") return list.sort((a, b) => (P(b).raidC?.dmg || 0) - (P(a).raidC?.dmg || 0) || byScore(a, b));
   const surv = (a, b) => { const x = P(a), y = P(b), ax = x.status === "active", ay = y.status === "active"; if (ax !== ay) return ax ? -1 : 1; if (ax) return y.kos - x.kos || byScore(a, b); return (y.deadAt || 0) - (x.deadAt || 0) || byScore(a, b); };
   if (r.opts.mode === "team" && r.winTeam != null) return list.sort((a, b) => (P(a).team === r.winTeam ? 0 : 1) - (P(b).team === r.winTeam ? 0 : 1) || surv(a, b));
   return list.sort(surv);
 }
-function clearTimers(r) { for (const k of ["gameTimer", "tickTimer", "startTimer"]) if (r[k]) { clearTimeout(r[k]); clearInterval(r[k]); r[k] = null; } for (const p of r.players.values()) if (p.dcTimer) { clearTimeout(p.dcTimer); p.dcTimer = null; } }
+function clearTimers(r) { for (const k of ["gameTimer", "tickTimer", "startTimer", "raidTimer"]) if (r[k]) { clearTimeout(r[k]); clearInterval(r[k]); r[k] = null; } for (const p of r.players.values()) if (p.dcTimer) { clearTimeout(p.dcTimer); p.dcTimer = null; } }
 function delRoom(io, r, reason) { if (r.emptyTimer) clearTimeout(r.emptyTimer); clearTimers(r); rooms.delete(r.id); invites.delete(r.inviteCode); for (const u of r.order) if (userRoom.get(u) === r.id) userRoom.delete(u); io.to(sr(r.id)).emit("br:roomClosed", { reason }); io.in(sr(r.id)).socketsLeave(sr(r.id)); io.in(srB(r.id)).socketsLeave(srB(r.id)); }
 function scheduleEmpty(io, r) { if ([...r.players.values()].some((p) => p.connected) || r.emptyTimer) return; r.emptyTimer = setTimeout(() => { r.emptyTimer = null; const x = rooms.get(r.id); if (x && ![...x.players.values()].some((p) => p.connected)) delRoom(io, x, "EMPTY"); }, BR.emptyTtl); }
 
@@ -48,7 +52,7 @@ function flush(io, r) {
   if (r.status !== "playing") return; const rows = [], boards = [];
   for (const p of r.players.values()) { if (p.status === "spec") continue; if (p.dirtyRow) { rows.push(row(p)); p.dirtyRow = false; } if (p.dirtyBoard) { boards.push([p.idx, p.board]); p.dirtyBoard = false; } }
   const alive = actives(r).length;
-  if (rows.length) { io.to(sr(r.id)).emit("br:tick", { a: alive, t: Date.now(), r: rows }); r.net.tick += 1; }
+  if (rows.length || r.raid) { io.to(sr(r.id)).emit("br:tick", r.raid ? { a: alive, t: Date.now(), r: rows, b: r.raid.row(Date.now()) } : { a: alive, t: Date.now(), r: rows }); r.net.tick += 1; }
   if (boards.length) {
     io.to(srB(r.id)).emit("br:boards", boards);
     // 폰 등 일부만 보는 사람에게는 고른 상대 판만
@@ -56,7 +60,8 @@ function flush(io, r) {
     for (const p of r.players.values()) { if (!p.connected || !p.vis || !p.socketId) continue; const mine = p.vis.filter((i) => idxSet.has(i)).map((i) => [i, idxSet.get(i)]); if (mine.length) io.to(p.socketId).emit("br:boards", mine); }
   }
 }
-function startTicks(io, r) { if (r.tickTimer) clearInterval(r.tickTimer); r.tickTimer = setInterval(() => { try { flush(io, r); afkSweep(io, r); } catch (e) { console.error("[br] tick", e); } }, isBig(r) ? BR.tickBig : BR.tickSmall); }
+function startTicks(io, r) { if (r.tickTimer) clearInterval(r.tickTimer); r.tickTimer = setInterval(() => { try { flush(io, r); afkSweep(io, r); } catch (e) { console.error("[br] tick", e); } }, isBig(r) ? (r.raid ? 500 : BR.tickBig) : BR.tickSmall);
+  if (r.raid) { if (r.raidTimer) clearInterval(r.raidTimer); r.raidTimer = setInterval(() => { try { if (r.status === "playing") r.raid.tick(Date.now()); } catch (e) { console.error("[br] raid tick", e); } }, 200); } }
 function afkSweep(io, r) { const t = Date.now(); if (t < r.startsAt) return; for (const [u, p] of r.players) if (p.status === "active" && p.connected && t - Math.max(p.lastLock, r.startsAt) > BR.afk) kill(io, r, u, "dead", "AFK"); }
 
 // ---- 탈락 · KO (서버가 확정, 한 사람은 한 번만)
@@ -66,14 +71,14 @@ function kill(io, r, uid, status = "dead", cause = "") {
   // KO: 최근 공격 기여가 가장 큰 사람에게 1, 나머지 기여자는 도움
   let by = null, best = 0; const assist = [];
   for (const [from, h] of p.hits) { if (now - h.at > BR.koWindow || from === uid) continue; if (h.n > best) { if (by) assist.push(by); by = from; best = h.n; } else assist.push(from); }
-  if (r.opts.mode === "score") { by = null; assist.length = 0; }
+  if (r.opts.mode === "score" || r.raid) { by = null; assist.length = 0; }
   if (by) { const k = r.players.get(by); if (k) { k.kos++; k.dirtyRow = true; } } for (const a of assist) { const k = r.players.get(a); if (k) k.assists++; }
   io.to(sr(r.id)).emit("br:dead", { i: p.idx, place: p.place, by: by ? r.players.get(by)?.idx : null, status, cause, alive: actives(r).length, score: p.game?.score || 0 });
   for (const w of r.players.values()) if (w.manual === uid) w.manual = null;
   checkEnd(io, r);
 }
 function checkEnd(io, r) {
-  if (r.status !== "playing") return; const al = actives(r), n = al.length;
+  if (r.status !== "playing") return; if (r.raid) return r.raid.checkWipe(); const al = actives(r), n = al.length;
   if (r.opts.mode === "team") { const t = new Set(al.map(([, p]) => p.team)); if (t.size <= 1) { r.winTeam = n ? al[0][1].team : lastTeam(r); finish(io, r, "TEAM_WIN"); } return; }
   if (n === 0) return finish(io, r, "ALL_DEAD");
   if (r.opts.mode === "battle" && n === 1) finish(io, r, "LAST_STANDING");
@@ -86,9 +91,10 @@ function finish(io, r, reason) {
   if (!r.players.get(r.hostUserId)?.connected) { const nx = r.order.find((u) => r.players.get(u)?.connected); if (nx) r.hostUserId = nx; }
   const order = rankOf(r); let last = null, place = 0;
   order.forEach((u, i) => { const p = r.players.get(u); const tie = r.opts.mode === "score" && last && last.game?.score === p.game?.score && last.game?.lines === p.game?.lines && last.game?.pieces === p.game?.pieces; if (!tie) place = i + 1; p.place = place; last = p; });
+  if (r.raid && !r.raid.over) { r.raid.over = true; r.raid.result = { win: false, reason, boss: r.raid.id }; }
   const ranking = order.map((u) => pub(u, r.players.get(u)));
-  const mvp = order.slice().sort((a, b) => { const x = r.players.get(a), y = r.players.get(b); return (y.kos * 3 + y.sent) - (x.kos * 3 + x.sent) || (y.game?.score || 0) - (x.game?.score || 0); })[0] || null;
-  io.to(sr(r.id)).emit("br:ended", { reason, mode: r.opts.mode, winTeam: r.winTeam ?? null, total: r.total, durationSec: Math.round((now - r.startsAt) / 1000), mvp, ranking, rematch: r.opts.rematch });
+  const mvp = r.raid ? order[0] || null : order.slice().sort((a, b) => { const x = r.players.get(a), y = r.players.get(b); return (y.kos * 3 + y.sent) - (x.kos * 3 + x.sent) || (y.game?.score || 0) - (x.game?.score || 0); })[0] || null;
+  io.to(sr(r.id)).emit("br:ended", { reason, mode: r.opts.mode, winTeam: r.winTeam ?? null, total: r.total, durationSec: Math.round((now - r.startsAt) / 1000), mvp, ranking, rematch: r.opts.rematch, raid: r.raid ? r.raid.summary() : null });
   emitRoom(io, r); r.onFinish?.(r, ranking, now);
   for (const p of r.players.values()) { p.game = p.game ? { score: p.game.score, lines: p.game.lines, maxCombo: p.game.maxCombo, pieces: p.game.pieces, augs: p.game.aug?.list || [], height: () => 0, pendingGarbage: () => 0 } : null; p.inbox = []; p.hits = new Map(); }
 }
@@ -123,6 +129,8 @@ function sendPk(io, uid, p, tu, tp, n) {
   if (tp.socketId) io.to(tp.socketId).emit("br:garbage", { s: pk.s, n, f: p.idx, d: BR.garbageDelay });
   if (p.socketId) io.to(p.socketId).emit("br:hit", { to: tp.idx, n });
 }
+/** 보스가 보내는 방해 줄 (h: 빈칸 열, 없으면 무작위) — 기존 방해 줄과 같은 번호·확인 통로 */
+function bossPk(io, p, n, h) { const now = Date.now(); p.recv += n; const pk = { s: ++p.gseq, n, at: now, ...(h != null ? { h } : {}) }; p.inbox.push(pk); p.dirtyRow = true; if (p.socketId) io.to(p.socketId).emit("br:garbage", { s: pk.s, n, f: -1, d: BR.garbageDelay, ...(h != null ? { h } : {}) }); }
 const augFx = (io, p, d) => { if (p?.socketId) io.to(p.socketId).emit("br:augFx", d); };
 function deliver(io, r, uid, p, raw) {
   if (r.opts.mode === "score") return; p.atkFrac = (p.atkFrac || 0) + raw * r.opts.atkMul * stageMul(r) * (hasAug(p, "amp") ? 1.3 : 1); let n = Math.min(20, Math.floor(p.atkFrac)); if (n <= 0) return; p.atkFrac -= n;
@@ -137,14 +145,14 @@ function deliver(io, r, uid, p, raw) {
   // 분산 탄두: 다른 상대 1명에게 1줄 더
   if (hasAug(p, "split")) { const o = actives(r).filter(([u, x]) => u !== uid && u !== tu && x.connected && (r.opts.mode !== "team" || x.team !== p.team)); if (o.length) { const [ou, op] = o[Math.floor(Math.random() * o.length)]; sendPk(io, uid, p, ou, op, 1); } }
 }
-function resync(io, p, reason) { p.rev++; p.resyncs++; const g = p.game; if (!g) return; for (const k of p.inbox) g.addGarbage(k.n, k.s, Date.now() - k.at >= BR.garbageDelay); p.inbox = []; g.takeEvents(); if (p.socketId) io.to(p.socketId).emit("br:resync", { rev: p.rev, gseq: p.gseq, state: g.save(), reason }); }
+function resync(io, p, reason) { p.rev++; p.resyncs++; const g = p.game; if (!g) return; for (const k of p.inbox) g.addGarbage(k.n, k.s, Date.now() - k.at >= BR.garbageDelay, k.h); p.inbox = []; g.takeEvents(); if (p.socketId) io.to(p.socketId).emit("br:resync", { rev: p.rev, gseq: p.gseq, state: g.save(), reason }); }
 function sendBoardToWatchers(io, r, uid, p) { const g = p.game, msg = { i: p.idx, s: p.board, n: g.pieces, q: g.next(5), h: g.hold, st: [g.score, g.lines, g.level, Math.max(0, g.combo), g.b2b ? 1 : 0], c: g.cur ? [g.cur.p, g.cur.r, g.cur.x, g.cur.y, g.pieces] : null, g: g.pendingGarbage() }; for (const w of r.players.values()) if (w.watch === uid && w.connected && w.socketId) io.to(w.socketId).emit("br:watchBoard", msg); }
 
 // ---- 시즌 기록 (회원 + 게스트(2026-11-18), 서버가 확정한 값만). 테이블이 없어도 게임에는 영향 없음
 const BR_GUEST_RE = /^guest_[a-z0-9]{6,30}$/;
 export const seasonKey = (t = Date.now()) => { const d = new Date(t + 9 * 3600e3); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`; };
 async function saveRecords(sa, r, ranking, now) {
-  if (!sa) return; const dur = (now - r.startsAt) / 1000; if (dur < 30 || ranking.length < 2) return; const mode = r.opts.mode + (r.opts.aug ? "_aug" : ""), baseMode = r.opts.mode, seasons = [seasonKey(now), "all"]; const members = ranking.filter((x) => x.isGuest ? BR_GUEST_RE.test(String(x.playerId)) : String(x.playerId).length >= 30); if (!members.length) return;
+  if (!sa || r.opts.mode === "raid") return; const dur = (now - r.startsAt) / 1000; if (dur < 30 || ranking.length < 2) return; const mode = r.opts.mode + (r.opts.aug ? "_aug" : ""), baseMode = r.opts.mode, seasons = [seasonKey(now), "all"]; const members = ranking.filter((x) => x.isGuest ? BR_GUEST_RE.test(String(x.playerId)) : String(x.playerId).length >= 30); if (!members.length) return;
   try {
     const ids = members.map((m) => m.playerId), { data, error } = await sa.from("br_records").select("*").in("player_key", ids).in("season", seasons).eq("mode", mode); if (error) { if (!/does not exist|schema cache/i.test(error.message || "")) console.error("[br] records read", error.message); return; }
     const old = new Map((data || []).map((d) => [`${d.player_key}|${d.season}`, d])), rows = [];
@@ -153,13 +161,34 @@ async function saveRecords(sa, r, ranking, now) {
   } catch (e) { console.error("[br] records", e); }
 }
 
+/** 레이드가 방·소켓에 쓰는 통로 */
+function raidHooks(io, r) {
+  return {
+    emit: (ev, d) => io.to(sr(r.id)).emit(ev, d),
+    emitTo: (uid, ev, d) => { const p = r.players.get(uid); if (p?.socketId) io.to(p.socketId).emit(ev, d); },
+    garbage: (uid, n, h) => { const p = r.players.get(uid); if (p && p.status === "active") bossPk(io, p, n, h); },
+    revive: (uid) => { // 쓰러진 사람 부활: 판을 비우고 서버 판을 보내 다시 맞춤
+      const p = r.players.get(uid); if (!p?.game) return; const g = p.game;
+      g.grid.fill(0); g.garbage = []; g.dead = false; g.holdUsed = false; p.inbox = []; g.spawn(); g.takeEvents();
+      p.status = "active"; p.lastLock = Date.now(); p.board = encodeBoard(g.visible()); p.dirtyRow = true; p.dirtyBoard = true;
+      p.rev++; if (p.socketId) io.to(p.socketId).emit("br:raidRevive", { rev: p.rev, gseq: p.gseq, state: g.save() });
+    },
+    finish: (reason) => finish(io, r, reason),
+    actives: () => actives(r),
+    player: (uid) => r.players.get(uid),
+  };
+}
 export function registerBlockRoyale(io, supabaseAdmin, app) {
   const profile = async (me) => { if (me.isGuest || !supabaseAdmin) return {}; try { const { data } = await supabaseAdmin.from("profiles").select("nickname, avatar_url").eq("id", me.id).single(); return data || {}; } catch { return {}; } };
   // 시즌 랭킹 (1분 캐시)
   if (app) { const cache = new Map(); app.get("/blockroyale/ranking", async (req, res) => {
     try { const qm = String(req.query.mode || ""), mode = BR.modes.includes(qm.replace(/_aug$/, "")) ? qm : "battle", season = /^(all|\d{4}-\d{2})$/.test(String(req.query.season || "")) ? String(req.query.season) : seasonKey(), sort = ["points", "wins", "kos", "best_score", "best_survival_sec", "best_combo"].includes(req.query.sort) ? req.query.sort : "points", k = `${mode}|${season}|${sort}`, c = cache.get(k); if (c && Date.now() - c.at < 60_000) return res.json(c.body);
-      const { data, error } = await supabaseAdmin.from("br_records").select("nickname,guest_id,games,wins,top3,kos,points,best_score,best_combo,best_kos,best_survival_sec,best_lines").eq("mode", mode).eq("season", season).order(sort, { ascending: false }).limit(100);
-      const body = error ? { ok: true, season, rows: [], notReady: true } : { ok: true, season, rows: (data || []).map(({ guest_id, ...r }) => ({ ...r, is_guest: !!guest_id })) }; /* 게스트 번호는 숨기고 게스트 표시만 */ cache.set(k, { at: Date.now(), body }); res.json(body);
+      const { data, error } = await supabaseAdmin.from("br_records").select("nickname,user_id,guest_id,games,wins,top3,kos,points,best_score,best_combo,best_kos,best_survival_sec,best_lines").eq("mode", mode).eq("season", season).order(sort, { ascending: false }).limit(100);
+      // 로그인 회원은 프로필 이름·사진 (2026-11-18), 게스트는 게스트 표시만 — 회원 번호·게스트 번호는 숨김
+      let prof = new Map(); const ids = (data || []).map((x) => x.user_id).filter(Boolean);
+      if (!error && ids.length) { const { data: pr } = await supabaseAdmin.from("profiles").select("id, nickname, avatar_url").in("id", ids); prof = new Map((pr || []).map((x) => [x.id, x])); }
+      const body = error ? { ok: true, season, rows: [], notReady: true } : { ok: true, season, rows: (data || []).map(({ guest_id, user_id, ...r }) => { const p = user_id ? prof.get(user_id) : null; return { ...r, nickname: p?.nickname || r.nickname, avatar_url: p?.avatar_url || null, is_guest: !!guest_id }; }) };
+      cache.set(k, { at: Date.now(), body }); res.json(body);
     } catch (e) { console.error("[br] ranking", e); res.status(500).json({ ok: false }); } }); }
 
   io.on("connection", (socket) => {
@@ -176,7 +205,8 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
         // (2026-11-12) 게스트도 방 만들기 가능 — 도배는 index.js 소켓 가드가 막음
         const old = myRoom(); if (old) leave(io, old, me.id);
         const id = `br_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, inviteCode = genCode();
-        const r = { id, inviteCode, hostUserId: me.id, status: "lobby", opts: { mode: "battle", maxPlayers: 50, isPublic: false, password: "", allowSpectate: true, countdown: 5, atkMul: 1, startLevel: 1, gameTimeSec: 0, teamCount: 2, rematch: true, aug: payload?.aug === true }, startsAt: null, deadline: null, total: 0, nextIdx: 0, players: new Map(), order: [], emptyTimer: null, gameTimer: null, tickTimer: null, net: { tick: 0 }, onFinish: (rr, rk, now) => saveRecords(supabaseAdmin, rr, rk, now) };
+        const r = { id, inviteCode, hostUserId: me.id, status: "lobby", opts: { mode: "battle", maxPlayers: 50, isPublic: false, password: "", allowSpectate: true, countdown: 5, atkMul: 1, startLevel: 1, gameTimeSec: 0, teamCount: 2, rematch: true, aug: payload?.aug === true, boss: BOSS_IDS.includes(payload?.boss) || payload?.boss === "random" ? payload.boss : "slime" }, startsAt: null, deadline: null, total: 0, nextIdx: 0, players: new Map(), order: [], emptyTimer: null, gameTimer: null, tickTimer: null, net: { tick: 0 }, onFinish: (rr, rk, now) => saveRecords(supabaseAdmin, rr, rk, now) };
+        if (payload?.mode === "raid") r.opts.mode = "raid";
         rooms.set(id, r); invites.set(inviteCode, id);
         const d = await profile(me); r.players.set(me.id, newPlayer(d.nickname || payload?.nickname || "방장", false, d.avatar_url, socket.id, r.nextIdx++)); r.players.get(me.id).ready = true; r.order.push(me.id); attachSocket(r, r.players.get(me.id));
         cb({ ok: true, roomId: id, inviteCode, playerId: me.id, room: pubRoom(r) }); emitRoom(io, r);
@@ -192,9 +222,9 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
         if (r.players.has(me.id)) {
           const p = r.players.get(me.id); if (p.status === "left" && r.status === "playing") return cb({ ok: false, error: "GAME_ALREADY_STARTED" });
           if (p.status === "left") { r.players.delete(me.id); r.order.splice(r.order.indexOf(me.id), 1); return reJoinFresh(); }
-          if (p.dcTimer) { clearTimeout(p.dcTimer); p.dcTimer = null; } attachSocket(r, p); const resume = r.status === "playing" && p.game ? { rev: ++p.rev, gseq: p.gseq, state: (() => { for (const k of p.inbox) p.game.addGarbage(k.n, k.s, Date.now() - k.at >= BR.garbageDelay); p.inbox = []; return p.game.save(); })(), boards: allBoards(r), rows: [...r.players.values()].filter((x) => x.status !== "spec").map(row), alive: actives(r).length, serverNow: Date.now() } : null;
+          if (p.dcTimer) { clearTimeout(p.dcTimer); p.dcTimer = null; } attachSocket(r, p); const resume = r.status === "playing" && p.game && p.status !== "down" ? { rev: ++p.rev, gseq: p.gseq, state: (() => { for (const k of p.inbox) p.game.addGarbage(k.n, k.s, Date.now() - k.at >= BR.garbageDelay, k.h); p.inbox = []; return p.game.save(); })(), boards: allBoards(r), rows: [...r.players.values()].filter((x) => x.status !== "spec").map(row), alive: actives(r).length, serverNow: Date.now(), raid: r.raid ? r.raid.snapshot(me.id, Date.now()) : null } : null;
           if (r.status === "playing" && p.status !== "active" && !resume) { /* 관전 복귀 */ }
-          p.dirtyRow = true; cb({ ok: true, roomId: r.id, inviteCode: r.inviteCode, playerId: me.id, room: pubRoom(r), rejoined: true, resume, spectate: r.status === "playing" && p.status !== "active" ? { boards: allBoards(r), rows: [...r.players.values()].filter((x) => x.status !== "spec").map(row), alive: actives(r).length, serverNow: Date.now() } : null }); emitRoom(io, r); return;
+          p.dirtyRow = true; cb({ ok: true, roomId: r.id, inviteCode: r.inviteCode, playerId: me.id, room: pubRoom(r), rejoined: true, resume, spectate: r.status === "playing" && p.status !== "active" ? { boards: allBoards(r), rows: [...r.players.values()].filter((x) => x.status !== "spec").map(row), alive: actives(r).length, serverNow: Date.now(), raid: r.raid ? r.raid.snapshot(me.id, Date.now()) : null } : null }); emitRoom(io, r); return;
         }
         if (r.opts.password && String(payload?.password || "") !== r.opts.password) return cb({ ok: false, error: payload?.password ? "BAD_PASSWORD" : "NEED_PASSWORD" });
         const playing = r.status === "playing";
@@ -204,11 +234,11 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
         const old = myRoom(); if (old && old !== r) leave(io, old, me.id);
         const d = await profile(me); if (!rooms.has(r.id)) return cb({ ok: false, error: "ROOM_NOT_FOUND" }); if (!playing && [...r.players.values()].filter((p) => p.status !== "spec").length >= r.opts.maxPlayers) return cb({ ok: false, error: "ROOM_FULL" }); if (r.players.has(me.id)) return reJoinFresh(); // 두 번 눌러 동시에 온 입장은 재입장으로
         const p = newPlayer(d.nickname || payload?.nickname || (me.isGuest ? "게스트" : "유저"), me.isGuest, d.avatar_url, socket.id, r.nextIdx++); if (playing) p.status = "spec"; r.players.set(me.id, p); r.order.push(me.id); attachSocket(r, p);
-        cb({ ok: true, roomId: r.id, inviteCode: r.inviteCode, playerId: me.id, room: pubRoom(r), spectate: playing ? { boards: allBoards(r), rows: [...r.players.values()].filter((x) => x.status !== "spec").map(row), alive: actives(r).length, serverNow: Date.now() } : null }); emitRoom(io, r);
+        cb({ ok: true, roomId: r.id, inviteCode: r.inviteCode, playerId: me.id, room: pubRoom(r), spectate: playing ? { boards: allBoards(r), rows: [...r.players.values()].filter((x) => x.status !== "spec").map(row), alive: actives(r).length, serverNow: Date.now(), raid: r.raid ? r.raid.snapshot(null, Date.now()) : null } : null }); emitRoom(io, r);
       } catch (e) { console.error("[br:joinRoom]", e); cb({ ok: false, error: "INTERNAL" }); }
     });
 
-    socket.on("br:listRooms", (_p, cb) => { cb = fn(cb); const list = [...rooms.values()].filter((r) => r.opts.isPublic && r.status !== "ended").slice(0, 30).map((r) => ({ code: r.inviteCode, mode: r.opts.mode, n: r.order.length, max: r.opts.maxPlayers, status: r.status, spectate: r.opts.allowSpectate, locked: !!r.opts.password, aug: !!r.opts.aug, host: r.players.get(r.hostUserId)?.name || "" })); cb({ ok: true, list }); });
+    socket.on("br:listRooms", (_p, cb) => { cb = fn(cb); const list = [...rooms.values()].filter((r) => r.opts.isPublic && r.status !== "ended").slice(0, 30).map((r) => ({ code: r.inviteCode, mode: r.opts.mode, n: r.order.length, max: r.opts.maxPlayers, status: r.status, spectate: r.opts.allowSpectate, locked: !!r.opts.password, aug: !!r.opts.aug, boss: r.opts.mode === "raid" ? r.opts.boss : null, host: r.players.get(r.hostUserId)?.name || "" })); cb({ ok: true, list }); });
 
     socket.on("br:setOptions", (o, cb) => {
       cb = fn(cb); const r = hostRoom(cb); if (!r) return; if (r.status === "playing") return cb({ ok: false, error: "NOT_LOBBY" }); const q = r.opts;
@@ -218,6 +248,7 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
       if (BR.countdown.includes(+o?.countdown)) q.countdown = +o.countdown; if (BR.atkMul.includes(+o?.atkMul)) q.atkMul = +o.atkMul; if (BR.startLv.includes(+o?.startLevel)) q.startLevel = +o.startLevel;
       for (const k of ["isPublic", "allowSpectate", "rematch", "aug"]) if (typeof o?.[k] === "boolean") q[k] = o[k];
       if (typeof o?.password === "string") q.password = o.password.slice(0, 20);
+      if (BOSS_IDS.includes(o?.boss) || o?.boss === "random") q.boss = o.boss;
       emitRoom(io, r); cb({ ok: true });
     });
     socket.on("br:setReady", (d, cb) => { cb = fn(cb); const r = myRoom(); if (!r || r.status === "playing") return cb({ ok: false }); const p = r.players.get(me.id); if (!p) return cb({ ok: false }); p.ready = !!d?.ready; p.wantSpec = !!d?.spectate && r.hostUserId !== me.id; emitRoom(io, r); cb({ ok: true }); });
@@ -228,15 +259,23 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
       cb = fn(cb); const r = hostRoom(cb); if (!r) return; if (r.status === "playing") return cb({ ok: false, error: "ALREADY_PLAYING" }); if (r.status === "ended" && !r.opts.rematch) return cb({ ok: false, error: "REMATCH_OFF" });
       for (const [u, p] of [...r.players]) if (u !== me.id && (p.status === "left" || !p.connected)) { r.players.delete(u); r.order.splice(r.order.indexOf(u), 1); if (userRoom.get(u) === r.id) userRoom.delete(u); }
       if (!r.players.has(r.hostUserId)) r.hostUserId = r.order[0];
-      const entries = r.order.filter((u) => !r.players.get(u).wantSpec); if (entries.length < 2) return cb({ ok: false, error: "NEED_AT_LEAST_2" }); if (entries.length > r.opts.maxPlayers) return cb({ ok: false, error: "ROOM_FULL" });
+      const entries = r.order.filter((u) => !r.players.get(u).wantSpec); if (entries.length < (r.opts.mode === "raid" ? 1 : 2)) return cb({ ok: false, error: "NEED_AT_LEAST_2" }); if (entries.length > r.opts.maxPlayers) return cb({ ok: false, error: "ROOM_FULL" });
       if (r.opts.mode === "team") { const c = [0, 0]; for (const u of entries) { const p = r.players.get(u); if (p.team == null) { p.team = c[0] <= c[1] ? 0 : 1; } c[p.team]++; } if (!c[0] || !c[1]) return cb({ ok: false, error: "NEED_TWO_TEAMS" }); }
       clearTimers(r); r.status = "playing"; r.winTeam = null; r.total = entries.length; r.startsAt = Date.now() + r.opts.countdown * 1000; r.deadline = r.opts.gameTimeSec ? r.startsAt + r.opts.gameTimeSec * 1000 : null;
       const shared = (Math.random() * 0xffffffff) >>> 0;
+      r.raid = null;
+      if (r.opts.mode === "raid") {
+        const bossId = r.opts.boss === "random" ? BOSS_IDS[Math.floor(Math.random() * BOSS_IDS.length)] : r.opts.boss;
+        r.raid = new Raid({ bossId, n: entries.length, startsAt: r.startsAt, hooks: raidHooks(io, r), aug: !!r.opts.aug });
+        r.deadline = r.raid.deadline;
+      }
       for (const u of r.order) { const p = r.players.get(u), spec = p.wantSpec; Object.assign(p, { status: spec ? "spec" : "active", place: 0, deadAt: 0, survived: 0, kos: 0, assists: 0, recv: 0, sent: 0, maxAtk: 0, tetra: 0, tspins: 0, perfects: 0, hits: new Map(), inbox: [], gseq: 0, rev: 0, atkFrac: 0, invalid: 0, resyncs: 0, bucket: BR.lockCap, bucketAt: r.startsAt, lastLock: 0, watch: null, watchers: 0, manual: null, curTarget: null, dirtyRow: true, dirtyBoard: true, board: "0|" });
-        const seed = r.opts.mode === "score" ? shared : (Math.random() * 0xffffffff) >>> 0; p.game = spec ? null : new BRGame({ seed, startLevel: r.opts.startLevel, aug: r.opts.aug ? (r.opts.mode === "score" ? 2 : 1) : 0 }); p.game?.takeEvents();
-        if (p.socketId) io.to(p.socketId).emit("br:start", { room: pubRoom(r), seed: spec ? null : seed, serverNow: Date.now() }); }
+        const seed = r.opts.mode === "score" ? shared : (Math.random() * 0xffffffff) >>> 0; p.raidTarget = "auto"; p.raidSt = null; p.raidC = null;
+        p.game = spec ? null : new BRGame({ seed, startLevel: r.opts.startLevel, aug: r.opts.aug ? (r.opts.mode === "score" ? 2 : r.opts.mode === "raid" ? 3 : 1) : 0 }); p.game?.takeEvents();
+        if (p.socketId) io.to(p.socketId).emit("br:start", { room: pubRoom(r), seed: spec ? null : seed, serverNow: Date.now(), raid: r.raid ? r.raid.snapshot(u, Date.now()) : null }); }
       startTicks(io, r);
-      if (r.opts.gameTimeSec) r.gameTimer = setTimeout(() => { const x = rooms.get(r.id); if (x && x.status === "playing") finish(io, x, "TIME_UP"); }, r.opts.countdown * 1000 + r.opts.gameTimeSec * 1000);
+      if (r.raid) r.gameTimer = setTimeout(() => { const x = rooms.get(r.id); if (x && x.status === "playing") finish(io, x, "TIME_UP"); }, r.raid.deadline - Date.now() + 500);
+      else if (r.opts.gameTimeSec) r.gameTimer = setTimeout(() => { const x = rooms.get(r.id); if (x && x.status === "playing") finish(io, x, "TIME_UP"); }, r.opts.countdown * 1000 + r.opts.gameTimeSec * 1000);
       cb({ ok: true });
     });
 
@@ -248,16 +287,17 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
       if (typeof d.o !== "string" || d.o.length > BR.maxOps) { p.invalid++; return resync(io, p, "BAD"); }
       if (d.n !== g.pieces + 1) { if (d.n <= g.pieces) return; p.invalid++; return resync(io, p, "SEQ"); } // 중복 입력은 무시
       const k = Math.min(+d.k || 0, p.gseq), m = Math.min(+d.m || 0, k);
-      for (let i = 0; i < p.inbox.length;) { const x = p.inbox[i]; if (x.s <= k || now - x.at > BR.forceAck) { g.addGarbage(x.n, x.s, false); p.inbox.splice(i, 1); } else i++; }
+      for (let i = 0; i < p.inbox.length;) { const x = p.inbox[i]; if (x.s <= k || now - x.at > BR.forceAck) { g.addGarbage(x.n, x.s, false, x.h); p.inbox.splice(i, 1); } else i++; }
       g.matureUpTo(m); for (const x of g.garbage) if (now - (x.at0 ??= now) > BR.forceAck) x.m = true;
       if (g.augDue()) { p.invalid++; return resync(io, p, "AUG"); }
       const snap = g.save(), okRun = g.replay(d.o); p.lastLock = now;
       // 잘못된 조작이면 도중에 움직인 것까지 전부 되돌림
       if (!okRun) { p.game = BRGame.load(snap); p.invalid++; if (p.invalid >= BR.maxInvalid) { console.warn("[br] 잘못된 조작 반복", me.id); return kill(io, r, me.id, "dead", "INVALID"); } return resync(io, p, "INVALID"); }
-      let atk = 0; for (const e of g.takeEvents()) { if (e.t === "attack") atk += e.n; else if (e.t === "clear") { if (e.n === 4) p.tetra++; if (e.ts || e.spin) p.tspins++; if (e.perfect) p.perfects++; } }
+      let atk = 0; const evs = g.takeEvents(); for (const e of evs) { if (e.t === "attack") atk += e.n; else if (e.t === "clear") { if (e.n === 4) p.tetra++; if (e.ts || e.spin) p.tspins++; if (e.perfect) p.perfects++; } }
       p.board = encodeBoard(g.visible()); p.dirtyRow = true; p.dirtyBoard = true; if (p.watchers) sendBoardToWatchers(io, r, me.id, p);
-      if (atk) deliver(io, r, me.id, p, atk);
-      if (g.dead) return kill(io, r, me.id);
+      if (r.raid) { r.raid.onLock(me.id, p, evs, now); if (r.status !== "playing") return; } // 레이드: 공격 대신 보스 피해 (서버가 계산)
+      else if (atk) deliver(io, r, me.id, p, atk);
+      if (g.dead) { if (r.raid && r.raid.onDown(me.id, now)) return; return kill(io, r, me.id); }
       if (d.h && d.h !== g.hash()) resync(io, p, "HASH");
     });
     // 증강 고르기: { i: 몇 번째, id, rr: 새로고침 썼는지(0/1), n: 조각 번호, v: 동기화 번호 }
@@ -270,7 +310,9 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
       io.to(sr(r.id)).emit("br:augGot", { i: p.idx, id: d.id });
     });
     // 내 브라우저 판에서 탈락 (보관하다 막힌 경우 등). 스스로 포기하는 건 언제든 가능
-    socket.on("br:dead", () => { const r = myRoom(); if (!r || r.status !== "playing" || r.players.get(me.id)?.socketId !== socket.id) return; kill(io, r, me.id); });
+    socket.on("br:dead", () => { const r = myRoom(); if (!r || r.status !== "playing" || r.players.get(me.id)?.socketId !== socket.id) return; if (r.raid && r.players.get(me.id)?.status === "active" && r.raid.onDown(me.id, Date.now())) return; kill(io, r, me.id); });
+    // 레이드: 공격할 대상(본체·부위) 고르기
+    socket.on("br:raidTarget", (d) => { const r = myRoom(); if (!r?.raid || r.status !== "playing") return; if (typeof d?.t === "string" && d.t.length < 24) r.raid.setTarget(me.id, d.t); });
     // 관전 대상이 있을 때만 떨어지는 조각 위치 전달 (초당 최대 12번)
     socket.on("br:cur", (d) => { const r = myRoom(); if (!r || r.status !== "playing") return; const p = r.players.get(me.id); if (!p || p.status !== "active" || !p.watchers) return; const t = Date.now(); if (t - p.lastCur < 70) return; p.lastCur = t; if (!Array.isArray(d) || d.length !== 5 || !d.every(Number.isFinite)) return; const msg = { i: p.idx, c: d }; for (const w of r.players.values()) if (w.watch === me.id && w.connected && w.socketId) io.to(w.socketId).emit("br:watchCur", msg); });
     socket.on("br:target", (d) => { const r = myRoom(); if (!r) return; const p = r.players.get(me.id); if (!p) return; if (["random", "attacker", "ko", "danger", "manual"].includes(d?.mode)) p.target = d.mode; if (d?.idx != null) { const f = [...r.players.entries()].find(([, x]) => x.idx === +d.idx); p.manual = f ? f[0] : null; if (f) p.target = "manual"; } });

@@ -146,7 +146,9 @@ export function registerGameRank(app, supabaseAdmin, { getOptionalUser }) {
         const me = await who(req, { guestId: req.query.guestId }); if (!me) return res.json({ ok: true, row: null });
         const { data } = await SA.from(TABLE[game]).select(COLS[game]).eq("board", board).eq("player_key", me.key).maybeSingle();
         if (!data) return res.json({ ok: true, row: null });
-        data.rank = await rankOf(game, board, data.score); data.is_guest = !data.user_id; delete data.user_id; delete data.guest_id;
+        data.rank = await rankOf(game, board, data.score); data.is_guest = !data.user_id;
+        if (data.user_id) { const { data: pr } = await SA.from("profiles").select("nickname, avatar_url").eq("id", data.user_id).maybeSingle(); if (pr?.nickname) data.nickname = pr.nickname; data.avatar_url = pr?.avatar_url || null; } // 로그인: 프로필 이름·사진
+        delete data.user_id; delete data.guest_id;
         res.json({ ok: true, row: data });
       } catch (e) { console.error(`[rank] ${game} me`, e); res.status(500).json({ ok: false, error: "INTERNAL" }); }
     });

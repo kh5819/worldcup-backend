@@ -2,6 +2,7 @@
 // 브라우저와 서버가 똑같은 파일을 씀(worldcup-backend/src/br-core.js 와 동일해야 함, 시험으로 확인).
 // 조작을 글자로 기록(ops) → 서버가 같은 조작을 다시 돌려 이동·회전·줄·점수·공격을 직접 계산한다.
 //   L R 이동 · A 시계 회전 · B 반시계 회전 · D 한 칸 내림 · H 보관 · X 바로 내리기 · K 바닥에서 고정
+import { RAID_AUGS, RAID_OLD_OK } from "./br-raid-data.js";
 export const RULES = {
   cols: 10, rows: 20, hidden: 4, garbageCell: 8,
   lockMs: 500, lockResets: 15, garbagePerLock: 8,
@@ -39,6 +40,8 @@ export const AUGS = {
   amp: { r: "rare", k: "s" }, split: { r: "epic", k: "s" }, thorn: { r: "rare", k: "s" }, dodge: { r: "rare", k: "s" }, hunter: { r: "common", k: "s" },
   phoenix: { r: "legendary", k: "p", sc: 1 }, crown: { r: "legendary", k: "p", sc: 1 },
 };
+// 보스 레이드 전용 증강(rd) — 일반·기록 경쟁 증강 후보에는 안 나옴(목록 끝에 붙여서 기존 후보 순서·결과가 그대로). 효과는 대부분 서버(br-raid.js)가 처리
+for (const [id, a] of Object.entries(RAID_AUGS)) AUGS[id] = { r: a.r, k: a.op ? "a" : "r", rd: 1, ...(a.op ? { op: a.op, c: a.c } : {}) };
 export const AUG_OPS = { Q: "bomb", W: "ibar", G: "grav" };
 
 export class BRGame {
@@ -73,7 +76,7 @@ export class BRGame {
   hardDrop() { if (this.dead) return false; const c = this.cur, y = this.ghostY(); if (y !== c.y) this.lastRot = false; const dist = y - c.y; c.y = y; this.ops += "X"; this.ev.push({ t: "drop", n: dist }); this.lockPiece(); return true; }
   useHold() { if (this.dead || this.holdUsed) return false; const c = this.cur, h = this.hold; this.hold = c.p; this.holdUsed = true; this.ops += "H"; this.spawn(h || undefined); this.ev.push({ t: "hold" }); return true; }
   // 방해 줄: s 번호로 서버와 맞춤. m=true(도착 시간이 지남)여야 판에 올라온다
-  addGarbage(n, s = 0, m = false) { n = Math.max(0, Math.min(40, n | 0)); if (n && !this.dead) this.garbage.push({ s, n, m }); }
+  addGarbage(n, s = 0, m = false, h = null) { n = Math.max(0, Math.min(40, n | 0)); if (n && !this.dead) this.garbage.push(h == null ? { s, n, m } : { s, n, m, h: Math.max(0, Math.min(COLS - 1, h | 0)) }); }
   matureUpTo(seq) { for (const g of this.garbage) if (g.s <= seq) g.m = true; }
   pendingGarbage() { let a = 0; for (const g of this.garbage) a += g.n; return a; }
   tspinKind() { const c = this.cur; if (c.p !== 3 || !this.lastRot) return 0; const hit = (dx, dy) => { const X = c.x + dx, Y = c.y + dy; return X < 0 || X >= COLS || Y >= TOTAL || (Y >= 0 && this.at(X, Y)); }; let n = 0; for (const [dx, dy] of [[0, 0], [2, 0], [0, 2], [2, 2]]) if (hit(dx, dy)) n++; if (n < 3) return 0; const f = FRONT[c.r].filter(([dx, dy]) => hit(dx, dy)).length; return f === 2 || this.lastKick === 4 ? 2 : 1; }
@@ -96,7 +99,7 @@ export class BRGame {
       const perfect = this.grid.every((v) => !v); if (perfect) { atk += R.attack.perfect; this.score += R.score.perfect * lv; }
       if (A) { const b = this.augBonus(n, ts, spin, b2b, perfect, h0, gRows); if (b) { atk += b; this.score += 30 * b * lv; this.ev.push({ t: "augAtk", n: b }); } if (perfect && this.has("pc")) this.score += R.score.perfect * lv; }
       this.b2b = hard;
-      this.ev.push({ t: "clear", n, ts, spin, combo: this.combo, perfect, b2b, rows: full, atk });
+      this.ev.push({ t: "clear", n, ts, spin, combo: this.combo, perfect, b2b, rows: full, atk, p: c.p });
     } else { this.combo = -1; if (ts || spin) this.score += (ts === 2 ? R.score.tspin[0] : R.score.mini[0]) * this.scoreLv; this.ev.push({ t: "lock", ts, spin, cells }); }
     // 내 공격은 받을 방해 줄부터 막고, 남은 만큼만 상대에게
     if (A && this.has("score")) this.score += Math.round((this.score - s0) * 0.3);
@@ -114,7 +117,7 @@ export class BRGame {
       const g = this.garbage[0];
       if (A && A.sh > 0) { const a = Math.min(A.sh, g.n); g.n -= a; A.sh -= a; this.ev.push({ t: "shield", n: a, left: A.sh }); if (!g.n) { this.garbage.shift(); continue; } }
       const take = Math.min(budget, g.n); g.n -= take; budget -= take; if (!g.n) this.garbage.shift();
-      let hole = Math.floor(rngOf((this.seed + Math.imul(++this.gN, 0x2f6e2b1)) | 0)() * COLS); if (A && this.has("clean")) hole = this.seed % COLS;
+      let hole = Math.floor(rngOf((this.seed + Math.imul(++this.gN, 0x2f6e2b1)) | 0)() * COLS); if (A && this.has("clean")) hole = this.seed % COLS; if (g.h != null) hole = g.h;
       if (A && this.has("revenge")) A.rv = Math.min(3, A.rv + 1);
       for (let y = 0; y < take; y++) for (let x = 0; x < COLS; x++) if (this.at(x, y)) this.die();
       if (this.dead) return;
@@ -154,13 +157,13 @@ export class BRGame {
   augDue() { const A = this.aug; return !!A && !this.dead && A.n < AUG_TH.length && this.lines >= AUG_TH[A.n]; }
   // 고를 후보 3개: 시드·몇 번째 고르기·새로고침 횟수로 정해짐 → 서버와 같음
   augOffer(rr = 0) {
-    const A = this.aug; if (!A) return []; const r = rngOf((this.seed ^ Math.imul(A.n + 1, 0x51ed27) ^ Math.imul(rr + 3, 0x2c1b3c6d)) | 0), list = Object.keys(AUGS).filter((id) => !A.list.includes(id) && (A.m !== 2 || AUGS[id].sc)), out = [];
+    const A = this.aug; if (!A) return []; const r = rngOf((this.seed ^ Math.imul(A.n + 1, 0x51ed27) ^ Math.imul(rr + 3, 0x2c1b3c6d)) | 0), list = Object.keys(AUGS).filter((id) => !A.list.includes(id) && (A.m === 3 ? AUGS[id].rd || RAID_OLD_OK.includes(id) : !AUGS[id].rd && (A.m !== 2 || AUGS[id].sc))), out = [];
     for (let k = 0; k < 3 && list.length; k++) { let tot = 0; for (const id of list) tot += AUG_W[AUGS[id].r]; let x = r() * tot, pick = list.length - 1; for (let i = 0; i < list.length; i++) { x -= AUG_W[AUGS[list[i]].r]; if (x <= 0) { pick = i; break; } } out.push(list[pick]); list.splice(pick, 1); }
     return out;
   }
   augPick(id, rr = 0) {
     const A = this.aug; if (!this.augDue() || !(rr === 0 || rr === 1) || rr > A.rr || !this.augOffer(rr).includes(id)) return false;
-    A.rr -= rr; A.list.push(id); A.n++; const d = AUGS[id]; if (d.op) A.ch[d.op] = (A.ch[d.op] || 0) + d.c; if (id === "shield") A.sh += 10; if (id === "phoenix") A.ph = 1;
+    A.rr -= rr; A.list.push(id); A.n++; const d = AUGS[id]; if (d.op) A.ch[d.op] = (A.ch[d.op] || 0) + d.c; if (id === "shield") A.sh += 10; if (id === "phoenix" || id === "r_undying") A.ph = 1;
     this.ev.push({ t: "aug", id }); return true;
   }
   fixCur() { const c = this.cur; let k = 0; while (!this.free(c.p, c.r, c.x, c.y) && k++ < 6) c.y--; if (!this.free(c.p, c.r, c.x, c.y)) this.die(); }

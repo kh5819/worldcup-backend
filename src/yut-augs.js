@@ -65,15 +65,15 @@ const RW = [
   { common: 26, rare: 34, epic: 27, legendary: 13 },
   { common: 18, rare: 30, epic: 32, legendary: 20 },
 ];
-export function rollOffer(pickIdx, owned = [], rng = Math.random, n = 3, exclude = []) {
+export function rollOffer(pickIdx, owned = [], rng = Math.random, n = 3, exclude = [], POOL = AUGS) {
   const w = RW[Math.min(pickIdx, RW.length - 1)];
   const taken = new Set([...owned, ...exclude]);
   const out = [];
   for (let k = 0; k < n; k++) {
     let r = rng() * 100, rar = "common";
     for (const [key, v] of Object.entries(w)) { r -= v; if (r <= 0) { rar = key; break; } }
-    let pool = AUGS.filter(a => a.rarity === rar && !taken.has(a.id));
-    if (!pool.length) pool = AUGS.filter(a => !taken.has(a.id));
+    let pool = POOL.filter(a => a.rarity === rar && !taken.has(a.id));
+    if (!pool.length) pool = POOL.filter(a => !taken.has(a.id));
     if (!pool.length) break;
     const a = pool[Math.floor(rng() * pool.length)];
     out.push(a.id); taken.add(a.id);

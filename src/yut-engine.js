@@ -4,7 +4,10 @@
 // · 모든 행동은 { ok, error } 를 돌려주고, 화면 연출용 사건은 this.events 에 쌓음 (yut.js 가 꺼내 보냄)
 // =========================
 import { HOME, DONE, forwardPaths, distLeft, throwSticks, sticksFor, isBonus, RES_LABEL } from "./yut-core.js";
-import { AUG, rollOffer } from "./yut-augs.js";
+import { AUG, AUGS, rollOffer } from "./yut-augs.js";
+import { Expansion, XAUG, XAUGS, blockedBy } from "./yut-expand.js";
+/** 기존 증강 + 확장 증강 정의 찾기 */
+const A = (id) => AUG[id] || XAUG[id];
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const MAX_EVENTS = 200;
@@ -14,11 +17,13 @@ const P_RES = { 1: 0.1875, 2: 0.375, 3: 0.25, 4: 0.0625, 5: 0.0625 };
 export class YutGame {
   /**
    * players: [{ id, name, team, isBot }] — team 은 0부터. 개인전이면 사람마다 다른 팀
-   * opts: { mode:"classic"|"augment", pieces:2~4, backdo:bool, maxAugs:1~6, pickEvery:2~6 }
+   * opts: { mode:"classic"|"augment"|"expand", pieces:2~4, backdo:bool, maxAugs:1~6, pickEvery:2~6, map, traps }
+   *   expand(확장전) = 기존 증강 + yut-expand.js (특수 윷판·진화·함정·팀 능력·보스·확장 증강). classic·augment 에서는 this.x 가 없음
    */
   constructor(players, opts = {}, rng = Math.random) {
     this.rng = rng;
-    this.mode = opts.mode === "classic" ? "classic" : "augment";
+    this.mode = opts.mode === "classic" ? "classic" : opts.mode === "expand" ? "expand" : "augment";
+    this.augOn = this.mode !== "classic"; // 증강 규칙이 켜진 모드 (augment·expand)
     this.pieceCount = Math.max(1, Math.min(4, opts.pieces || 4));
     this.backdo = opts.backdo !== false;
     this.maxAugs = Math.max(1, Math.min(6, opts.maxAugs || 4));
@@ -36,31 +41,40 @@ export class YutGame {
     this.teamIdx = 0; this.round = 1; this.turnNo = 0;
     this.phase = "init"; this.pickIdx = -1; this.cur = null; this.events = []; this.winner = null; this.ranking = null; this.lastPickRound = 0;
     this.firstEntry = new Set(); // 안전한 출발: 팀별 첫 출발 한 번
+    this.x = this.mode === "expand" ? new Expansion(this, opts) : null;
   }
 
   // ---------------- 진행 ----------------
   start() {
-    if (this.mode === "augment") return this.startPick(0);
+    if (this.x) this.x.onStart();
+    if (this.augOn) return this.startPick(0);
     this.startTurn();
   }
   startPick(idx) {
     this.phase = "pick"; this.pickIdx = idx; this.lastPickRound = this.round;
     for (const p of this.players.values()) {
       if (p.augs.length >= this.maxAugs) { p.offer = null; p.picked = true; continue; }
-      p.offer = rollOffer(idx, p.augs.map(a => a.id), this.rng);
+      p.offer = this.offerFor(p, idx);
       p.picked = !p.offer.length;
     }
     this.emit("pick", { idx });
     if ([...this.players.values()].every(p => p.picked)) this.endPick();
   }
+  offerFor(p, idx, exclude = []) {
+    const owned = p.augs.map(a => a.id);
+    if (!this.x) return rollOffer(idx, owned, this.rng, 3, exclude);
+    return rollOffer(idx, owned, this.rng, 3, [...exclude, ...blockedBy(owned)], [...AUGS, ...XAUGS]);
+  }
   pick(uid, augId, auto = false) {
     const p = this.players.get(uid);
     if (this.phase !== "pick" || !p || p.picked) return { ok: false, error: "NOT_PICKING" };
     if (!p.offer?.includes(augId)) return { ok: false, error: "NOT_OFFERED" };
-    const a = AUG[augId];
+    if (this.x && this.x.needAbility(uid)) { if (!auto) return { ok: false, error: "NEED_ABILITY" }; this.x.autoAbilities(p.team); }
+    const a = A(augId);
     p.augs.push({ id: augId, charges: a.charges ?? null });
     if (a.id === "ironWall") this.teams[p.team].defense += 1;
     if (a.id === "absoluteDefense") this.teams[p.team].defense += 2;
+    if (this.x) this.x.onPick(p, a.id);
     p.offer = null; p.picked = true;
     this.emit("picked", { uid, aug: augId, auto });
     if ([...this.players.values()].every(q => q.picked)) this.endPick();
@@ -71,15 +85,17 @@ export class YutGame {
     if (this.phase !== "pick" || !p || p.picked) return { ok: false, error: "NOT_PICKING" };
     if (p.refresh <= 0) return { ok: false, error: "NO_REFRESH" };
     p.refresh--;
-    p.offer = rollOffer(this.pickIdx, p.augs.map(a => a.id), this.rng, 3, p.offer || []);
+    p.offer = this.offerFor(p, this.pickIdx, p.offer || []);
     return { ok: true, offer: p.offer };
   }
   autoPickAll() {
+    if (this.x) this.x.autoAbilities();
     for (const p of this.players.values()) if (!p.picked && p.offer?.length) this.pick(p.id, bestOffer(p.offer), true);
   }
   endPick() {
     if (this.phase !== "pick") return;
     this.phase = "play";
+    if (this.x) this.x.autoAbilities();
     if (!this.cur) this.startTurn(); else this.emit("resume", {});
   }
 
@@ -95,12 +111,14 @@ export class YutGame {
     // 운명 강탈로 빼앗아 둔 결과
     if (team.reserve.length) { for (const r of team.reserve) this.cur.pending.push({ r, src: "steal" }); this.emit("reserve", { uid, results: team.reserve.slice() }); team.reserve = []; }
     if (team.revenge) { team.revenge = false; if (this.teamHas(team.id, "revengeStep")) this.cur.revenge = true; }
+    if (this.x) this.x.onTurnStart(team.id);
     this.phase = "play";
     this.emit("turn", { uid, team: team.id, round: this.round });
     void me;
   }
   endTurn() {
     const team = this.teams[this.cur.team];
+    if (this.x) this.x.onTurnEnd(team.id);
     // 봉쇄는 그 팀의 차례 하나가 끝나면 풀림
     for (const pc of this.pieces) if (pc.team === team.id) pc.blocked = false;
     // 보호(상대 한 바퀴)는 다른 팀 차례가 끝날 때마다 줄어듦
@@ -112,8 +130,9 @@ export class YutGame {
     this.teamIdx = (this.teamIdx + 1) % this.teams.length;
     if (this.teamIdx === 0) {
       this.round++;
+      if (this.x) this.x.onRoundEnd(this.round);
       // 증강 고르기: 시작 + pickEvery 라운드마다, 최대 보유 수까지
-      if (this.mode === "augment" && this.round - this.lastPickRound >= this.pickEvery && [...this.players.values()].some(p => p.augs.length < this.maxAugs)) {
+      if (this.augOn && this.round - this.lastPickRound >= this.pickEvery && [...this.players.values()].some(p => p.augs.length < this.maxAugs)) {
         this.startPick(this.pickIdx + 1);
         return;
       }
@@ -155,6 +174,7 @@ export class YutGame {
   }
   afterThrow(me, t, chosen = false) {
     const c = this.cur;
+    if (this.x) t = this.x.adjustThrow(me, t);
     let r = t.result;
     me.stats.throws++;
     // 황금 윷: 걸 → 윷 (최대 2번)
@@ -166,7 +186,8 @@ export class YutGame {
     if (r === 4 && this.hasAug(me, "yutBlessing") && this.capLeft(me, "yutBlessing", 3)) { extra.push(1); this.capUse(me, "yutBlessing"); this.impact(me, "yutBlessing", 1); }
     if (r === 5 && this.hasAug(me, "moBlessing") && this.capLeft(me, "moBlessing", 3)) { extra.push(2); this.capUse(me, "moBlessing"); this.impact(me, "moBlessing", 2); }
     if (r === 1 && this.hasAug(me, "luckyDo") && me.luckyDo < 1 && this.capLeft(me, "luckyDo", 3)) { me.luckyDo++; this.capUse(me, "luckyDo"); }
-    if (isBonus(r)) c.throws++;
+    const sealed = !!(this.x && isBonus(r) && this.x.sealed(me.team));
+    if (isBonus(r) && !sealed) c.throws++;
     // 운명 강탈: 상대가 켜 뒀으면 이 차례 첫 결과를 가져감
     let stolenBy = null;
     if (!c.stealChecked) {
@@ -180,7 +201,7 @@ export class YutGame {
     }
     if (!stolenBy) c.pending.push({ r, src: golden ? "golden" : "throw" });
     for (const e of extra) c.pending.push({ r: e, src: "bless" });
-    this.emit("throw", { uid: me.id, sticks: golden ? sticksFor(4, this.rng, this.backdo) : t.sticks, result: r, golden, chosen, stolenBy, extra, throwsLeft: c.throws });
+    this.emit("throw", { uid: me.id, sticks: golden ? sticksFor(4, this.rng, this.backdo) : t.sticks, result: r, golden, chosen, stolenBy, extra, throwsLeft: c.throws, sealed });
     this.settle();
   }
   /** 던질 게 없으면 이동 단계로, 쓸 수 있는 결과가 없으면 버리고, 다 끝나면 차례 넘김 */
@@ -229,7 +250,7 @@ export class YutGame {
   bonusSteps(pc, r, me, group) {
     if (r < 1 || !me) return { n: r, notes: [] };
     let n = r; const notes = [];
-    if (this.mode === "augment") {
+    if (this.augOn) {
       if ((r === 1 || r === 2) && this.hasAug(me, "quickStep") && this.capLeft(me, "quickStep", 6)) { n++; notes.push("quickStep"); }
       if (me.luckyDo > 0 && this.hasAug(me, "luckyDo")) { n += 2; notes.push("luckyDo"); }
       if (group.length >= 2 && this.hasAug(me, "buddyPower")) { n += 2; notes.push("buddyPower"); }
@@ -241,6 +262,7 @@ export class YutGame {
       const alive = this.pieces.filter(q => q.team === me.team && !q.clone && q.pos !== DONE);
       if (alive.length === 1 && alive[0] === pc && this.hasAug(me, "finalDash")) { n *= 2; notes.push("finalDash"); }
     }
+    if (this.x) return this.x.bonus(pc, r, me, group, n, notes);
     return { n, notes };
   }
   pathsFor(pc, r, me, flagsExtra = {}) {
@@ -251,13 +273,16 @@ export class YutGame {
     }
     const group = this.groupOf(pc);
     const { n, notes } = this.bonusSteps(pc, r, me, group);
-    const fork = !!(me && this.mode === "augment" && this.hasAug(me, "forkMaster") && this.capLeft(me, "forkMaster", 2));
+    const fork = !!(me && this.augOn && this.hasAug(me, "forkMaster") && this.capLeft(me, "forkMaster", 2));
+    const xf = this.x ? this.x.pathFlags(pc, me) : {};
     const flags = {
-      passTurn: fork || !!(me && this.mode === "augment" && me.armed.pathWarp) || !!flagsExtra.passTurn,
-      gate15: !!(me && this.mode === "augment" && (this.hasAug(me, "shortcutOpen") || me.armed.pathWarp)) || !!flagsExtra.gate15,
+      passTurn: fork || !!xf.passTurn || !!(me && this.augOn && me.armed.pathWarp) || !!flagsExtra.passTurn,
+      gate15: !!xf.gate15 || !!(me && this.augOn && (this.hasAug(me, "shortcutOpen") || me.armed.pathWarp)) || !!flagsExtra.gate15,
     };
-    const plain = new Set(forwardPaths(pc.pos, this.prevOf(pc), n, { gate15: flags.gate15 }).map(p => p.steps.join(",")));
-    return forwardPaths(pc.pos, this.prevOf(pc), n, flags).map(p => {
+    const plain = new Set(forwardPaths(pc.pos, this.prevOf(pc), n, { gate15: flags.gate15, passTurn: !!xf.passTurn }).map(p => p.steps.join(",")));
+    let fp = forwardPaths(pc.pos, this.prevOf(pc), n, flags);
+    if (this.x) fp = this.x.filterPaths(pc, fp);
+    return fp.map(p => {
       const turned = !plain.has(p.steps.join(",")); // 지나가며 꺾은 길
       return { ...p, n, notes: turned && fork && !me.armed.pathWarp ? [...notes, "forkMaster"] : notes };
     });
@@ -278,7 +303,7 @@ export class YutGame {
     const path = paths[pathIdx];
     if (!path) return { ok: false, error: "BAD_PATH" };
     // 되돌리기용 상태 저장
-    c.snap = { pieces: clone(this.pieces), pending: clone(c.pending), throws: c.throws, moved: c.moved, luckyDo: me.luckyDo, capUsed: clone(me.capUsed), armed: clone(me.armed), augs: clone(me.augs), groupWith: c.groupWith, revenge: c.revenge, defense: this.teams.map(t => t.defense), stats: clone([...this.players.values()].map(p => [p.id, p.stats])), firstEntry: [...this.firstEntry], teamsRevenge: this.teams.map(t => t.revenge) };
+    c.snap = { pieces: clone(this.pieces), pending: clone(c.pending), throws: c.throws, moved: c.moved, luckyDo: me.luckyDo, capUsed: clone(me.capUsed), armed: clone(me.armed), augs: clone(me.augs), groupWith: c.groupWith, revenge: c.revenge, defense: this.teams.map(t => t.defense), stats: clone([...this.players.values()].map(p => [p.id, p.stats])), firstEntry: [...this.firstEntry], teamsRevenge: this.teams.map(t => t.revenge), x: this.x ? this.x.snapshot() : null, reserve: this.teams.map(t => t.reserve.slice()) };
     c.pending.splice(ri, 1);
     // 보너스 소모
     for (const nt of path.notes || []) {
@@ -303,6 +328,7 @@ export class YutGame {
     // 무적 행군
     if (me.armed.invincibleMarch) { me.armed.invincibleMarch = false; this.useCount(me, "invincibleMarch"); for (const g of group) if (g.pos !== DONE) g.guard = (this.teams.length - 1) * 2; } // 상대 두 바퀴
     if (me.armed.pathWarp) { me.armed.pathWarp = false; this.useCount(me, "pathWarp"); }
+    if (this.x && this.phase !== "over") { this.x.afterMove(me, group, path, pr); this.x.hinder(this.groupOf(group[0])); }
     c.moved++;
     if (this.checkWin(c.team)) return { ok: true, win: true };
     this.settle();
@@ -327,7 +353,8 @@ export class YutGame {
         if (g.clone) g.gone = true; else me && this.players.get(me.id) && (this.players.get(me.id).stats.finished++);
       }
       // 출발 보호
-      if (wasHome && to !== DONE && this.mode === "augment") {
+      if (wasHome && to !== DONE && this.x) this.x.onEnterFromHome(g);
+      if (wasHome && to !== DONE && this.augOn) {
         if (!this.firstEntry.has(team) && this.teamHas(team, "safeStart")) { this.firstEntry.add(team); g.shield = (g.shield || 0) + 1; this.emit("fx", { kind: "shield", piece: g.id }); }
         if (this.teamHas(team, "startSupport")) { g.guard = Math.max(g.guard || 0, this.teams.length - 1); this.emit("fx", { kind: "shield", piece: g.id }); }
       }
@@ -341,20 +368,23 @@ export class YutGame {
       if (victims.length) {
         const vTeam = victims[0].team;
         const guarded = victims.some(v => v.guard > 0);
+        const xImm = this.x ? this.x.captureImmune(victims, team) : null;
         const shielded = victims.find(v => v.shield > 0);
         if (guarded) { blocked = 1; this.emit("fx", { kind: "blocked", node: to, reason: "guard" }); }
+        else if (xImm) { blocked = 1; this.emit("fx", { kind: "blocked", node: to, reason: xImm }); }
         else if (shielded) { shielded.shield--; blocked = 1; this.emit("fx", { kind: "blocked", node: to, reason: "shield" }); this.impactTeam(vTeam, "safeStart", 6); }
         else if (this.teams[vTeam].defense > 0) {
           this.teams[vTeam].defense--; blocked = 1;
           const who = this.teamHas(vTeam, "absoluteDefense") ? "absoluteDefense" : "ironWall";
           this.emit("fx", { kind: "blocked", node: to, reason: who }); this.impactTeam(vTeam, who, 6);
         } else {
-          for (const v of victims) { if (v.clone) v.gone = true; else { v.pos = HOME; v.hist = []; v.wasCaptured = true; v.shield = 0; v.guard = 0; } }
+          for (const v of victims) { if (v.clone) v.gone = true; else { if (this.x) { v.capAt = v.pos; v.capHist = v.hist.slice(); } v.pos = HOME; v.hist = []; v.wasCaptured = true; v.shield = 0; v.guard = 0; } }
           this.pieces = this.pieces.filter(p => !p.gone);
           captured = victims.length;
           if (me) { me.stats.captures += victims.filter(v => !v.clone).length; }
           for (const v of victims) { const owner = [...this.players.values()].find(p => p.team === v.team); if (owner && !v.clone) owner.stats.captured++; }
           this.teams[vTeam].revenge = true;
+          if (this.x) this.x.onCapture(me, group.filter(q => q.pos === to), victims);
           // 잡으면 한 번 더 던짐 (지금 차례인 팀만)
           if (this.cur && this.cur.team === team) {
             this.cur.throws++;
@@ -387,10 +417,10 @@ export class YutGame {
 
   // ---------------- 증강 사용 ----------------
   useAug(uid, id, pl = {}) {
-    if (this.mode !== "augment") return { ok: false, error: "NOT_AUGMENT_MODE" };
+    if (!this.augOn) return { ok: false, error: "NOT_AUGMENT_MODE" };
     if (!this.isTurn(uid)) return { ok: false, error: "NOT_YOUR_TURN" };
     const me = this.players.get(uid), c = this.cur;
-    const a = me.augs.find(x => x.id === id), def = AUG[id];
+    const a = me.augs.find(x => x.id === id), def = A(id);
     if (!a || !def) return { ok: false, error: "NO_AUG" };
     if (def.kind === "passive") return { ok: false, error: "PASSIVE" };
     if (a.charges !== null && a.charges <= 0) return { ok: false, error: "NO_CHARGES" };
@@ -398,7 +428,12 @@ export class YutGame {
     const myPiece = () => { const p = this.pieces.find(x => x.id === pl.pieceId); return p && p.team === c.team && p.pos !== HOME && p.pos !== DONE && !this.groupBlocked(p) ? p : null; }; // 봉쇄된 무리는 증강으로도 못 옮김
     const oppPiece = (ignoreGuard) => { const p = this.pieces.find(x => x.id === pl.targetId); if (!p || p.team === c.team || p.pos === HOME || p.pos === DONE) return null; if (!ignoreGuard && (p.guard > 0)) return "GUARD"; return p; };
     let r = { ok: true };
-    switch (id) {
+    if (id.startsWith("x_")) {
+      if (!this.x) return { ok: false, error: "NO_AUG" };
+      r = this.x.useAug(me, id, pl);
+      if (!r.ok) return r;
+      if (r.noCharge) { delete r.noCharge; this.emit("aug", { uid, id, ...r }); return r; }
+    } else switch (id) {
       // ---- 켜 두기 ----
       case "split": case "invincibleMarch": case "pathWarp": {
         if (me.armed[id]) { me.armed[id] = false; return { ok: true, armed: false }; } // 다시 누르면 끔 (횟수 안 씀)
@@ -482,7 +517,7 @@ export class YutGame {
         if (op === "GUARD") return { ok: false, error: "GUARDED" };
         const g = this.groupOf(op);
         let to = op.pos;
-        for (let k = 0; k < 3; k++) { const h = g[0].hist; if (h.length) { to = h[h.length - 1]; for (const x of g) x.hist.pop(); } }
+        for (let k = 0; k < 3; k++) { const h = g[0].hist; if (h.length > 1) { /* 출발 칸(1)보다 뒤(참먹이)로는 안 밀림 — 밀린 말이 바로 완주하던 문제 */ to = h[h.length - 1]; for (const x of g) x.hist.pop(); } }
         for (const x of g) x.pos = to;
         this.emit("move", { uid, team: op.team, pieces: g.map(x => x.id), from: op.pos, to, steps: [to], back: true, captured: 0, blocked: 0, pushed: true });
         this.impact(me, "pushBack", 2); c.snap = null;
@@ -532,6 +567,8 @@ export class YutGame {
         this.teams.forEach((t, i) => { t.defense = s.defense[i]; t.revenge = s.teamsRevenge[i]; });
         for (const [pid, st] of s.stats) { const p = this.players.get(pid); if (p) p.stats = st; }
         this.firstEntry = new Set(s.firstEntry);
+        if (this.x && s.x) this.x.restore(s.x);
+        if (s.reserve) this.teams.forEach((t, i) => (t.reserve = s.reserve[i]));
         c.phase = c.throws > 0 ? "throw" : "move";
         this.emit("rewind", { uid });
         break;
@@ -551,8 +588,8 @@ export class YutGame {
 
   // ---------------- 도우미 ----------------
   isTurn(uid) { return this.phase === "play" && this.cur && this.cur.uid === uid; }
-  hasAug(me, id) { return this.mode === "augment" && !!me?.augs.some(a => a.id === id); }
-  teamHas(team, id) { if (this.mode !== "augment") return false; for (const p of this.players.values()) if (p.team === team && p.augs.some(a => a.id === id)) return true; return false; }
+  hasAug(me, id) { return this.augOn && !!me?.augs.some(a => a.id === id); }
+  teamHas(team, id) { if (!this.augOn) return false; for (const p of this.players.values()) if (p.team === team && p.augs.some(a => a.id === id)) return true; return false; }
   capLeft(me, id, max) { return (me.capUsed[id] || 0) < max; }
   capUse(me, id) { me.capUsed[id] = (me.capUsed[id] || 0) + 1; }
   useCount(me, id, charge = true) {
@@ -591,13 +628,14 @@ export class YutGame {
     return {
       mode: this.mode, phase: this.phase, round: this.round, pickIdx: this.pickIdx, backdo: this.backdo, pieceCount: this.pieceCount, maxAugs: this.maxAugs, pickEvery: this.pickEvery,
       teams: this.teams.map(t => ({ id: t.id, members: t.members, defense: t.defense, reserve: t.reserve.length, left: this.teamLeft(t.id) })),
-      pieces: this.pieces.map(p => ({ id: p.id, team: p.team, pos: p.pos, prev: this.prevOf(p), clone: !!p.clone, ttl: p.ttl || 0, shield: p.shield || 0, guard: p.guard || 0, blocked: !!p.blocked })),
-      players: [...this.players.values()].map(p => ({ id: p.id, team: p.team, augs: p.augs.map(a => ({ id: a.id, charges: a.charges })), armed: Object.keys(p.armed).filter(k => p.armed[k] && (p.id === viewer || k !== "fateSteal")), picking: this.phase === "pick" && !p.picked, luckyDo: p.luckyDo, stats: { captures: p.stats.captures, yut: p.stats.yut, mo: p.stats.mo, finished: p.stats.finished } })),
+      pieces: this.pieces.map(p => ({ id: p.id, team: p.team, pos: p.pos, prev: this.prevOf(p), clone: !!p.clone, ttl: p.ttl || 0, shield: p.shield || 0, guard: p.guard || 0, blocked: !!p.blocked, ...(this.x ? { xp: p.xp || 0, lv: p.lv || 1, evo: p.evo || null, evoPick: !!p.evoPick, frozen: p.frozen || 0, slow: p.slow || 0, confused: !!p.confused, boost: !!p.boost, capAt: p.capAt ?? null } : {}) })),
+      players: [...this.players.values()].map(p => ({ id: p.id, team: p.team, augs: p.augs.map(a => ({ id: a.id, charges: a.charges })), armed: Object.keys(p.armed).filter(k => p.armed[k] && (p.id === viewer || k !== "fateSteal" || !!(this.x && me && this.x.abilityOf(me.team) === "strategy"))), picking: this.phase === "pick" && !p.picked, luckyDo: p.luckyDo, stats: { captures: p.stats.captures, yut: p.stats.yut, mo: p.stats.mo, finished: p.stats.finished } })),
       cur: c ? { uid: c.uid, team: c.team, phase: c.phase, throws: c.throws, pending: c.pending.map(x => ({ r: x.r, src: x.src })), choice: c.choice && viewer === c.uid ? c.choice.map(x => x.result) : (c.choice ? [] : null), canUndo: !!c.snap, groupWith: c.groupWith, revenge: c.revenge } : null,
       moves,
       offer: me && this.phase === "pick" && !me.picked ? me.offer : null,
       refresh: me ? me.refresh : 0,
       winner: this.winner, ranking: this.ranking,
+      x: this.x ? this.x.publicState(me ? me.team : null, !me) : null,
     };
   }
   resultStats() {
@@ -613,7 +651,7 @@ function newPiece(id, team) { return { id, team, pos: HOME, hist: [], clone: fal
 function pickPublic(pl) { const o = {}; for (const k of ["pieceId", "targetId", "pieceId2", "node", "steps", "ri", "value"]) if (pl[k] !== undefined) o[k] = pl[k]; return o; }
 function bestOffer(offer) {
   const ord = { common: 0, rare: 1, epic: 2, legendary: 3 };
-  return [...offer].sort((a, b) => ord[AUG[b].rarity] - ord[AUG[a].rarity])[0];
+  return [...offer].sort((a, b) => ord[A(b).rarity] - ord[A(a).rarity])[0];
 }
 export { RES_LABEL };
 
@@ -654,6 +692,7 @@ export function aiChooseMove(g) {
       const dNew = danger(g, m.to, c.team);
       s += (dNow - dNew) * 26 * group.length * (pc.pos === HOME ? 0.3 : 1);
       if (pr.r === -1 && pc.pos !== HOME) s -= 3;
+      if (g.x) s += g.x.scoreMove(m, pc, c.team);
       if (!best || s > best.s) best = { s, ri, pieceId: m.pieceId, pathIdx: m.pathIdx };
     }
   });
@@ -661,8 +700,9 @@ export function aiChooseMove(g) {
 }
 /** 봇이 쓸 증강 하나 고르기 (없으면 null) */
 export function aiChooseAug(g) {
-  if (g.mode !== "augment") return null;
+  if (!g.augOn) return null;
   const c = g.cur; const me = g.players.get(c.uid);
+  if (g.x) { const xa = g.x.aiAug(me); if (xa) return xa; }
   const has = (id) => { const a = me.augs.find(x => x.id === id); return a && (a.charges === null || a.charges > 0); };
   const mine = g.pieces.filter(p => p.team === c.team && p.pos >= 0 && p.pos !== DONE && !p.clone && !g.groupBlocked(p)); // 봉쇄된 무리는 대상에서 뺌
   const opp = g.pieces.filter(p => p.team !== c.team && p.pos >= 0 && p.pos !== DONE);

@@ -1,7 +1,8 @@
 // =========================
 // 플듀 증강 윷놀이 — 멀티 방·턴 진행 (2026-11-15)
 // · 규칙·증강 판정은 yut-engine.js (서버 권한). 여기선 방·대기실·관전·재접속·AI·시간 제한
-// · 개인전 2~6인 / 팀전 2:2·3:3·4:4 (팀원이 말 4개를 같이 쓰고 번갈아 던짐), 게스트 가능, 혼자 AI 대결(soloAi)
+// · 개인전 2~8인 / 팀전 2:2·3:3·4:4 (팀원이 말 4개를 같이 쓰고 번갈아 던짐), 게스트 가능, 혼자 AI 대결(soloAi)
+// · 모드: classic(일반) · augment(기존 증강) · expand(증강 확장전 — 특수 윷판·진화·함정·팀 능력·보스·확장 증강, yut-expand.js)
 // · 이벤트 prefix 'yut:*'
 // =========================
 import { createFlight } from "./create-flight.js";
@@ -9,6 +10,9 @@ import { addPublicRooms } from "./public-rooms.js";
 import { YutGame, aiChooseMove, aiChooseAug, aiChooseChoice } from "./yut-engine.js";
 import { AUGS, AUG, RARITY } from "./yut-augs.js";
 import { NODE_XY, EDGES, RES_LABEL } from "./yut-core.js";
+import { XAUGS, XAUG, X_META, MAPS } from "./yut-expand.js";
+const MODES = ["classic", "augment", "expand"];
+const MAP_OPTS = ["random", ...Object.keys(MAPS)];
 
 const rooms = new Map(), invites = new Map(), userRoom = new Map();
 const TURN_SECS = [0, 30, 45, 60, 90];
@@ -19,9 +23,10 @@ const now = () => Date.now();
 const rnd = (a, b) => a + Math.floor(Math.random() * (b - a));
 const cleanNick = (s) => String(s || "").replace(/[\u0000-\u001f​-‏‪-‮⁠-⁯﻿]/g, "").trim().slice(0, MAX_NICK);
 function genCode() { for (let i = 0; i < 50; i++) { const c = String(Math.floor(Math.random() * 1e6)).padStart(6, "0"); if (!invites.has(c)) return c; } return String(Math.floor(Math.random() * 1e7)).padStart(7, "0"); }
+const metaAug = (a, exp) => ({ id: a.id, rarity: a.rarity, icon: a.icon, name: a.name, kind: a.kind, charges: a.charges ?? null, cap: a.cap ?? null, target: a.target || null, cond: a.cond, effect: a.effect, duration: a.duration, desc: a.desc, fx: a.fx || null, exp: !!exp });
 const META = {
-  augs: AUGS.map(({ id }) => { const a = AUG[id]; return { id, rarity: a.rarity, icon: a.icon, name: a.name, kind: a.kind, charges: a.charges ?? null, cap: a.cap ?? null, target: a.target || null, cond: a.cond, effect: a.effect, duration: a.duration, desc: a.desc, fx: a.fx || null }; }),
-  rarity: RARITY, nodes: NODE_XY, edges: EDGES, resLabel: RES_LABEL,
+  augs: [...AUGS.map(({ id }) => metaAug(AUG[id])), ...XAUGS.map(({ id }) => metaAug(XAUG[id], true))],
+  rarity: RARITY, nodes: NODE_XY, edges: EDGES, resLabel: RES_LABEL, x: X_META,
 };
 
 function newMember(id, name, o = {}) { return { id, name, avatar: o.avatar || null, isBot: !!o.isBot, isGuest: !!o.isGuest, connected: !o.isBot, left: false, sockId: o.sockId || null, dcAt: 0, team: o.team ?? 0 }; }
@@ -35,7 +40,7 @@ function publicRoom(room, viewer) {
   const meM = viewer ? room.players.get(viewer) : null;
   return {
     id: room.id, code: room.inviteCode, hostId: room.hostUserId, status: room.status, soloAi: !!room.soloAi,
-    opts: { mode: room.mode, teamMode: room.teamMode, maxPlayers: room.maxPlayers, pieces: room.pieces, backdo: room.backdo, maxAugs: room.maxAugs, pickEvery: room.pickEvery, turnSec: room.turnSec },
+    opts: { mode: room.mode, teamMode: room.teamMode, maxPlayers: room.maxPlayers, pieces: room.pieces, backdo: room.backdo, maxAugs: room.maxAugs, pickEvery: room.pickEvery, turnSec: room.turnSec, map: room.map, traps: room.traps },
     members: room.order.map(uid => { const m = room.players.get(uid); return { id: m.id, name: m.name, avatar: m.avatar, isBot: m.isBot, isGuest: m.isGuest, connected: m.connected, left: m.left, team: m.team }; }),
     spectators: room.spectators.size,
     me: viewer || null, spectating: !!(viewer && !meM && room.spectators.has(viewer)),
@@ -120,7 +125,8 @@ function botStep(io, room, turnNo, fast = false) {
   if (!fast && m && !isAuto(m)) return; // 사람이 돌아왔으면 멈춤
   const c = g.cur;
   let acted = false;
-  if (m?.isBot && !fast) { const a = aiChooseAug(g); if (a && Math.random() < 0.8) { const r = g.useAug(uid, a.id, a); acted = r.ok; } }
+  if (m?.isBot && !fast) { const a = aiChooseAug(g); if (a && Math.random() < 0.8) { const r = a.ability ? g.x.useAbility(uid, a) : g.useAug(uid, a.id, a); acted = r.ok; } }
+  if (!acted && m?.isBot && !fast && g.x) { for (const pc of g.pieces) if (pc.evoPick && pc.team === c.team) g.x.autoEvo(pc); }
   if (!acted) {
     if (c.choice) g.choose(uid, aiChooseChoice(g));
     else if (c.phase === "throw") g.throw(uid);
@@ -156,7 +162,7 @@ function startGame(io, room) {
   else room.order.forEach((uid, i) => (room.players.get(uid).team = i));
   // 팀전 순서: 팀을 번갈아 (엔진이 팀 순서대로 돌고 팀 안에서 번갈아 던짐)
   const players = room.order.map(uid => { const m = room.players.get(uid); return { id: uid, name: m.name, team: m.team, isBot: m.isBot }; });
-  room.game = new YutGame(players, { mode: room.mode, pieces: room.pieces, backdo: room.backdo, maxAugs: room.maxAugs, pickEvery: room.pickEvery });
+  room.game = new YutGame(players, { mode: room.mode, pieces: room.pieces, backdo: room.backdo, maxAugs: room.maxAugs, pickEvery: room.pickEvery, map: room.map === "random" ? null : room.map, traps: room.traps });
   room.status = "playing"; room.result = null; room.timerKey = null; room.dlTurn = 0; room.dlAt = 0;
   emitAll(io, room, "yut:start", { mode: room.mode });
   room.game.start();
@@ -208,7 +214,7 @@ function attach(io, socket, room, m) {
   socket.join(chan(room.id)); userRoom.set(m.id, room.id);
   checkEmpty(io, room);
 }
-function limits(room) { return room.teamMode === "team" ? [4, 6, 8] : [2, 3, 4, 5, 6]; }
+function limits(room) { return room.teamMode === "team" ? [4, 6, 8] : [2, 3, 4, 5, 6, 7, 8]; }
 
 export function registerYut(io, supabaseAdmin) {
   io.on("connection", (socket) => {
@@ -226,7 +232,7 @@ export function registerYut(io, supabaseAdmin) {
       const teamMode = pl.teamMode === "team" ? "team" : "ffa";
       const room = {
         id, inviteCode: genCode(), hostUserId: me.id, status: "lobby", soloAi: pl.soloAi === true, isPublic: false,
-        mode: pl.mode === "classic" ? "classic" : "augment", teamMode, maxPlayers: teamMode === "team" ? 4 : 4,
+        mode: MODES.includes(pl.mode) ? pl.mode : "augment", teamMode, map: MAP_OPTS.includes(pl.map) ? pl.map : "random", traps: pl.traps === "hidden" ? "hidden" : "open", maxPlayers: teamMode === "team" ? 4 : 4,
         pieces: [2, 3, 4].includes(Number(pl.pieces)) ? Number(pl.pieces) : 4, backdo: pl.backdo !== false,
         maxAugs: [2, 3, 4, 5, 6].includes(Number(pl.maxAugs)) ? Number(pl.maxAugs) : 4, pickEvery: [3, 4, 5, 6].includes(Number(pl.pickEvery)) ? Number(pl.pickEvery) : 4,
         turnSec: TURN_SECS.includes(Number(pl.turnSec)) ? Number(pl.turnSec) : 60,
@@ -283,9 +289,11 @@ export function registerYut(io, supabaseAdmin) {
       const r = fn(room, pl); cb(r); if (r.ok) emitState(io, room);
     });
     socket.on("yut:setOpts", hostLobby((room, pl) => {
-      if (pl.mode === "classic" || pl.mode === "augment") room.mode = pl.mode;
+      if (MODES.includes(pl.mode)) room.mode = pl.mode;
+      if (MAP_OPTS.includes(pl.map)) room.map = pl.map;
+      if (pl.traps === "open" || pl.traps === "hidden") room.traps = pl.traps;
       if ((pl.teamMode === "team" || pl.teamMode === "ffa") && pl.teamMode !== room.teamMode) {
-        if (pl.teamMode === "ffa" && room.players.size > 6) return { ok: false, error: "FFA_MAX6" };
+        if (pl.teamMode === "ffa" && room.players.size > 8) return { ok: false, error: "FFA_MAX6" };
         room.teamMode = pl.teamMode;
         if (!limits(room).includes(room.maxPlayers)) room.maxPlayers = limits(room).find(n => n >= Math.max(room.maxPlayers, room.players.size)) || limits(room).at(-1);
         room.order.forEach((uid, i) => (room.players.get(uid).team = room.teamMode === "team" ? i % 2 : i)); // 팀전이면 번갈아 두 팀으로
@@ -347,6 +355,10 @@ export function registerYut(io, supabaseAdmin) {
     socket.on("yut:move", act((g, pl) => g.move(me.id, { ri: Number(pl.ri), pieceId: String(pl.pieceId || ""), pathIdx: Number(pl.pathIdx) || 0 })));
     socket.on("yut:aug", act((g, pl) => g.useAug(me.id, String(pl.id || ""), { pieceId: pl.pieceId, targetId: pl.targetId, pieceId2: pl.pieceId2, node: Number(pl.node), steps: Number(pl.steps), pathIdx: Number(pl.pathIdx) || 0, ri: Number.isInteger(pl.ri) ? pl.ri : undefined, value: Number(pl.value) })));
     socket.on("yut:pick", act((g, pl) => pl.refresh ? g.refreshOffer(me.id) : g.pick(me.id, String(pl.id || ""))));
+    // 확장전: 팀 능력 고르기(첫 증강 고르기 때) · 팀 능력 쓰기 · 말 진화 고르기
+    socket.on("yut:teamAbility", act((g, pl) => g.x && g.phase === "pick" ? g.x.setAbility(me.id, String(pl.id || "")) : { ok: false, error: "NOT_ALLOWED" }));
+    socket.on("yut:ability", act((g, pl) => g.x ? g.x.useAbility(me.id, { pieceId: pl.pieceId, targetId: pl.targetId, pieceId2: pl.pieceId2, node: Number(pl.node), ri: Number.isInteger(pl.ri) ? pl.ri : undefined }) : { ok: false, error: "NOT_ALLOWED" }));
+    socket.on("yut:evo", act((g, pl) => g.x && g.phase === "play" ? g.x.chooseEvo(me.id, String(pl.pieceId || ""), String(pl.evo || "")) : { ok: false, error: "NOT_ALLOWED" }));
     // 지금 고르는 말·길 미리 보기를 다른 사람에게 (판정 없음)
     socket.on("yut:hover", (pl) => {
       if (hoverFast()) return;
