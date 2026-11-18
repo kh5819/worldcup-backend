@@ -140,15 +140,16 @@ function deliver(io, r, uid, p, raw) {
 function resync(io, p, reason) { p.rev++; p.resyncs++; const g = p.game; if (!g) return; for (const k of p.inbox) g.addGarbage(k.n, k.s, Date.now() - k.at >= BR.garbageDelay); p.inbox = []; g.takeEvents(); if (p.socketId) io.to(p.socketId).emit("br:resync", { rev: p.rev, gseq: p.gseq, state: g.save(), reason }); }
 function sendBoardToWatchers(io, r, uid, p) { const g = p.game, msg = { i: p.idx, s: p.board, n: g.pieces, q: g.next(5), h: g.hold, st: [g.score, g.lines, g.level, Math.max(0, g.combo), g.b2b ? 1 : 0], c: g.cur ? [g.cur.p, g.cur.r, g.cur.x, g.cur.y, g.pieces] : null, g: g.pendingGarbage() }; for (const w of r.players.values()) if (w.watch === uid && w.connected && w.socketId) io.to(w.socketId).emit("br:watchBoard", msg); }
 
-// ---- 시즌 기록 (회원만, 서버가 확정한 값만). 테이블이 없어도 게임에는 영향 없음
+// ---- 시즌 기록 (회원 + 게스트(2026-11-18), 서버가 확정한 값만). 테이블이 없어도 게임에는 영향 없음
+const BR_GUEST_RE = /^guest_[a-z0-9]{6,30}$/;
 export const seasonKey = (t = Date.now()) => { const d = new Date(t + 9 * 3600e3); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`; };
 async function saveRecords(sa, r, ranking, now) {
-  if (!sa) return; const dur = (now - r.startsAt) / 1000; if (dur < 30 || ranking.length < 2) return; const mode = r.opts.mode + (r.opts.aug ? "_aug" : ""), baseMode = r.opts.mode, seasons = [seasonKey(now), "all"]; const members = ranking.filter((x) => !x.isGuest && String(x.playerId).length >= 30); if (!members.length) return;
+  if (!sa) return; const dur = (now - r.startsAt) / 1000; if (dur < 30 || ranking.length < 2) return; const mode = r.opts.mode + (r.opts.aug ? "_aug" : ""), baseMode = r.opts.mode, seasons = [seasonKey(now), "all"]; const members = ranking.filter((x) => x.isGuest ? BR_GUEST_RE.test(String(x.playerId)) : String(x.playerId).length >= 30); if (!members.length) return;
   try {
-    const ids = members.map((m) => m.playerId), { data, error } = await sa.from("br_records").select("*").in("user_id", ids).in("season", seasons).eq("mode", mode); if (error) { if (!/does not exist|schema cache/i.test(error.message || "")) console.error("[br] records read", error.message); return; }
-    const old = new Map((data || []).map((d) => [`${d.user_id}|${d.season}`, d])), rows = [];
-    for (const m of members) for (const s of seasons) { const o = old.get(`${m.playerId}|${s}`) || {}, win = baseMode === "team" ? m.team === r.winTeam : m.place === 1; rows.push({ season: s, mode, user_id: m.playerId, nickname: m.nickname, games: (o.games || 0) + 1, wins: (o.wins || 0) + (win ? 1 : 0), top3: (o.top3 || 0) + (m.place <= 3 ? 1 : 0), kos: (o.kos || 0) + m.kos, points: (o.points || 0) + Math.max(1, Math.round((ranking.length - m.place + 1) / ranking.length * 20)) + m.kos * 3 + (win ? 15 : 0), best_score: Math.max(o.best_score || 0, m.score), best_combo: Math.max(o.best_combo || 0, m.maxCombo), best_kos: Math.max(o.best_kos || 0, m.kos), best_survival_sec: Math.max(o.best_survival_sec || 0, m.survived), best_lines: Math.max(o.best_lines || 0, m.lines), updated_at: new Date(now).toISOString() }); }
-    const { error: e2 } = await sa.from("br_records").upsert(rows, { onConflict: "season,mode,user_id" }); if (e2) console.error("[br] records write", e2.message);
+    const ids = members.map((m) => m.playerId), { data, error } = await sa.from("br_records").select("*").in("player_key", ids).in("season", seasons).eq("mode", mode); if (error) { if (!/does not exist|schema cache/i.test(error.message || "")) console.error("[br] records read", error.message); return; }
+    const old = new Map((data || []).map((d) => [`${d.player_key}|${d.season}`, d])), rows = [];
+    for (const m of members) for (const s of seasons) { const o = old.get(`${m.playerId}|${s}`) || {}, win = baseMode === "team" ? m.team === r.winTeam : m.place === 1; rows.push({ season: s, mode, user_id: m.isGuest ? null : m.playerId, guest_id: m.isGuest ? m.playerId : null, nickname: m.nickname, games: (o.games || 0) + 1, wins: (o.wins || 0) + (win ? 1 : 0), top3: (o.top3 || 0) + (m.place <= 3 ? 1 : 0), kos: (o.kos || 0) + m.kos, points: (o.points || 0) + Math.max(1, Math.round((ranking.length - m.place + 1) / ranking.length * 20)) + m.kos * 3 + (win ? 15 : 0), best_score: Math.max(o.best_score || 0, m.score), best_combo: Math.max(o.best_combo || 0, m.maxCombo), best_kos: Math.max(o.best_kos || 0, m.kos), best_survival_sec: Math.max(o.best_survival_sec || 0, m.survived), best_lines: Math.max(o.best_lines || 0, m.lines), updated_at: new Date(now).toISOString() }); }
+    const { error: e2 } = await sa.from("br_records").upsert(rows, { onConflict: "season,mode,player_key" }); if (e2) console.error("[br] records write", e2.message);
   } catch (e) { console.error("[br] records", e); }
 }
 
@@ -157,8 +158,8 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
   // 시즌 랭킹 (1분 캐시)
   if (app) { const cache = new Map(); app.get("/blockroyale/ranking", async (req, res) => {
     try { const qm = String(req.query.mode || ""), mode = BR.modes.includes(qm.replace(/_aug$/, "")) ? qm : "battle", season = /^(all|\d{4}-\d{2})$/.test(String(req.query.season || "")) ? String(req.query.season) : seasonKey(), sort = ["points", "wins", "kos", "best_score", "best_survival_sec", "best_combo"].includes(req.query.sort) ? req.query.sort : "points", k = `${mode}|${season}|${sort}`, c = cache.get(k); if (c && Date.now() - c.at < 60_000) return res.json(c.body);
-      const { data, error } = await supabaseAdmin.from("br_records").select("nickname,games,wins,top3,kos,points,best_score,best_combo,best_kos,best_survival_sec,best_lines").eq("mode", mode).eq("season", season).order(sort, { ascending: false }).limit(100);
-      const body = error ? { ok: true, season, rows: [], notReady: true } : { ok: true, season, rows: data || [] }; cache.set(k, { at: Date.now(), body }); res.json(body);
+      const { data, error } = await supabaseAdmin.from("br_records").select("nickname,guest_id,games,wins,top3,kos,points,best_score,best_combo,best_kos,best_survival_sec,best_lines").eq("mode", mode).eq("season", season).order(sort, { ascending: false }).limit(100);
+      const body = error ? { ok: true, season, rows: [], notReady: true } : { ok: true, season, rows: (data || []).map(({ guest_id, ...r }) => ({ ...r, is_guest: !!guest_id })) }; /* 게스트 번호는 숨기고 게스트 표시만 */ cache.set(k, { at: Date.now(), body }); res.json(body);
     } catch (e) { console.error("[br] ranking", e); res.status(500).json({ ok: false }); } }); }
 
   io.on("connection", (socket) => {
@@ -290,7 +291,7 @@ export function registerBlockRoyale(io, supabaseAdmin, app) {
     });
   });
 }
-export const _brTest = { rooms, invites, userRoom };
+export const _brTest = { rooms, invites, userRoom, saveRecords };
 // 게임천국 공개 방 모아보기용: 대기 중(자리 있음) + 경기 중(관전 허용)
 export const publicBlockRoyaleRooms = () => [...rooms.values()].filter((r) => r.opts.isPublic && (r.status === "playing" ? r.opts.allowSpectate : r.status === "lobby" && r.order.length < r.opts.maxPlayers)).slice(0, 30).map((r) => ({ code: r.inviteCode, host: r.players.get(r.hostUserId)?.name || "", n: [...r.players.values()].filter((p) => p.status !== "spec" && !p.wantSpec).length, max: r.opts.maxPlayers, playing: r.status === "playing", locked: !!r.opts.password }));
 addPublicList("blockroyale", publicBlockRoyaleRooms);

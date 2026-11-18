@@ -55,6 +55,7 @@ import { registerAppleMulti } from "./apple-multi.js";
 import { registerBlockBlastMulti } from "./blockblast-multi.js";
 import { registerBlockRoyale } from "./blockroyale-multi.js";
 import { registerAugScores } from "./aug-scores.js";
+import { registerGameRank } from "./game-rank.js"; // 증강 2048·벽돌깨기 랭킹 (2026-11-18)
 import { registerDuoWars } from "./duowars.js"; // 플듀 대전쟁 (2026-11-13)
 import { registerYacht } from "./yacht.js"; // 플듀 증강 야추 (2026-11-15)
 import { registerYut } from "./yut.js"; // 플듀 증강 윷놀이 (2026-11-15)
@@ -62,6 +63,8 @@ import { registerChess } from "./chess.js"; // 플듀 증강 체스 (2026-11-16)
 import { registerOthello } from "./othello.js"; // 플듀 증강 오셀로 (2026-11-16)
 import { registerOneCard } from "./onecard.js"; // DUO 증강 원카드 (2026-11-17)
 import { registerFlick } from "./flick.js"; // DUO 증강 알까기 (2026-11-17)
+import { registerTtfe } from "./ttfe.js"; // DUO 증강 2048 (2026-11-18)
+import { registerBrick } from "./brk.js"; // DUO 증강 벽돌깨기 (2026-11-18)
 import { registerTerritory } from "./territory.js"; // DUO TERRITORY 증강 땅따먹기 (2026-11-16)
 import { registerBomb } from "./bomb.js"; // DUO BOMB ARENA (2026-11-16)
 import { registerPublicRooms, addPublicList } from "./public-rooms.js";
@@ -3234,7 +3237,7 @@ const io = new Server(server, {
   }
 });
 // 게임 모듈마다 io.on("connection") 1개씩 등록(시작 시 1회) → 기본 한도 10 초과 경고 방지
-io.sockets.setMaxListeners(50);
+io.sockets.setMaxListeners(80);
 // 소켓 하나에도 게임 모듈마다 disconnect 처리 1개씩 붙음(게임 10개 넘음) → 연결마다 뜨던 한도 경고 방지 (2026-11-17)
 io.on("connection", (s) => { try { s.setMaxListeners(60); } catch (_) {} });
 
@@ -11173,6 +11176,8 @@ registerChess(io, supabaseAdmin); // 플듀 증강 체스
 registerOthello(io, supabaseAdmin); // 플듀 증강 오셀로
 registerOneCard(io, supabaseAdmin); // DUO 증강 원카드
 registerFlick(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO 증강 알까기 (스트리머 후원: 대전쟁과 같은 연결 함수, 키 "dw_fl_코드", admin 기록 contentMode "flick")
+registerTtfe(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO 증강 2048 (1~50인, 스트리머 후원 키 "dw_tt_코드", admin 기록 contentMode "ttfe")
+registerBrick(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO 증강 벽돌깨기 (1~50인, 후원 키 "dw_bk_코드", admin 기록 contentMode "brick")
 registerTerritory(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO TERRITORY (스트리머 후원: 대전쟁과 같은 연결 함수, 키 "dw_tr_코드")
 registerBomb(io, supabaseAdmin); // DUO BOMB ARENA
 
@@ -11193,6 +11198,7 @@ registerAppleMulti(io, supabaseAdmin);
 registerBlockBlastMulti(io, supabaseAdmin);
 registerBlockRoyale(io, supabaseAdmin, app);
 registerAugScores(app, supabaseAdmin, { getOptionalUser }); // 증강 모드 랭킹(사과·블록블래스트) 2026-11-16
+registerGameRank(app, supabaseAdmin, { getOptionalUser }); // 증강 2048·벽돌깨기 랭킹 (회원+게스트, 혼자 기록은 서버가 다시 돌려 확인)
 registerDuoWars(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k), logStreamer: (o) => _logStreamerChat(o) }); // 플듀 대전쟁 (스트리머 모드: 채팅·후원 연결)
 registerPublicRooms(app, io);
 
@@ -14810,7 +14816,7 @@ const chatBridges = new Map();
 
 // 스트리머 채팅연동 사용 로그 (운영자 admin 탭에서 확인) — 실패해도 게임 흐름엔 영향 없음
 // 콘텐츠(DB) 없이 쓰는 스트리머 모드(예: 그려봐)는 종류만 프론트가 알려 줌 — 허용 목록만 저장
-const STREAMER_LOG_MODES = { duowars: "플듀 대전쟁 스트리머 모드", territory: "증강 땅따먹기 스트리머 모드", flick: "증강 알까기 스트리머 모드", draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", lifebc_don: "인생 방송국 후원 방송 모드", mafia: "플듀 마피아 스트리머 모드", ptest: "심리테스트 시청자 참여", bingo: "빙고 시청자 참여", raising: "플듀 키우기 스트리머 모드" };
+const STREAMER_LOG_MODES = { duowars: "플듀 대전쟁 스트리머 모드", territory: "증강 땅따먹기 스트리머 모드", flick: "증강 알까기 스트리머 모드", ttfe: "증강 2048 스트리머 모드", brick: "증강 벽돌깨기 스트리머 모드", draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", lifebc_don: "인생 방송국 후원 방송 모드", mafia: "플듀 마피아 스트리머 모드", ptest: "심리테스트 시청자 참여", bingo: "빙고 시청자 참여", raising: "플듀 키우기 스트리머 모드" };
 async function _logStreamerChat({ platform, channelId, nickname, contentId, roomCode, hostUserId, hostNick, contentMode }) {
   try {
     if (!platform || !channelId) return; // 식별자 없으면 기록 안 함
