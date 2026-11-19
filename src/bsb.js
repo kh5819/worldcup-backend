@@ -169,9 +169,9 @@ function leave(io, r, uid) {
   const s = r.spect.get(uid);
   if (s) { r.spect.delete(uid); if (userRoom.get(uid) === r.id) userRoom.delete(uid); if (s.sockId) io.sockets.sockets.get(s.sockId)?.leave(chan(r.id)); if (!humans(r).length && !r.spect.size) return delRoom(io, r, "EMPTY"); if (r.hostUserId === uid) pickNewHost(r); checkEmpty(io, r); emitRoom(io, r); return; }
   const p = r.players.get(uid); if (!p) return;
+  if (p.sockId) io.sockets.sockets.get(p.sockId)?.leave(chan(r.id)); // 먼저 방송에서 빼야 나간 사람에게 '끝' 결과가 안 감
   if (playing(r)) { p.left = true; p.connected = false; if (userRoom.get(uid) === r.id) userRoom.delete(uid); r.G?.leave(uid, now()); }
   else removeSeat(r, uid);
-  if (p.sockId) io.sockets.sockets.get(p.sockId)?.leave(chan(r.id));
   io.to(chan(r.id)).emit("bsb:notice", { k: "left", name: p.name });
   if (!humans(r).length && !r.spect.size) return delRoom(io, r, "EMPTY");
   if (r.hostUserId === uid) pickNewHost(r);
@@ -321,7 +321,7 @@ export function registerBaseball(io, supabaseAdmin, hooks = {}) {
       const r = hostRoom(cb); if (!r) return;
       if (GAMES.includes(pl.game) && pl.game !== r.game) {
         const max = MODE_MAX[pl.game]; if (humans(r).length > max) return cb({ ok: false, error: "BELOW_CURRENT" });
-        r.game = pl.game; r.opts = defaultOpts(pl.game); r.maxPlayers = Math.min(max, Math.max(r.maxPlayers, humans(r).length)); if (pl.game === "pvb") r.maxPlayers = 2;
+        r.game = pl.game; r.opts = defaultOpts(pl.game); r.maxPlayers = Math.min(max, Math.max(pl.game === "derby" ? 16 : max, humans(r).length)); // 모드를 바꾸면 그 모드 기본 인원
         r.order.forEach((u, i) => { const p = r.players.get(u); p.team = pl.game === "pvb" ? (i ? 1 : 0) : i % 2; });
       }
       if (pl.mode === "classic" || pl.mode === "augment") r.mode = pl.mode;
