@@ -18,7 +18,7 @@ export function registerAbility(io, supabaseAdmin) {
     });
     // ---------- 플듀 종합 능력 프로필: 세 진단소 결과를 내 것만 모아서 ----------
     on("ability:overview", async (_p, reply) => {
-      const out = { ok: true, isGuest: !!me.isGuest, clinic: null, iq: null, sense: null, know: null, feel: null, lingo: null, rep: null, titles: [] };
+      const out = { ok: true, isGuest: !!me.isGuest, clinic: null, iq: null, sense: null, know: null, feel: null, lingo: null, zombie: null, rep: null, titles: [] };
       if (!sb) return reply(out);
       const mp = await memberProfile(sb, me); out.member = mp;
       try { const { data } = await sb.from("clinic_results").select("id, mode, total, phys, diag, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(50);
@@ -52,6 +52,11 @@ export function registerAbility(io, supabaseAdmin) {
           for (const b of Object.values(langs)) if (["SSS", "SS", "S"].includes(b.grade)) out.titles.push({ name: `${LN[b.lang]} ${b.grade} (${DN[b.diff] || "보통"})`, from: "lingo" });
           for (const r of ok) for (const t of r.titles || []) if (t?.name && !out.titles.some((x) => x.name === t.name)) out.titles.push({ name: t.name, from: "lingo" });
         } } catch (e) { console.warn("[ability] lingo", e?.message); }
+      // 좀비 생존 진단소: 순위 제외(오늘의 사태 두 번째 등) 기록은 최고 기록에서 빼고, 최고 = 점수(생존 일수 중심)
+      try { const { data } = await sb.from("zom_results").select("id, mode, days, rescued, score, cause, type_id, diag->type, diag->titles, flagged, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(60);
+        if (data?.length) { const ok = data.filter((r) => !r.flagged), best = [...(ok.length ? ok : data)].sort((a, b) => b.score - a.score)[0]; const pub = (r) => ({ id: r.id, mode: r.mode, days: r.days, rescued: r.rescued, score: r.score, cause: r.cause, typeId: r.type_id, type: r.type?.n || null, ic: r.type?.ic || "", at: r.created_at });
+          out.zombie = { count: data.length, latest: pub(data[0]), best: pub(best), rescues: data.filter((r) => r.rescued).length };
+          for (const r of ok) for (const t of r.titles || []) if (typeof t === "string" && !out.titles.some((x) => x.name === t)) out.titles.push({ name: t, from: "zombie" }); } } catch (e) { console.warn("[ability] zombie", e?.message); }
       try { const { data } = await sb.from("ability_profiles").select("rep_kind, rep_id, rep_title").eq("owner_key", key).maybeSingle(); out.rep = data || null; } catch {}
       out.titles = out.titles.slice(0, 40);
       reply(out);
@@ -59,8 +64,8 @@ export function registerAbility(io, supabaseAdmin) {
     // 대표 진단서·대표 칭호: 내 기록만 지정 가능
     on("ability:setRep", async (p, reply) => {
       if (!sb) return reply({ ok: false, error: "NO_DB" });
-      const kind = ["clinic", "iq", "sense", "know", "feel", "lingo"].includes(p.kind) ? p.kind : null, id = kind ? String(p.id || "").slice(0, 16) : null;
-      if (kind) { const { data } = await sb.from(`${kind}_results`).select("id").eq("id", id).eq("owner_key", key).maybeSingle(); if (!data) return reply({ ok: false, error: "NOT_MINE" }); }
+      const kind = ["clinic", "iq", "sense", "know", "feel", "lingo", "zombie"].includes(p.kind) ? p.kind : null, id = kind ? String(p.id || "").slice(0, 16) : null;
+      if (kind) { const { data } = await sb.from(kind === "zombie" ? "zom_results" : `${kind}_results`).select("id").eq("id", id).eq("owner_key", key).maybeSingle(); if (!data) return reply({ ok: false, error: "NOT_MINE" }); }
       const row = { owner_key: key, user_id: me.isGuest ? null : me.id, rep_kind: kind, rep_id: id, rep_title: p.title ? String(p.title).replace(/[<>]/g, "").slice(0, 30) : null, updated_at: new Date().toISOString() };
       const { error } = await sb.from("ability_profiles").upsert(row, { onConflict: "owner_key" });
       reply(error ? { ok: false, error: "UPDATE_FAIL" } : { ok: true });

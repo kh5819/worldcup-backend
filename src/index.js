@@ -32,6 +32,8 @@ import { registerIq, memberProfile as iqMemberProfile } from "./iq.js";
 import { registerIqMulti } from "./iq-multi.js";
 import { registerIqBroadcast } from "./iq-broadcast.js";
 import { registerAbility } from "./ability.js";
+import { registerZombie } from "./zom.js";
+import { registerAccountDelete, isDeletedUser } from "./account-delete.js";
 import { registerSense } from "./sense.js";
 import { registerSenseMulti } from "./sense-multi.js";
 import { registerSenseBroadcast } from "./sense-broadcast.js";
@@ -3293,6 +3295,7 @@ async function verifyJWT(accessToken) {
 
     const userId = payload.sub;
     const email = payload.email || "";
+    if (isDeletedUser(userId)) { console.log("[AUTH] 탈퇴한 계정의 남은 토큰 거절"); return null; }   // 회원탈퇴 직후 남은 로그인 토큰 차단
 
     console.log("[AUTH] ✅ 검증 성공 - user_id:", userId, "email:", email);
 
@@ -3317,6 +3320,9 @@ async function verifyJWT(accessToken) {
 async function verify(accessToken) {
   return verifyJWT(accessToken);
 }
+
+// 회원탈퇴 표시용 이름('삭제된 계정')과 헷갈리는 닉네임 금지
+const isReservedNick = (s) => { const k = String(s || "").replace(/[\s._\-]/g, "").toLowerCase(); return k.includes("삭제된계정") || k.includes("탈퇴한계정") || k.includes("탈퇴회원") || k === "deletedaccount" || k === "deleteduser"; };
 
 // =========================
 // Express 미들웨어: 인증 / 관리자
@@ -5635,6 +5641,7 @@ app.patch("/admin/users/:userId/nickname", requireAdmin, async (req, res) => {
     if (!NICK_RE.test(trimmed)) {
       return res.status(400).json({ ok: false, error: "INVALID_NICKNAME", reason: "한글/영문/숫자, 공백(1칸), _, -, . 만 사용 가능 (맨앞·맨뒤 특수문자/공백 불가)" });
     }
+    if (isReservedNick(trimmed)) return res.status(400).json({ ok: false, error: "INVALID_NICKNAME", reason: "사용할 수 없는 닉네임입니다." });
     if (/  /.test(trimmed)) {
       return res.status(400).json({ ok: false, error: "INVALID_NICKNAME", reason: "연속 공백은 사용할 수 없습니다." });
     }
@@ -5713,6 +5720,7 @@ app.get("/nickname/check", async (req, res) => {
     if (!trimmed) {
       return res.status(400).json({ ok: false, available: false, reason: "EMPTY" });
     }
+    if (isReservedNick(trimmed)) return res.json({ ok: true, available: false, reason: "RESERVED" });
 
     // normalize: trim + collapse spaces + lower
     const normalized = trimmed.replace(/\s+/g, " ").toLowerCase();
@@ -5776,6 +5784,7 @@ app.patch("/profile/nickname", requireAuth, async (req, res) => {
     }
 
     const NICK_RE = /^[\w가-힣\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\u3005]+$/;
+    if (isReservedNick(trimmed)) return res.status(400).json({ ok: false, error: "INVALID_NICKNAME", reason: "사용할 수 없는 닉네임입니다." });
     if (!NICK_RE.test(trimmed)) {
       return res.status(400).json({ ok: false, error: "INVALID_NICKNAME", reason: "한글, 일본어, 한자, 영문, 숫자, _ 만 사용할 수 있습니다." });
     }
@@ -11262,6 +11271,8 @@ registerClinicBroadcast(io, supabaseAdmin, app, { memberProfile: clinicMemberPro
 registerIq(io, supabaseAdmin, app, { getOptionalUser });
 registerIqMulti(io, supabaseAdmin);
 registerIqBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
+registerZombie(io, supabaseAdmin, app, { getOptionalUser });
+registerAccountDelete(app, supabaseAdmin, { requireAuth, supabaseUrl: process.env.SUPABASE_URL, anonKey: process.env.SUPABASE_ANON_KEY });   // 회원탈퇴 (/account/delete/request → confirm)   // 플듀 좀비 생존 진단소 (zom:* · /zom/* · 방송 진단소 만들면 admin 기록 platform "zombie")
 // 플듀 심리전 능력 진단소 — mind:* / mm:* / mbc:* / ability:* 이벤트 + /mind/* REST, 상태·정답·AI는 서버만
 registerAbility(io, supabaseAdmin);   // 플듀 종합 능력 프로필 (심리전 진단소 삭제 11-11 — 프로필만 남김)
 // 플듀 게임 센스 진단소 — sense:* 이벤트 + /sense/* REST, 채점은 서버가 기록을 다시 계산
