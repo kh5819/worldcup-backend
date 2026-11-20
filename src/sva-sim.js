@@ -457,8 +457,8 @@ export class World {
     // 경험치 보석
     this.dropGem(m.x, m.y, m.xp * (m.elite ? 6 : 1));
     if (m.split && !m.mini) for (let k = 0; k < 2; k++) this.spawnMon("slime", m.x + (k ? 14 : -14), m.y, { mini: true, hpMul: 0.4 });
-    if (m.elite) { const r = this.rng(); if (this.t * this.ts > 420 && r < 0.3) this.dropItem("evo", m.x, m.y); else if (r < 0.65) this.dropItem("meat", m.x, m.y); else this.dropItem("magnet", m.x, m.y); if (m.donor) this.donorElites = Math.max(0, this.donorElites - 1); if (m.invader) this.invaders = Math.max(0, this.invaders - 1); }
-    else if (this.rng() < 0.009) this.dropItem(this.rng() < 0.6 ? "meat" : this.rng() < 0.5 ? "magnet" : "bomb", m.x, m.y);
+    if (m.elite) { const r = this.rng(); if (this.t * this.ts > 420 && r < 0.3) this.dropItem("evo", m.x, m.y); else if (r < 0.5) this.dropItem("meat", m.x, m.y); else this.dropItem("magnet", m.x, m.y); if (m.donor) this.donorElites = Math.max(0, this.donorElites - 1); if (m.invader) this.invaders = Math.max(0, this.invaders - 1); }
+    else if (this.rng() < 0.006) this.dropItem(this.rng() < 0.25 ? "meat" : this.rng() < 0.5 ? "magnet" : "bomb", m.x, m.y); // 11-20: 회복 고기 처치당 0.54% → 0.15% (너무 많이 떨어져서)
     // 화염 폭발 (발동 피해로 죽은 건 다시 터지지 않음 = 연쇄 폭발 방지)
     if (P && this.aug && P.augs.includes("a12") && o.kind !== "proc") { const ch = P.syn.has("s2") ? 0.25 : AUG.a12.v.ch; if (this.rng() < ch) { this.aoe(P, m.x, m.y, AUG.a12.v.rad, P.ap * AUG.a12.v.mult, { kind: "proc" }); this.ev.push({ k: "boom", x: mx, y: my, r: AUG.a12.v.rad, c: 2 }); } }
   }
@@ -469,7 +469,7 @@ export class World {
     }
     this.gems.push({ x: x + (this.rng() - 0.5) * 10, y: y + (this.rng() - 0.5) * 10, v });
   }
-  dropItem(k, x, y) { if (this.items.length > 40) return; this.items.push({ id: this.itemSeq++, k, x: Math.round(x), y: Math.round(y) }); }
+  dropItem(k, x, y) { if (this.items.length > 40) return; if (k === "meat" && this.items.filter(i => i.k === "meat").length >= 3) return; this.items.push({ id: this.itemSeq++, k, x: Math.round(x), y: Math.round(y) }); } // 바닥에 고기 3개까지
   useItem(P, it) {
     if (it.k === "meat") this.heal(P, P.maxHp * 0.3);
     else if (it.k === "magnet") { for (const g of this.gems) this.gainXp(P, g.v); this.gems.length = 0; this.ev.push({ k: "magnet", i: P.idx }); }
@@ -843,7 +843,7 @@ export class World {
     const B = BOSSES[id]; if (!B) return;
     const ps = this.alivePlayers(); const P = ps[0]; const a = this.wrng() * Math.PI * 2;
     const pos = this.freeSpot(clamp(P.x + Math.cos(a) * 420, 80, MAP.w - 80), clamp(P.y + Math.sin(a) * 420, 80, MAP.h - 80), B.r);
-    const hp = B.hp * this.D.bossHp * this.party.boss * 1.8 * (1 + this.bossIdx * 0.75) * (this.kind === "pvp" ? 1.5 : 1);
+    const hp = B.hp * this.D.bossHp * this.party.boss * 2.3 * (1 + this.bossIdx * 0.75) * (this.kind === "pvp" ? 1.5 : 1);
     const m = { id: this.monSeq = (this.monSeq % 65000) + 1, type: id, tc: BOSS_TYPE[id], boss: true, bossId: id, x: pos.x, y: pos.y, r: B.r, hp, maxHp: hp, dmg: B.dmg * this.D.dmg * this.party.dmg * (1 + this.bossIdx * 0.25), spd: B.spd, xp: 0, st: {}, imm: {}, kx: 0, ky: 0, def: 15 + this.bossIdx * 10, dr: 0,
       phase: 1, patT: 2.5, lastPat: "", tgt: null, tgtT: 0, face: 0, hurt: 0, inv: 1.5, act: null, scale: 1, enraged: false, kbImmune: true, alpha: 1, spawnedAt: this.t, final: this.bossIdx === 2 };
     this.mons.push(m); this.boss = m;

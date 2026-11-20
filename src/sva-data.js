@@ -15,11 +15,11 @@ export const MODE_MAX = { coop: 8, versus: 8, team: 8 };
 export const DIFF = {
   easy:      { hp: 0.7, dmg: 0.6, spawn: 0.8, elite: 0.6, bossHp: 0.7, bossFreq: 0.8, xp: 1.15, name: ["쉬움", "やさしい", "Easy"] },
   normal:    { hp: 1, dmg: 1, spawn: 1, elite: 1, bossHp: 1, bossFreq: 1, xp: 1, name: ["보통", "ふつう", "Normal"] },
-  hard:      { hp: 1.45, dmg: 1.35, spawn: 1.2, elite: 1.5, bossHp: 1.4, bossFreq: 1.15, xp: 0.95, name: ["어려움", "むずかしい", "Hard"] },
+  hard:      { hp: 1.3, dmg: 1.25, spawn: 1.2, elite: 1.5, bossHp: 1.4, bossFreq: 1.15, xp: 0.95, name: ["어려움", "むずかしい", "Hard"] },
   nightmare: { hp: 2.1, dmg: 1.8, spawn: 1.4, elite: 2.2, bossHp: 2, bossFreq: 1.3, xp: 0.9, name: ["악몽", "悪夢", "Nightmare"] },
 };
 // 협동 인원 보정 — 인원만큼 그대로 늘리지 않음 (8명 = 몬스터 수 ×2.9, 체력 ×1.5)
-export const partyScale = (n) => { n = Math.max(1, Math.min(8, n)); return { count: 1 + 0.27 * (n - 1), hp: 1 + 0.07 * (n - 1), dmg: 1 + 0.03 * (n - 1), boss: 1 + 0.45 * (n - 1), cap: Math.min(300, 190 + 16 * (n - 1)) }; };
+export const partyScale = (n) => { n = Math.max(1, Math.min(8, n)); return { count: 1 + 0.30 * (n - 1), hp: 1 + 0.12 * (n - 1), dmg: 1 + 0.08 * (n - 1), boss: 1 + 0.55 * (n - 1), cap: Math.min(300, 190 + 16 * (n - 1)) }; };
 
 // ---------- 상태 이상 ----------
 // dot: 초당 피해(가한 사람 공격력 비율, 몬스터→플레이어는 고정값) · max: 최대 중첩 · refresh: 다시 걸면 시간 갱신 · boss: 보스 지속시간 배율 · immune: 끝난 뒤 면역(초)
