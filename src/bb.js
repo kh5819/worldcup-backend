@@ -20,6 +20,7 @@ const RL = Math.max(1, Number(process.env.BB_RL) || 1), SKEW = process.env.BB_TE
 const ipMakes = new Map();
 let SB = null, IO = null;
 const now = () => Date.now();
+const LOBBY_GRACE = Number(process.env.LOBBY_GRACE_MS) || 20000;
 const newSeed = () => (Math.floor(Math.random() * 0xffffffff) >>> 0) || 7;
 const clean = (s, n) => String(s ?? "").replace(/[\u0000-\u001f<>]/g, "").trim().slice(0, n);
 const r1 = (v) => (v == null ? null : Math.round(v * 10) / 10);
@@ -251,7 +252,10 @@ export function registerBungeo(io, supabaseAdmin, app, { getOptionalUser } = {})
     on("bb:tr", (p, reply) => { const L = p.lang === "ja" || p.lang === "en" ? p.lang : "ko"; reply({ ok: true, list: (Array.isArray(p.list) ? p.list : []).slice(0, 60).map((x) => trStr(String(x ?? "").slice(0, 300), L)) }); }, 30);
 
     // ----- 친구 대결 -----
-    const myRoom = () => { const r = ROOMS.get(socket.data.bbRoom || ""); return r && r.players.has(key) ? r : null; };
+    // 새 소켓(재연결)이면 내가 들어 있던 진행 중 방을 찾아 자동으로 다시 붙임 — 답이 NO_ROOM으로 버려지지 않게
+    const myRoom = () => { const r = ROOMS.get(socket.data.bbRoom || ""); if (r && r.players.has(key)) return r;
+      let best = null; for (const x of ROOMS.values()) if (x.phase !== "over" && x.phase !== "lobby" && x.players.has(key) && (!best || x.touched > best.touched)) best = x;
+      if (!best) return null; const pl = best.players.get(key); pl.sid = socket.id; pl.connected = true; socket.join(`bbm:${best.code}`); socket.data.bbRoom = best.code; return best; };
     const joinRoom = (r, p, lang) => { const pl = r.players.get(key); pl.sid = socket.id; pl.connected = true; pl.lang = lang; socket.join(`bbm:${r.code}`); socket.data.bbRoom = r.code; emitRoom(r); emitYou(r, pl); };
     on("bbm:create", async (p, reply, lang) => {
       if (ROOMS.size >= MAX_ROOMS) return reply({ ok: false, error: "TOO_MANY_ROOMS" });
@@ -294,7 +298,7 @@ export function registerBungeo(io, supabaseAdmin, app, { getOptionalUser } = {})
     });
     on("bbm:buy", (p, reply) => { const r = myRoom(); const pl = r?.players.get(key); if (!r || r.phase !== "plan" || !pl?.st || pl.plan) return reply({ ok: false, error: "BAD_PHASE" }); reply(C.buy(pl.st, p.id)); emitRoom(r); }, 30);
     on("bbm:leave", (p, reply) => { const r = myRoom(); if (!r) return reply({ ok: true }); socket.leave(`bbm:${r.code}`); socket.data.bbRoom = null; if (r.phase === "lobby") { r.players.delete(key); if (r.hostKey === key) { const nx = r.players.values().next().value; if (nx) { r.hostKey = nx.key; r.hostNick = nx.nick; } else { ROOMS.delete(r.code); return reply({ ok: true }); } } } else { const pl = r.players.get(key); if (pl) pl.connected = false; } emitRoom(r); reply({ ok: true }); });
-    socket.on("disconnect", () => { const r = ROOMS.get(socket.data.bbRoom || ""); const pl = r?.players.get(key); if (pl && pl.sid === socket.id) { pl.connected = false; if (r.phase === "lobby") { r.players.delete(key); if (r.hostKey === key) { const nx = r.players.values().next().value; if (nx) { r.hostKey = nx.key; r.hostNick = nx.nick; } else { ROOMS.delete(r.code); return; } } } emitRoom(r); } });
+    socket.on("disconnect", () => { const r = ROOMS.get(socket.data.bbRoom || ""); const pl = r?.players.get(key); if (pl && pl.sid === socket.id) { pl.connected = false; if (r.phase === "lobby") { const sid0 = socket.id; setTimeout(() => { const cur = r.players.get(key); if (!cur || cur.connected || cur.sid !== sid0 || r.phase !== "lobby" || ROOMS.get(r.code) !== r) return; r.players.delete(key); if (r.hostKey === key) { const nx = r.players.values().next().value; if (nx) { r.hostKey = nx.key; r.hostNick = nx.nick; } else { ROOMS.delete(r.code); return; } } emitRoom(r); }, LOBBY_GRACE).unref?.(); } emitRoom(r); } });   // 대기실에서 잠깐 끊긴 건 20초 기다려 줌 (예전엔 바로 빠져서 혼자 있던 방장의 방이 사라졌음)
 
     // ----- 방송 진단소 -----
     on("bb:bc:create", async (p, reply) => {

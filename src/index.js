@@ -34,6 +34,7 @@ import { registerIqBroadcast } from "./iq-broadcast.js";
 import { registerAbility } from "./ability.js";
 import { registerZombie } from "./zom.js";
 import { registerBungeo } from "./bb.js";
+import { registerNunchi } from "./nc.js";
 import { registerAccountDelete, isDeletedUser } from "./account-delete.js";
 import { registerSense } from "./sense.js";
 import { registerSenseMulti } from "./sense-multi.js";
@@ -11274,6 +11275,7 @@ registerIqMulti(io, supabaseAdmin);
 registerIqBroadcast(io, supabaseAdmin, app, { memberProfile: iqMemberProfile });
 registerZombie(io, supabaseAdmin, app, { getOptionalUser });
 registerBungeo(io, supabaseAdmin, app, { getOptionalUser });
+registerNunchi(io, supabaseAdmin, app, { getOptionalUser });
 registerAccountDelete(app, supabaseAdmin, { requireAuth, supabaseUrl: process.env.SUPABASE_URL, anonKey: process.env.SUPABASE_ANON_KEY });   // 회원탈퇴 (/account/delete/request → confirm)   // 플듀 좀비 생존 진단소 (zom:* · /zom/* · 방송 진단소 만들면 admin 기록 platform "zombie")
 // 플듀 심리전 능력 진단소 — mind:* / mm:* / mbc:* / ability:* 이벤트 + /mind/* REST, 상태·정답·AI는 서버만
 registerAbility(io, supabaseAdmin);   // 플듀 종합 능력 프로필 (심리전 진단소 삭제 11-11 — 프로필만 남김)
