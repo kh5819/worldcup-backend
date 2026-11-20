@@ -18,7 +18,7 @@ export function registerAbility(io, supabaseAdmin) {
     });
     // ---------- 플듀 종합 능력 프로필: 세 진단소 결과를 내 것만 모아서 ----------
     on("ability:overview", async (_p, reply) => {
-      const out = { ok: true, isGuest: !!me.isGuest, clinic: null, iq: null, sense: null, know: null, feel: null, lingo: null, zombie: null, rep: null, titles: [] };
+      const out = { ok: true, isGuest: !!me.isGuest, clinic: null, iq: null, sense: null, know: null, feel: null, lingo: null, zombie: null, bungeo: null, rep: null, titles: [] };
       if (!sb) return reply(out);
       const mp = await memberProfile(sb, me); out.member = mp;
       try { const { data } = await sb.from("clinic_results").select("id, mode, total, phys, diag, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(50);
@@ -57,6 +57,11 @@ export function registerAbility(io, supabaseAdmin) {
         if (data?.length) { const ok = data.filter((r) => !r.flagged), best = [...(ok.length ? ok : data)].sort((a, b) => b.score - a.score)[0]; const pub = (r) => ({ id: r.id, mode: r.mode, days: r.days, rescued: r.rescued, score: r.score, cause: r.cause, typeId: r.type_id, type: r.type?.n || null, ic: r.type?.ic || "", at: r.created_at });
           out.zombie = { count: data.length, latest: pub(data[0]), best: pub(best), rescues: data.filter((r) => r.rescued).length };
           for (const r of ok) for (const t of r.titles || []) if (typeof t === "string" && !out.titles.some((x) => x.name === t)) out.titles.push({ name: t, from: "zombie" }); } } catch (e) { console.warn("[ability] zombie", e?.message); }
+      // 붕어빵 장사 진단소: 순위 제외 기록 빼고 최고 = 점수(버틴 개월·순이익). 1년 완주하면 유형 이름이 칭호
+      try { const { data } = await sb.from("bb_results").select("id, mode, months, survived, cash, profit, score, cause, type_id, diag->type, diag->titles, diag->ending, flagged, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(60);
+        if (data?.length) { const ok = data.filter((r) => !r.flagged), best = [...(ok.length ? ok : data)].sort((a, b) => b.score - a.score)[0]; const pub = (r) => ({ id: r.id, mode: r.mode, months: r.months, survived: r.survived, cash: r.cash, profit: r.profit, score: r.score, cause: r.cause, typeId: r.type_id, type: r.type?.n || null, ic: r.type?.ic || "", at: r.created_at });
+          out.bungeo = { count: data.length, latest: pub(data[0]), best: pub(best), survived: data.filter((r) => r.survived).length, bestProfit: Math.max(...data.map((r) => Number(r.profit) || 0)) };
+          for (const r of ok) { for (const t of r.titles || []) if (t?.n && t.id !== "first" && !out.titles.some((x) => x.name === t.n)) out.titles.push({ name: t.n, from: "bungeo" }); if (r.ending?.n && r.survived && !out.titles.some((x) => x.name === r.ending.n)) out.titles.push({ name: r.ending.n, from: "bungeo" }); } } } catch (e) { console.warn("[ability] bungeo", e?.message); }
       try { const { data } = await sb.from("ability_profiles").select("rep_kind, rep_id, rep_title").eq("owner_key", key).maybeSingle(); out.rep = data || null; } catch {}
       out.titles = out.titles.slice(0, 40);
       reply(out);
@@ -64,8 +69,8 @@ export function registerAbility(io, supabaseAdmin) {
     // 대표 진단서·대표 칭호: 내 기록만 지정 가능
     on("ability:setRep", async (p, reply) => {
       if (!sb) return reply({ ok: false, error: "NO_DB" });
-      const kind = ["clinic", "iq", "sense", "know", "feel", "lingo", "zombie"].includes(p.kind) ? p.kind : null, id = kind ? String(p.id || "").slice(0, 16) : null;
-      if (kind) { const { data } = await sb.from(kind === "zombie" ? "zom_results" : `${kind}_results`).select("id").eq("id", id).eq("owner_key", key).maybeSingle(); if (!data) return reply({ ok: false, error: "NOT_MINE" }); }
+      const kind = ["clinic", "iq", "sense", "know", "feel", "lingo", "zombie", "bungeo"].includes(p.kind) ? p.kind : null, id = kind ? String(p.id || "").slice(0, 16) : null;
+      if (kind) { const { data } = await sb.from(kind === "zombie" ? "zom_results" : kind === "bungeo" ? "bb_results" : `${kind}_results`).select("id").eq("id", id).eq("owner_key", key).maybeSingle(); if (!data) return reply({ ok: false, error: "NOT_MINE" }); }
       const row = { owner_key: key, user_id: me.isGuest ? null : me.id, rep_kind: kind, rep_id: id, rep_title: p.title ? String(p.title).replace(/[<>]/g, "").slice(0, 30) : null, updated_at: new Date().toISOString() };
       const { error } = await sb.from("ability_profiles").upsert(row, { onConflict: "owner_key" });
       reply(error ? { ok: false, error: "UPDATE_FAIL" } : { ok: true });

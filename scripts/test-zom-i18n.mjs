@@ -3,6 +3,7 @@
 import * as C from "../src/zom-core.js";
 import * as D from "../src/zom-data.js";
 import { TYPES } from "../src/zom-types.js";
+import { EVENTS2 } from "../src/zom-data2.js";
 import { tx, trStr, _trTest } from "../src/zom-tr.js";
 const N = Number(process.argv[2] || 300);
 const H = /[가-힣]/;
@@ -21,6 +22,10 @@ function solve(t, r) {
   if (t.kind === "radio") return { f: r() < 0.5 ? t.peaks.sort((a, b) => b.s - a.s)[0].f : 95 };
   if (t.kind === "aid") return { taps: t.opts.map((o) => o.id).sort(() => r() - 0.5) };
   if (t.kind === "escape") return { picks: t.jx.map(() => Math.floor(r() * 3)) };
+  if (t.kind === "crank") return (r() < 0.6) ? { inBand: 0.9, over: 0 } : { inBand: 0.3, over: 0.4 };
+  if (t.kind === "throw") return { shots: [{ a: 45, p: (r() < 0.6) ? 0.55 : 0.1 }] };
+  if (t.kind === "spot") return { picks: (r() < 0.6) ? t.people.map((p, i) => (p.tells.some((x) => x === "pale" || x === "eyes") ? i : -1)).filter((i) => i >= 0) : [0, 1] };
+  if (t.kind === "lockpick") return { rel: t.pins.map((p) => ((r() < 0.6) ? p.a : p.a + 40)) };
 }
 for (let g = 0; g < N; g++) {
   let rs = g * 7919 + 13; const r = () => { rs = (rs * 1103515245 + 12345) >>> 0; return rs / 4294967296; };

@@ -44,6 +44,10 @@ function solveTask(t, skill, r) {
   if (t.kind === "radio") { const best = t.peaks.sort((a, b) => b.s - a.s)[0]; return { f: ok ? best.f : 90 }; }
   if (t.kind === "aid") return { taps: t.opts.map((o) => o.id) };
   if (t.kind === "escape") return { picks: t.jx.map(() => Math.floor(r() * 3)) };
+  if (t.kind === "crank") return ok ? { inBand: 0.9, over: 0 } : { inBand: 0.3, over: 0.4 };
+  if (t.kind === "throw") return { shots: [{ a: 45, p: ok ? 0.55 : 0.1 }] };
+  if (t.kind === "spot") return { picks: ok ? t.people.map((p, i) => (p.tells.some((x) => x === "pale" || x === "eyes") ? i : -1)).filter((i) => i >= 0) : [0, 1] };
+  if (t.kind === "lockpick") return { rel: t.pins.map((p) => (ok ? p.a : p.a + 40)) };
 }
 const dist = {}, types = {}, causes = {}; let totalDays = 0, rescued = 0, maxSteps = 0, totalSteps = 0;
 for (let g = 0; g < N; g++) {

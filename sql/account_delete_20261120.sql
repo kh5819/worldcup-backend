@@ -52,7 +52,7 @@ begin
   update storage.objects set owner = null, owner_id = null where (owner = p_uid or owner_id = us) and bucket_id <> 'avatars';
 
   -- 2) 방송 진단소(스트리머 현황판) → 남기되 방송인 정보 지움 / 시청자로 참여한 기록 → 익명
-  foreach t in array array['clinic','feel','gamelab','iq','know','lingo','mind','sense','zom'] loop
+  foreach t in array array['clinic','feel','gamelab','iq','know','lingo','mind','sense','zom','bb'] loop
     if to_regclass('public.' || t || '_broadcasts') is not null then
       execute format('update %I set user_id = null, owner_key = %L, streamer_nick = %L where user_id = $1 or owner_key = $2', t || '_broadcasts', 'deleted', '삭제된 계정') using p_uid, uk;
       if exists (select 1 from information_schema.columns where table_schema='public' and table_name = t || '_broadcasts' and column_name = 'avatar_url') then
@@ -120,7 +120,7 @@ begin
       else execute format('delete from %I where user_id = $1', t) using p_uid; end if;
     end if;
   end loop;
-  foreach t in array array['clinic_results','feel_results','gamelab_results','iq_results','know_results','lingo_results','mind_results','sense_results','zom_results','clinic_best','clinic_profiles','iq_profiles','ability_profiles','lifebc_saves','know_reports','lingo_reports'] loop
+  foreach t in array array['clinic_results','feel_results','gamelab_results','iq_results','know_results','lingo_results','mind_results','sense_results','zom_results','bb_results','clinic_best','clinic_profiles','iq_profiles','ability_profiles','lifebc_saves','know_reports','lingo_reports'] loop
     if to_regclass('public.' || t) is not null then
       if exists (select 1 from information_schema.columns where table_schema='public' and table_name=t and column_name='user_id') then
         execute format('delete from %I where user_id = $1 or owner_key = $2', t) using p_uid, uk;

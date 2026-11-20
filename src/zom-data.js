@@ -39,6 +39,7 @@ export const DEFAULT_CAUSE = { hurt: "상처가 낫지 않았다", horde: "밤�
 export const STARVE_CAUSES = ["굶주림 — 마지막 식사는 케첩 한 봉지", "굶주림 — 냉장고엔 마요네즈와 생수뿐이었다", "굶주림 — 고양이 사료를 두고 고양이와 신경전 끝에 짐", "굶주림 — 배달앱을 습관처럼 열어 보다가", "굶주림 — 아껴 둔 컵라면 스프만 남았다", "굶주림 — 김 한 장을 열 번 나눠 먹었다"];
 export const MAD_CAUSES = ["정신이 먼저 무너졌다 — 마지막 일기: \"오늘도 문 두드리는 소리\"", "정신이 먼저 무너졌다 — 벽에 대고 하루 종일 말을 걸었다", "정신이 먼저 무너졌다 — \"구조대가 왔어!\" 외치며 문을 열었다", "정신이 먼저 무너졌다 — 좀비에게 이름을 붙여 주기 시작했다", "정신이 먼저 무너졌다 — 혼자 끝말잇기를 300판 했다"];
 
+import { EVENTS2, FX } from "./zom-data2.js";
 const D = "day", N = "night";
 export const EVENTS = [
   // ---------- 첫날 (고정) ----------
@@ -427,6 +428,9 @@ export const EVENTS = [
     ] },
 ];
 
+EVENTS.push(...EVENTS2);   // 2차 추가 사건 (밤 8 · 낮 8 · 특별 2)
+for (const e of EVENTS) if (!e.fx && FX[e.id]) e.fx = FX[e.id];
+
 // 강제 사건 (조건이 맞으면 서버가 바로 넣음)
 export const FORCED = {
   horde: { id: "f_horde", ph: N, loc: "night", t: "쾅! 쾅! 쾅! 그동안 낸 소리를 듣고 무리가 몰려왔다. 현관문과 창문이 동시에 흔들린다. 지금 막지 않으면 끝이다.",
@@ -456,6 +460,19 @@ export const FORCED = {
     c: [{ t: "손을 흔들며 뛰어나간다", g: 0, o: [{ m: "진짜였다. 트럭 짐칸에 올라 담요를 받았다. 30일, 버텨 냈다.", e: { rescued: 1 } }] }] },
 };
 
+for (const k of Object.keys(FORCED)) if (FX[FORCED[k].id]) FORCED[k].fx = FX[FORCED[k].id];
+// 3차: 자주 나오는 사건에 새 미니게임 선택지 추가
+{
+  const ph = EVENTS.find((e) => e.id === "pharmacy");
+  ph.c.splice(1, 0, { t: "자물쇠를 따고 조용히 들어간다", g: 1, task: "lockpick", d: 1,
+    ok: [{ m: "셔터 자물쇠가 소리 없이 풀렸다. 약사는 없었지만 약장은 그대로였다.", e: { add: ["medkit", "painkiller"] } }],
+    mid: [{ m: "자물쇠는 풀었는데 셔터가 덜컹 소리를 냈다. 진통제만 챙겨 나왔다.", e: { add: ["painkiller"], noise: 15 } }],
+    bad: [{ m: "자물쇠와 씨름하는 사이 '살려 주세요'의 주인이 셔터 너머로 손을 뻗었다.", e: { hp: -16, noise: 10 }, cause: "약국 자물쇠와 씨름하다 붙잡힘" }] });
+  FORCED.horde.c.splice(2, 0, { t: "깡통을 던져 무리를 유인한다", g: 1, task: "throw", d: 3,
+    ok: [{ m: "옆 골목 끝에서 깡! 무리가 우르르 소리를 따라갔다. 문은 무사했다.", e: { noise: -45, san: 4 } }],
+    mid: [{ m: "절반은 소리를 따라갔다. 남은 녀석들이 창문 하나를 깼다.", e: { hp: -16, noise: -30 }, cause: "깡통 유인이 반만 통함" }],
+    bad: [{ m: "깡통이 우리 집 현관 앞에 떨어졌다. 최악의 초대장이었다.", e: { hp: -42, noise: -15 }, cause: "깡통을 우리 집 앞에 던짐" }] });
+}
 export { TYPES } from "./zom-types.js";   // 생존자 유형 (자세한 설명은 따로 파일)
 export const ABIL = [
   { id: "judge", n: "판단력", c: "#ffd35a" },

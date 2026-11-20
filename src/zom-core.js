@@ -27,7 +27,7 @@ export function newRun(seed) {
   return {
     v: CORE_VERSION, seed: seed >>> 0, rs: seed >>> 0, day: 1, ph: "day", hp: 100, food: 4, noise: 10, san: 100,
     items: {}, comps: [], flags: {}, used: {}, cur: null, over: null, lastCause: null, starve: 0, noiseSum: 0, n: 0,
-    met: { g: [], b: [], task: {} }, log: [], hist: [{ d: 1, hp: 100, food: 4, san: 100, noise: 10 }],
+    met: { g: [], b: [], task: {} }, log: [], keys: [], hist: [{ d: 1, hp: 100, food: 4, san: 100, noise: 10 }],
   };
 }
 
@@ -100,7 +100,7 @@ export function publicScene(st) {
   if (!st.cur) return null;
   const ev = EV.get(st.cur.id);
   return {
-    id: ev.id, day: st.day, ph: ev.ph, loc: ev.loc, t: fill(st, ev.t), n: st.n,
+    id: ev.id, day: st.day, ph: ev.ph, loc: ev.loc, fx: ev.fx || null, t: fill(st, ev.t), n: st.n,
     choices: st.cur.vis.map((i) => { const c = ev.c[i]; return { i, t: fill(st, c.t), task: c.task || null, need: needLabel(c.need) }; }),
     task: st.cur.task ? publicTask(st.cur.task) : null,
   };
@@ -161,19 +161,21 @@ function resolve(st, outs) {
   for (const it of e.add || []) if (ITEMS[it] && !st.items[it]) st.items[it] = 1;
   for (const it of e.rm || []) delete st.items[it];
   if (e.flag) st.flags[e.flag] = 1;
+  if (e.garden) st.flags.garden = 1;
   if (e.trust) for (const c of alive(st)) c.trust = clamp(c.trust + e.trust, 0, 100);
   if (e.join) {
     const role = e.join.replace("!", ""), bitten = e.join.endsWith("!");
     if (alive(st).length >= 3) notes.push(`${COMPS[role].n}은(는) 자리가 없어 따로 가기로 했다.`);
-    else { st.comps.push({ id: `${role}${st.comps.length}`, role, trust: 60, alive: true, bitten: bitten ? st.day + 1 + Math.floor(rnd(st) * 3) : 0 }); notes.push(`${COMPS[role].ic} ${COMPS[role].n} 합류!`); }
+    else { st.comps.push({ id: `${role}${st.comps.length}`, role, trust: 60, alive: true, bitten: bitten ? st.day + 1 + Math.floor(rnd(st) * 3) : 0 }); notes.push(`${COMPS[role].ic} ${COMPS[role].n} 합류!`); keyEvent(st, COMPS[role].ic, `${COMPS[role].n} 합류`); }
   }
   if (e.leave) { const a = alive(st).sort((x, y) => x.trust - y.trust)[0]; if (a) { a.alive = false; notes.push(`${COMPS[a.role].n}이(가) 떠났다.`); } }
   if (e.check) {
     const b = alive(st).find((c) => c.bitten);
-    if (b) { b.alive = false; st.san = clamp(st.san - 12, 0, 100); msg = `${COMPS[b.role].n}의 팔에 이빨 자국이 있었다. 한참 울더니 스스로 떠났다. 문을 잠갔다.`; }
+    if (b) { b.alive = false; st.san = clamp(st.san - 12, 0, 100); msg = `${COMPS[b.role].n}의 팔에 이빨 자국이 있었다. 한참 울더니 스스로 떠났다. 문을 잠갔다.`; keyEvent(st, "🦷", `${COMPS[b.role].n}의 물린 자국 발견`); }
     else { for (const c of alive(st)) c.trust = clamp(c.trust - 12, 0, 100); msg = "아무 상처도 없었다. 괜히 의심해서 미안하다. 분위기가 싸해졌다."; }
   }
-  if (st.cur.comp && ev.id === FORCED.turn.id) { const t = st.comps.find((c) => c.id === st.cur.comp); if (t) t.alive = false; }
+  if (st.cur.comp && ev.id === FORCED.turn.id) { const t = st.comps.find((c) => c.id === st.cur.comp); if (t) { t.alive = false; keyEvent(st, "🧟", `${COMPS[t.role].n}이(가) 좀비로 변함`); } }
+  const hadContact = !!st.flags.contact, hadEvac = !!st.flags.evac, hpBefore = st.hp;
   if (e.hp) {
     if (e.hp < 0) {
       let k = 1;
@@ -186,7 +188,14 @@ function resolve(st, outs) {
     } else st.hp = Math.min(100, st.hp + e.hp);
   }
   if (o.kill) { st.hp = 0; st.lastCause = fill(st, o.kill); }
+  if (st.hp > 0 && st.hp < 20 && hpBefore >= 20 && !st.flags._near) { st.flags._near = 1; keyEvent(st, "💔", `체력 ${Math.round(st.hp)} — 죽을 뻔했다`); }
   if (st.hp > 0 && st.hp < 30 && st.items.medkit) { st.hp = Math.min(100, st.hp + 35); delete st.items.medkit; notes.push("🩹 구급상자로 응급처치했다 (+35)"); }
+  if (!hadContact && st.flags.contact) keyEvent(st, "📻", "군 무전 교신 성공");
+  if (!hadEvac && st.flags.evac) keyEvent(st, "🚁", "30일째 구조 약속을 받음");
+  if (e.garden) keyEvent(st, "🥬", "옥상 텃밭을 가꾸기 시작");
+  if (ev.id === FORCED.horde.id && st.hp > 0) keyEvent(st, "🪵", "밤새 몰려온 무리를 버텨 냄");
+  if (ev.id === "m_day10") keyEvent(st, "🔟", "10일째 생존");
+  if (ev.id === "m_day20") keyEvent(st, "🎖️", "20일째 생존");
   if (e.rescued) st.over = { rescued: true };
   logLine(st, msg);
   const out = { m: msg, ev: ev.id, notes, d: { hp: Math.round(st.hp - before.hp), food: r1(st.food - before.food), noise: Math.round(st.noise - before.noise), san: Math.round(st.san - before.san) } };
@@ -199,6 +208,8 @@ function resolve(st, outs) {
   }
   return { out, report, scene: publicScene(st), st: publicState(st), over: st.over ? overInfo(st) : null };
 }
+// 생존 타임라인: 결과창에 날짜별로 보여 줄 큰 사건 (최대 14개)
+function keyEvent(st, ic, t) { st.keys ||= []; if (st.keys.length < 14) st.keys.push({ d: st.day, ic, t }); }
 function logLine(st, m) { if (m) { st.log.push({ d: st.day, m }); if (st.log.length > 60) st.log.shift(); } }
 function checkDeath(st) {
   if (st.over) return;
@@ -208,7 +219,7 @@ function checkDeath(st) {
 
 // ---------- 하루 정리 ----------
 export function foodNeed(st) {
-  let need = 0.75; for (const c of alive(st)) need += COMPS[c.role].food * 0.75;
+  let need = 0.85; for (const c of alive(st)) need += COMPS[c.role].food * 0.8;
   if (alive(st).some((c) => c.role === "cook")) need *= 0.8;
   return need;
 }
@@ -221,18 +232,19 @@ export function endDay(st) {
     st.hp = Math.min(100, st.hp + heal);
     lines.push(`🍚 식량 ${r1(need)}일치를 먹었다${heal > 3 ? ` · 🧑‍⚕️ 치료 +${heal}` : ""}`);
   } else {
-    st.food = 0; st.starve++;
+    st.food = 0; st.starve++; if (st.starve === 1) keyEvent(st, "🍽️", "처음으로 굶음");
     st.hp -= 10; st.san = clamp(st.san - 5, 0, 100);
     for (const c of alive(st)) c.trust = clamp(c.trust - 8, 0, 100);
     lines.push("😵 먹을 게 모자랐다 (체력 -10, 정신력 -5)");
     if (st.hp <= 0) st.lastCause = STARVE_CAUSES[(st.seed + st.day) % STARVE_CAUSES.length];
   }
+  if (st.flags.garden) { st.food = r1(st.food + 0.2); lines.push("🥬 옥상 텃밭에서 채소를 땄다 (+0.2일)"); }
   let san = -1; for (const c of alive(st)) san += COMPS[c.role].san || 0;
   if (!alive(st).length) san -= 1;
   st.san = clamp(st.san + san, 0, 100);
   let nz = -12; for (const c of alive(st)) nz += COMPS[c.role].noise || 0;
   st.noise = clamp(st.noise + nz, 0, 100);
-  for (const c of alive(st)) if (c.trust < 15) { c.alive = false; lines.push(`🚪 ${COMPS[c.role].n}이(가) 말없이 떠났다`); }
+  for (const c of alive(st)) if (c.trust < 15) { c.alive = false; lines.push(`🚪 ${COMPS[c.role].n}이(가) 말없이 떠났다`); keyEvent(st, "🚪", `${COMPS[c.role].n}이(가) 떠남`); }
   st.noiseSum += st.noise;
   checkDeath(st);
   if (!st.over) {
@@ -307,6 +319,27 @@ export function makeTask(st, kind, d) {
     const opts = [...a.steps.map((s, i) => ({ s, ord: i })), ...(d >= 2 ? a.bad.slice(0, d - 1).map((s) => ({ s, ord: -1 })) : [])];
     return { kind, n: a.n, opts: shuffle(st, opts).map((o, i) => ({ id: i, s: o.s, ord: o.ord })), steps: a.steps.length, lim: [18000, 15000, 13000][d - 1] };
   }
+  if (kind === "crank") {   // 발전기: 막대를 초록 칸에 유지 (탭 1번 = +충전, 시간마다 내려감)
+    const lo = [0.45, 0.5, 0.55][d - 1], hi = lo + [0.3, 0.24, 0.18][d - 1];
+    return { kind, dur: 10000, band: [r1(lo * 100) / 100, r1(hi * 100) / 100], push: [0.075, 0.07, 0.065][d - 1], decay: [0.32, 0.36, 0.42][d - 1], lim: 15000 };
+  }
+  if (kind === "throw") {   // 깡통 던지기: 포물선 착지점이 목표 칸 안 (서버가 같은 공식으로 다시 계산)
+    const c = Math.round((55 + rnd(st) * 30) * 10) / 10, w = [14, 10, 7][d - 1];
+    return { kind, target: [r1(c - w / 2), r1(c + w / 2)], tries: [3, 2, 2][d - 1], wind: d >= 2 ? r1((rnd(st) - 0.5) * 6) : 0, lim: 25000 };
+  }
+  if (kind === "spot") {    // 감염자 찾기: 12명 중 감염 징후가 있는 사람만
+    const n = 12, inf = [2, 3, 4][d - 1], tellsAll = ["pale", "limp", "bandage", "eyes"], who = new Set(shuffle(st, [...Array(n).keys()]).slice(0, inf));
+    const people = [...Array(n).keys()].map((i) => {
+      const z = who.has(i), tells = z ? shuffle(st, tellsAll.slice()).slice(0, d === 3 ? 1 : 2) : (rnd(st) < 0.25 ? [["bandage", "limp"][Math.floor(rnd(st) * 2)]] : []);   // 사람도 다쳐서 붕대·절뚝 (헷갈리게) — 감염자는 창백·하얀 눈 중 하나는 꼭
+      if (z && !tells.some((t) => t === "pale" || t === "eyes")) tells[0] = rnd(st) < 0.5 ? "pale" : "eyes";
+      return { z, tells, skin: Math.floor(rnd(st) * 3), shirt: Math.floor(rnd(st) * 6), hair: Math.floor(rnd(st) * 4) };
+    });
+    return { kind, people, inf, lim: [22000, 18000, 15000][d - 1] };
+  }
+  if (kind === "lockpick") { // 자물쇠: 누르는 동안 픽이 돌고, 떨림 구간에서 놓기 × 핀 3개
+    const pins = Array.from({ length: 3 }, () => ({ a: Math.round(25 + rnd(st) * 130), w: [16, 12, 9][d - 1] }));
+    return { kind, pins, speed: [70, 85, 100][d - 1], lim: 25000 };
+  }
   if (kind === "escape") {
     const n = [3, 4, 5][d - 1], jx = [];
     for (let k = 0; k < n; k++) {
@@ -327,7 +360,17 @@ export function publicTask(tk) {
   if (s.kind === "radio") return { ...base, peaks: s.peaks, width: s.width };
   if (s.kind === "aid") return { ...base, n: s.n, steps: s.steps, opts: s.opts.map((o) => ({ id: o.id, s: o.s })) };
   if (s.kind === "escape") return { ...base, per: s.per, jx: s.jx.map((ways) => ways.map((w) => ({ clue: w.clue }))) };
+  if (s.kind === "crank") return { ...base, dur: s.dur, band: s.band, push: s.push, decay: s.decay };
+  if (s.kind === "throw") return { ...base, target: s.target, tries: s.tries, wind: s.wind, g: THROW_G };
+  if (s.kind === "spot") return { ...base, inf: s.inf, people: s.people.map((p) => ({ tells: p.tells, skin: p.skin, shirt: p.shirt, hair: p.hair })) };
+  if (s.kind === "lockpick") return { ...base, pins: s.pins, speed: s.speed };
   return base;
+}
+// 깡통 던지기 물리 — 화면(tasks.js)과 같은 공식. 각도(도)·힘(0~1)·바람 → 착지 거리(m)
+export const THROW_G = 9.8;
+export function throwDist(angle, power, wind = 0) {
+  const v = 12 + power * 22, a = (angle * Math.PI) / 180, t = (2 * v * Math.sin(a)) / THROW_G;
+  return v * Math.cos(a) * t + wind * t;
 }
 function knap(items, cap) { const dp = new Array(cap + 1).fill(0); for (const it of items) for (let c = cap; c >= it.w; c--) dp[c] = Math.max(dp[c], dp[c - it.w] + it.v); return dp[cap]; }
 export function judgeTask(s, res, ms) {
@@ -371,6 +414,36 @@ export function judgeTask(s, res, ms) {
     const score = late ? Math.min(0.3, k / s.steps) : clamp(k / s.steps - mis * 0.2, 0, 1);
     return { score, reveal: { done: k, mis, order: s.opts.filter((o) => o.ord >= 0).sort((a, b) => a.ord - b.ord).map((o) => o.s) } };
   }
+  if (s.kind === "crank") {
+    const inBand = clamp(Number(res.inBand) || 0, 0, 1), over = clamp(Number(res.over) || 0, 0, 1);
+    if (ms < s.dur - 500) return { score: 0, reveal: { fast: true } };
+    const score = clamp(inBand * 1.15 - over * 0.6, 0, 1);
+    return { score, reveal: { inBand: Math.round(inBand * 100), over: Math.round(over * 100) } };
+  }
+  if (s.kind === "throw") {
+    const shots = (Array.isArray(res.shots) ? res.shots : []).slice(0, s.tries).map((x) => ({ a: clamp(Number(x?.a) || 0, 5, 85), p: clamp(Number(x?.p) || 0, 0, 1) }));
+    if (ms < 800 * Math.max(1, shots.length)) return { score: 0, reveal: { target: s.target, lands: [] } };
+    const c = (s.target[0] + s.target[1]) / 2, half = (s.target[1] - s.target[0]) / 2;
+    const lands = shots.map((x) => r1(throwDist(x.a, x.p, s.wind)));
+    const hitAt = lands.findIndex((x) => x >= s.target[0] && x <= s.target[1]);
+    const best = lands.length ? Math.min(...lands.map((x) => Math.abs(x - c))) : 99;
+    const score = hitAt >= 0 ? (hitAt === 0 ? 1 : 0.8) : clamp(1 - (best - half) / 20, 0, 0.55);
+    return { score, reveal: { target: s.target, lands, hit: hitAt >= 0 } };
+  }
+  if (s.kind === "spot") {
+    const picks = [...new Set((Array.isArray(res.picks) ? res.picks : []).map((x) => x | 0))].filter((i) => i >= 0 && i < s.people.length).slice(0, s.people.length);
+    if (ms < 1500) return { score: 0, reveal: { zombies: s.people.map((p, i) => (p.z ? i : -1)).filter((i) => i >= 0) } };
+    const right = picks.filter((i) => s.people[i].z).length, wrong = picks.length - right;
+    const score = late ? Math.min(0.3, right / s.inf) : clamp(right / s.inf - wrong * 0.25, 0, 1);
+    return { score, reveal: { right, wrong, zombies: s.people.map((p, i) => (p.z ? i : -1)).filter((i) => i >= 0) } };
+  }
+  if (s.kind === "lockpick") {
+    const rel = (Array.isArray(res.rel) ? res.rel : []).slice(0, s.pins.length);
+    if (ms < s.pins.length * 500) return { score: 0, reveal: { pins: 0 } };
+    const per = s.pins.map((p, i) => { const v = Number(rel[i]); return Number.isFinite(v) && Math.abs(v - p.a) <= p.w / 2; });
+    const n = per.filter(Boolean).length;
+    return { score: late ? Math.min(0.3, n / 3) : n / s.pins.length, reveal: { pins: n, per } };
+  }
   if (s.kind === "escape") {
     const picks = Array.isArray(res.picks) ? res.picks.slice(0, s.jx.length) : [];
     if (ms < s.jx.length * 300) return { score: 0, reveal: { per: s.jx.map(() => false), safe: s.jx.map((w) => w.map((x) => x.safe)) } };
@@ -387,7 +460,7 @@ export function abilities(st) {
   const g = st.met.g, b = st.met.b, T = st.met.task;
   const judge = g.length ? ((g.reduce((s, x) => s + x, 0) + g.length) / (2 * g.length)) * 100 : 50;
   const tk = (ks) => { const v = ks.flatMap((k) => T[k] || []); return v.length ? avg(v) * 100 : null; };
-  const calm = tk(["sneak", "escape"]), hands = tk(["barricade", "aid", "radio"]), pack = tk(["pack"]);
+  const calm = tk(["sneak", "escape", "spot"]), hands = tk(["barricade", "aid", "radio", "crank", "throw", "lockpick"]), pack = tk(["pack"]);
   const days = Math.max(1, st.day);
   const supply = (pack ?? 55) * 0.6 + (1 - Math.min(1, st.starve / Math.max(3, days * 0.5))) * 40;
   const bond = clamp(50 + (b.length >= 2 ? (45 * b.reduce((s, x) => s + x, 0)) / Math.max(4, b.length) : 0) + alive(st).length * 4, 0, 100);
@@ -428,7 +501,7 @@ export function titlesOf(st, typeId) {
   return out;
 }
 // 이번 판 행동을 근거로 한 맞춤 분석 (실제 기록으로만 문장을 만듦)
-const TASK_KO = { pack: "배낭 싸기", barricade: "바리케이드", sneak: "몰래 지나가기", radio: "무전 맞추기", aid: "응급처치", escape: "도망 길 고르기" };
+const TASK_KO = { pack: "배낭 싸기", barricade: "바리케이드", sneak: "몰래 지나가기", radio: "무전 맞추기", aid: "응급처치", escape: "도망 길 고르기", crank: "발전기 돌리기", throw: "깡통 던지기", spot: "감염자 찾기", lockpick: "자물쇠 따기" };
 const ABIL_KO = { judge: "판단력", calm: "침착함", hands: "손재주", supply: "자원 관리", bond: "동료애" };
 function analysisOf(st, ab) {
   const out = [], g = st.met.g, b = st.met.b, T = st.met.task;
@@ -467,6 +540,7 @@ export function diagnose(st) {
     analysis: analysisOf(st, ab),
     abil: ab, abilNames: ABIL, titles: titlesOf(st, typeId), score: scoreOf(st),
     diary: st.log.slice(-6).map((x) => ({ d: x.d, m: x.m })),
+    timeline: [{ d: 1, ic: "📱", t: "재난 문자 — 좀비 사태 시작" }, ...(st.keys || []), rescued ? { d: days, ic: "🚁", t: "구조 성공" } : { d: days, ic: "💀", t: cause }],
     graph: st.hist.map((h) => [h.d, h.hp, h.san, h.food]),
     comps: alive(st).map((c) => COMPS[c.role].n), lost: st.comps.filter((c) => !c.alive).map((c) => COMPS[c.role].n),
     items: Object.keys(st.items).map((k) => ITEMS[k].ic), starve: st.starve, choices: st.met.g.length,
