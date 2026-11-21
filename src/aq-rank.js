@@ -44,9 +44,12 @@ export function createRank(SA) {
   async function top(key) {
     if (!up()) return { ok: false, error: down ? "NOT_READY" : "NO_DB" };
     if (!board || Date.now() - boardAt > 20_000) {
-      const { data, error } = await SA.from(T).select("player_key, nickname, best, eats, games, best_at, guest_id").order("best", { ascending: false }).order("best_at", { ascending: true }).limit(TOP_N);
+      const { data, error } = await SA.from(T).select("player_key, user_id, nickname, best, eats, games, best_at, guest_id").order("best", { ascending: false }).order("best_at", { ascending: true }).limit(TOP_N);
       if (error) { if (!offline(error)) console.error("[aq-rank] top", error.message); return { ok: false, error: "BUSY" }; }
-      board = (data || []).map((r, i) => ({ rank: i + 1, name: r.nickname || "?", best: r.best, eats: r.eats, games: r.games, guest: !!r.guest_id, k: r.player_key })); boardAt = Date.now();
+      // 회원은 지금 프로필 닉네임·사진으로 (프로필이 항상 우선 — 닉네임을 바꾸면 랭킹도 바로 바뀜). 게스트는 저장된 이름
+      const ids = (data || []).map(r => r.user_id).filter(Boolean), prof = new Map();
+      if (ids.length) { try { const { data: ps } = await SA.from("profiles").select("id, nickname, avatar_url").in("id", ids); for (const p of ps || []) prof.set(p.id, p); } catch (e) { console.error("[aq-rank] profiles", e?.message || e); } }
+      board = (data || []).map((r, i) => { const p = r.user_id ? prof.get(r.user_id) : null; return { rank: i + 1, name: (p?.nickname || r.nickname || "?").slice(0, 20), avatar: p?.avatar_url || null, best: r.best, eats: r.eats, games: r.games, guest: !!r.guest_id, k: r.player_key }; }); boardAt = Date.now();
     }
     let me = null;
     if (validKey(key)) {

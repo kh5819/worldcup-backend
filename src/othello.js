@@ -4,6 +4,7 @@
 // · 혼자 AI(soloAi: 쉬움/보통/어려움) · 방 구조는 증강 체스(chess.js)와 같은 틀
 // =========================
 import { createFlight } from "./create-flight.js";
+import { typedNick } from "./nick-pref.js"; // 직접 적은 이름 우선 (2026-11-21)
 import { addPublicRooms } from "./public-rooms.js";
 import { OthelloGame, PICK_MS } from "./othello-game.js";
 import { AUGS, RARITY } from "./othello-augs.js";
@@ -151,7 +152,7 @@ function leave(io, room, uid) {
 }
 async function profileOf(supa, me, nick) {
   let name = cleanNick(nick), avatar = null;
-  if (!me.isGuest) { try { const { data } = await supa.from("profiles").select("nickname, avatar_url").eq("id", me.id).single(); if (data?.nickname) name = cleanNick(data.nickname); if (data?.avatar_url) avatar = data.avatar_url; } catch {} }
+  if (!me.isGuest) { try { const { data } = await supa.from("profiles").select("nickname, avatar_url").eq("id", me.id).single(); if (data?.nickname && !typedNick(nick)) name = cleanNick(data.nickname); if (data?.avatar_url) avatar = data.avatar_url; } catch {} }
   if (!name || name === "게스트") { let h = 0; for (const ch of String(me.id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; name = (me.isGuest ? "게스트" : "플레이어") + String(h % 1000).padStart(3, "0"); }
   return { name, avatar };
 }

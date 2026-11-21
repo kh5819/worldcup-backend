@@ -9,6 +9,7 @@
 // · 스트리머 모드: 방장이 켠 방에서만 후원 효과(정확한 금액만), 서버가 대상·조건 확인. admin 기록 contentMode "ttfe"
 // =========================
 import { createFlight } from "./create-flight.js";
+import { typedNick } from "./nick-pref.js"; // 직접 적은 이름 우선 (2026-11-21)
 import { addPublicList } from "./public-rooms.js";
 import { Game2048, AUGS, AUG, RARITY, KIND_LABEL, SYNERGY, MAX_AUGS, PICK_AT, seedFor } from "./ttfe-core.js";
 import { parseAmount, cleanDonor } from "./duowars-stream.js";
@@ -231,7 +232,7 @@ function leave(io, r, uid) {
 }
 async function profileOf(supa, me, nick) {
   let name = nick, avatar = null;
-  if (!me.isGuest) { try { const { data } = await supa.from("profiles").select("nickname, avatar_url").eq("id", me.id).single(); if (data?.nickname) name = data.nickname; if (data?.avatar_url) avatar = data.avatar_url; } catch {} }
+  if (!me.isGuest) { try { const { data } = await supa.from("profiles").select("nickname, avatar_url").eq("id", me.id).single(); if (data?.nickname && !typedNick(nick)) name = data.nickname; if (data?.avatar_url) avatar = data.avatar_url; } catch {} }
   let n = cleanNick(name, "");
   if (!n || n === "게스트") { let h = 0; for (const ch of String(me.id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; n = (me.isGuest ? "게스트" : "플레이어") + String(h % 1000).padStart(3, "0"); }
   return { name: n, avatar };

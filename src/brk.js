@@ -9,6 +9,7 @@
 // · 관전(아무 경기장이나 크게), 재접속(같은 아이디면 그대로), 스트리머 후원(방장이 켠 방만, admin 기록 contentMode "brick")
 // =========================
 import { createFlight } from "./create-flight.js";
+import { typedNick } from "./nick-pref.js"; // 직접 적은 이름 우선 (2026-11-21)
 import { addPublicList } from "./public-rooms.js";
 import { BrickGame, AUGS, RARITY, KIND_LABEL, SYNERGY, MAX_AUGS, CAPSULE, BOSS_NAME, TPS, seedFor } from "./brk-core.js";
 import { parseAmount, cleanDonor } from "./duowars-stream.js";
@@ -215,7 +216,7 @@ function leave(io, r, uid) {
 }
 async function profileOf(supa, me, nick) {
   let name = nick, avatar = null;
-  if (!me.isGuest) { try { const { data } = await supa.from("profiles").select("nickname, avatar_url").eq("id", me.id).single(); if (data?.nickname) name = data.nickname; if (data?.avatar_url) avatar = data.avatar_url; } catch {} }
+  if (!me.isGuest) { try { const { data } = await supa.from("profiles").select("nickname, avatar_url").eq("id", me.id).single(); if (data?.nickname && !typedNick(nick)) name = data.nickname; if (data?.avatar_url) avatar = data.avatar_url; } catch {} }
   let n = cleanNick(name, "");
   if (!n || n === "게스트") { let h = 0; for (const ch of String(me.id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; n = (me.isGuest ? "게스트" : "플레이어") + String(h % 1000).padStart(3, "0"); }
   return { name: n, avatar };

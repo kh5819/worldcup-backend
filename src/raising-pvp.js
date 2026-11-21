@@ -1,4 +1,5 @@
 import { createFlight } from "./create-flight.js";
+import { typedNick } from "./nick-pref.js"; // 직접 적은 이름 우선 (2026-11-21)
 import { addPublicRooms } from "./public-rooms.js";
 // =========================
 // 플듀 키우기 친구 대전 (1대1) — 서버
@@ -357,7 +358,7 @@ async function profileOf(supabaseAdmin, me, nick) {
     try {
       const { data } = await supabaseAdmin.from("profiles").select("nickname, avatar_url").eq("id", me.id).single();
       if (data?.avatar_url) avatar = data.avatar_url;
-      if (data?.nickname) nick = data.nickname;          // 프로필 닉네임 우선
+      if (data?.nickname && !typedNick(nick)) nick = data.nickname;          // 프로필 닉네임 우선
     } catch {}
   }
   return { nick: nick || (me.isGuest ? "게스트" : "감독"), avatar };

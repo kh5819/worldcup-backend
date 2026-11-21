@@ -6,6 +6,7 @@
 // · 이벤트 prefix 'onecard:*'
 // =========================
 import { createFlight } from "./create-flight.js";
+import { typedNick } from "./nick-pref.js"; // 직접 적은 이름 우선 (2026-11-21)
 import { addPublicRooms } from "./public-rooms.js";
 import { OneCardGame, DEFAULT_RULES, RULE_CHOICES, COLORS, COLOR_NAME, KIND_NAME } from "./onecard-game.js";
 import { META_AUGS, RARITY, KIND_LABEL, SYNERGY, MAX_AUGS, PICK_EVERY } from "./onecard-augs.js";
@@ -163,7 +164,7 @@ async function profileOf(supa, me, nick) {
   if (!me.isGuest) {
     try {
       const { data } = await supa.from("profiles").select("nickname, avatar_url").eq("id", me.id).single();
-      if (data?.nickname) name = data.nickname;
+      if (data?.nickname && !typedNick(nick)) name = data.nickname;
       if (data?.avatar_url) avatar = data.avatar_url;
     } catch {}
   }

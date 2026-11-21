@@ -7,6 +7,7 @@
 // · 보내기: 20Hz, 사람마다 관심 영역(내 화면 주변)만 — 몬스터·투사체·보석은 바이너리, 나머지 JSON. 소켓 쓰기가 밀리면 그 틱은 건너뜀
 // =========================
 import { createFlight } from "./create-flight.js";
+import { typedNick } from "./nick-pref.js"; // 직접 적은 이름 우선 (2026-11-21)
 import { addPublicList } from "./public-rooms.js";
 import { parseAmount, cleanDonor } from "./duowars-stream.js";
 import { World } from "./sva-sim.js";
@@ -237,7 +238,7 @@ function leave(io, r, uid) {
 }
 async function profileOf(supa, me, nick) {
   let name = nick, avatar = null;
-  if (!me.isGuest) { try { const { data } = await supa.from("profiles").select("nickname, avatar_url").eq("id", me.id).single(); if (data?.nickname) name = data.nickname; if (data?.avatar_url) avatar = data.avatar_url; } catch {} }
+  if (!me.isGuest) { try { const { data } = await supa.from("profiles").select("nickname, avatar_url").eq("id", me.id).single(); if (data?.nickname && !typedNick(nick)) name = data.nickname; if (data?.avatar_url) avatar = data.avatar_url; } catch {} }
   let n = cleanNick(name, "");
   if (!n || n === "게스트") { let h = 0; for (const ch of String(me.id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; n = (me.isGuest ? "게스트" : "플레이어") + String(h % 1000).padStart(3, "0"); }
   return { name: n, avatar };

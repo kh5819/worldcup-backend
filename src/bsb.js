@@ -7,6 +7,7 @@
 // · 50인 홈런더비: 내 타석은 나에게만, 전체 순위는 0.5초마다 가벼운 표로, 관전 대상만 자세히
 // =========================
 import { createFlight } from "./create-flight.js";
+import { typedNick } from "./nick-pref.js"; // 직접 적은 이름 우선 (2026-11-21)
 import { addPublicList } from "./public-rooms.js";
 import { parseAmount, cleanDonor } from "./duowars-stream.js";
 import { Derby, Match, Raid } from "./bsb-modes.js";
@@ -179,7 +180,7 @@ function leave(io, r, uid) {
 }
 async function profileOf(supa, me, nick) {
   let name = nick, avatar = null;
-  if (!me.isGuest) { try { const { data } = await supa.from("profiles").select("nickname, avatar_url").eq("id", me.id).single(); if (data?.nickname) name = data.nickname; if (data?.avatar_url) avatar = data.avatar_url; } catch {} }
+  if (!me.isGuest) { try { const { data } = await supa.from("profiles").select("nickname, avatar_url").eq("id", me.id).single(); if (data?.nickname && !typedNick(nick)) name = data.nickname; if (data?.avatar_url) avatar = data.avatar_url; } catch {} }
   let n = cleanNick(name, "");
   if (!n || n === "게스트") { let h = 0; for (const ch of String(me.id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; n = (me.isGuest ? "게스트" : "플레이어") + String(h % 1000).padStart(3, "0"); }
   return { name: n, avatar };
