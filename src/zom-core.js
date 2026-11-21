@@ -6,7 +6,9 @@
 // =========================
 import { ITEMS, COMPS, EVENTS, FORCED, TYPES, ABIL, DEFAULT_CAUSE, STARVE_CAUSES, MAD_CAUSES } from "./zom-data.js";
 
-export const CORE_VERSION = 1;
+export const CORE_VERSION = 2;
+// 난이도 (11-21 사용자 "3명 다 30일 클리어, 너무 쉽다" → 사람처럼 고르는 봇 기준으로 맞춤, scripts/sim-zom-smart.mjs)
+export const TUNE = { dmg: 1.3, dmgDay: 0.02, heal: 1, san: 2, sanLate: 5, night: 0.7, horde: 55, hordeFort: 70, noiseDecay: 10, food: 1.1 };
 export const MAX_DAY = 30;
 const EV = new Map(EVENTS.map((e) => [e.id, e]));
 for (const k of Object.keys(FORCED)) EV.set(FORCED[k].id, FORCED[k]);
@@ -75,9 +77,9 @@ export function nextScene(st) {
   // 밤: 물린 동료가 변함 → 소리 듣고 무리 → 밤 사건 / 조용한 밤
   const turner = alive(st).find((c) => c.bitten && c.bitten <= st.day);
   if (turner) return setScene(st, FORCED.turn.id, { comp: turner.id });
-  const hordeAt = st.flags.fort ? 80 : 65;
+  const hordeAt = st.flags.fort ? TUNE.hordeFort : TUNE.horde;
   if (st.noise >= hordeAt) return setScene(st, FORCED.horde.id);
-  if (rnd(st) < 0.55) {
+  if (rnd(st) < TUNE.night) {
     const pool = EVENTS.filter((e) => e.ph === "night" && st.day >= e.min && st.day <= e.max && cond(st, e.need));
     let fresh = pool.filter((e) => !st.used[e.id]); if (!fresh.length) fresh = pool;
     if (fresh.length) return setScene(st, pickW(st, fresh).id);
@@ -178,7 +180,7 @@ function resolve(st, outs) {
   const hadContact = !!st.flags.contact, hadEvac = !!st.flags.evac, hpBefore = st.hp;
   if (e.hp) {
     if (e.hp < 0) {
-      let k = 1;
+      let k = TUNE.dmg * (1 + Math.max(0, st.day - 10) * TUNE.dmgDay);   // 날이 갈수록 좀비가 세짐
       if (st.items.bat) k *= 0.8;
       if (alive(st).some((c) => COMPS[c.role].dmg)) k *= COMPS.fighter.dmg;
       if (ev.ph === "night" && st.flags.fort) k *= 0.85;
@@ -221,16 +223,16 @@ function checkDeath(st) {
 export function foodNeed(st) {
   let need = 0.85; for (const c of alive(st)) need += COMPS[c.role].food * 0.8;
   if (alive(st).some((c) => c.role === "cook")) need *= 0.8;
-  return need;
+  return need * TUNE.food;
 }
 export function endDay(st) {
   const lines = [];
   const need = foodNeed(st);
   if (st.food + 1e-9 >= need) {
     st.food = r1(st.food - need);
-    let heal = 3; for (const c of alive(st)) heal += COMPS[c.role].heal || 0;
+    let heal = TUNE.heal; for (const c of alive(st)) heal += COMPS[c.role].heal || 0;
     st.hp = Math.min(100, st.hp + heal);
-    lines.push(`🍚 식량 ${r1(need)}일치를 먹었다${heal > 3 ? ` · 🧑‍⚕️ 치료 +${heal}` : ""}`);
+    lines.push(`🍚 식량 ${r1(need)}일치를 먹었다${heal > TUNE.heal ? ` · 🧑‍⚕️ 치료 +${heal}` : ""}`);
   } else {
     st.food = 0; st.starve++; if (st.starve === 1) keyEvent(st, "🍽️", "처음으로 굶음");
     st.hp -= 10; st.san = clamp(st.san - 5, 0, 100);
@@ -239,10 +241,10 @@ export function endDay(st) {
     if (st.hp <= 0) st.lastCause = STARVE_CAUSES[(st.seed + st.day) % STARVE_CAUSES.length];
   }
   if (st.flags.garden) { st.food = r1(st.food + 0.2); lines.push("🥬 옥상 텃밭에서 채소를 땄다 (+0.2일)"); }
-  let san = -1; for (const c of alive(st)) san += COMPS[c.role].san || 0;
+  let san = -(st.day >= 15 ? TUNE.sanLate : TUNE.san); for (const c of alive(st)) san += COMPS[c.role].san || 0;
   if (!alive(st).length) san -= 1;
   st.san = clamp(st.san + san, 0, 100);
-  let nz = -12; for (const c of alive(st)) nz += COMPS[c.role].noise || 0;
+  let nz = -TUNE.noiseDecay; for (const c of alive(st)) nz += COMPS[c.role].noise || 0;
   st.noise = clamp(st.noise + nz, 0, 100);
   for (const c of alive(st)) if (c.trust < 15) { c.alive = false; lines.push(`🚪 ${COMPS[c.role].n}이(가) 말없이 떠났다`); keyEvent(st, "🚪", `${COMPS[c.role].n}이(가) 떠남`); }
   st.noiseSum += st.noise;
