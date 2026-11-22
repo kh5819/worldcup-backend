@@ -9,15 +9,19 @@
 import crypto from "crypto";
 import { Game2048 } from "./ttfe-core.js";
 import { BrickGame, TPS } from "./brk-core.js";
+import { JellyGame } from "./jelly-core.js"; // 증강 젤리 매치 (2026-11-22, 표 jelly_scores)
 
 const TOP = 50;
 const GUEST_RE = /^guest_[a-z0-9]{6,30}$/;
-const KINDS = { ttfe: { 0: "endless", 180: "t180", 300: "t300" }, brick: { 0: "endless", 300: "t300" } };
-const TABLE = { ttfe: "ttfe_scores", brick: "brick_scores" };
-const COLS = { ttfe: "nickname, user_id, guest_id, score, max_tile, moves, augs, source, plays, updated_at", brick: "nickname, user_id, guest_id, score, stage, boss_kills, max_combo, augs, source, plays, updated_at" };
+const KINDS = { ttfe: { 0: "endless", 180: "t180", 300: "t300" }, brick: { 0: "endless", 300: "t300" }, jelly: { 0: "m30", 120: "t120" } };
+const TABLE = { ttfe: "ttfe_scores", brick: "brick_scores", jelly: "jelly_scores" };
+const COLS = { ttfe: "nickname, user_id, guest_id, score, max_tile, moves, augs, source, plays, updated_at", brick: "nickname, user_id, guest_id, score, stage, boss_kills, max_combo, augs, source, plays, updated_at", jelly: "nickname, user_id, guest_id, score, max_chain, moves, augs, source, plays, updated_at" };
 let SA = null, SECRET = null;
 export const boardOf = (game, mode, time) => { const k = KINDS[game]?.[Number(time) || 0]; return k ? `${mode === "classic" ? "classic" : "augment"}_${k}` : null; };
-const validBoard = (game, b) => typeof b === "string" && Object.values(KINDS[game] || {}).some(k => b === "classic_" + k || b === "augment_" + k);
+const validBoard = (game, b) => typeof b === "string" && (Object.values(KINDS[game] || {}).some(k => b === "classic_" + k || b === "augment_" + k) || (game === "jelly" && /^daily_\d{8}$/.test(b)));
+// 젤리 매치 오늘의 도전: 한국 날짜마다 모두 같은 씨앗 (증강·이동 30번), 같은 표에 board "daily_YYYYMMDD"로 (11-22)
+const kstDay = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10).replace(/-/g, "");
+export const dailySeed = (day) => (crypto.createHash("sha256").update("jelly-daily:" + day).digest().readUInt32BE(0) % 2147483646) + 1;
 const cleanName = (s) => String(s || "").replace(/[\u0000-\u001f<>​-‏‪-‮﻿]/g, "").trim().slice(0, 14);
 
 // ---------- 서명한 시작 표 (서버가 다시 켜져도 유효, 위조 불가) ----------
@@ -58,12 +62,18 @@ export async function recordMulti(game, mode, time, players) {
     await saveBest(game, board, entries);
   } catch (e) { console.error("[rank] multi", e); }
 }
-const extraOf = (game, p) => game === "ttfe" ? { max_tile: p.max | 0, moves: p.moves | 0 } : { stage: p.stage | 0, boss_kills: p.boss | 0, max_combo: p.combo | 0 };
+const extraOf = (game, p) => game === "ttfe" ? { max_tile: p.max | 0, moves: p.moves | 0 } : game === "jelly" ? { max_chain: p.max | 0, moves: p.moves | 0 } : { stage: p.stage | 0, boss_kills: p.boss | 0, max_combo: p.combo | 0 };
 
 // ---------- 다시 돌리기 ----------
 function replay2048(run, ops) {
   if (!Array.isArray(ops) || ops.length > 60000) return { error: "BAD_LOG" };
   const g = new Game2048({ seed: run.seed, mode: run.mode, timed: run.time > 0 });
+  for (const op of ops) { if (!Array.isArray(op)) return { error: "BAD_LOG" }; const r = g.apply(op.slice(0, 4)); if (!r.ok) return { error: "BAD_OP" }; }
+  return { g, n: ops.length };
+}
+function replayJelly(run, ops) {
+  if (!Array.isArray(ops) || ops.length > 20000) return { error: "BAD_LOG" };
+  const g = new JellyGame({ seed: run.seed, mode: run.mode, timed: run.time > 0 });
   for (const op of ops) { if (!Array.isArray(op)) return { error: "BAD_LOG" }; const r = g.apply(op.slice(0, 4)); if (!r.ok) return { error: "BAD_OP" }; }
   return { g, n: ops.length };
 }
@@ -91,11 +101,12 @@ export function registerGameRank(app, supabaseAdmin, { getOptionalUser }) {
     const gid = String(body?.guestId || ""); if (!GUEST_RE.test(gid)) return null;
     return { key: gid, userId: null, guestId: gid, nickname: cleanName(body?.nickname) || null }; // 이름을 안 보내면 저장된 이름 유지
   };
-  for (const game of ["ttfe", "brick"]) {
-    const P = game === "ttfe" ? "/ttfe" : "/brick";
+  for (const game of ["ttfe", "brick", "jelly"]) {
+    const P = "/" + game;
     // 혼자 하기 시작: 시드 발급
     app.post(`${P}/solo/start`, (req, res) => {
       if (tooMany(req, 40)) return res.status(429).json({ ok: false, error: "TOO_FAST" });
+      if (game === "jelly" && req.body?.daily) { const day = kstDay(), run = { g: game, seed: dailySeed(day), mode: "augment", time: 0, at: Date.now(), board: "daily_" + day }; return res.json({ ok: true, seed: run.seed, token: sign(run), board: run.board, day }); }
       const mode = req.body?.mode === "classic" ? "classic" : "augment", time = Number(req.body?.time) || 0;
       if (!(String(time) in KINDS[game])) return res.status(400).json({ ok: false, error: "BAD_TIME" });
       const run = { g: game, seed: crypto.randomInt(1, 2 ** 31), mode, time, at: Date.now() };
@@ -113,13 +124,18 @@ export function registerGameRank(app, supabaseAdmin, { getOptionalUser }) {
           r = replay2048(run, req.body?.log); if (r.error) return res.status(400).json({ ok: false, error: r.error });
           if (r.n > elapsed / 1000 * 25 + 60) return res.status(400).json({ ok: false, error: "TOO_FAST_PLAY" });          // 사람 속도 넘음
           if (run.time > 0 && elapsed > (run.time + (r.g.timeBonus || 0) + 20) * 1000) return res.status(400).json({ ok: false, error: "OVER_TIME" }); // 타임어택은 시작부터 (제한 시간 + 시간 확장 + 20초) 안에 끝나야 함
+        } else if (game === "jelly") {
+          r = replayJelly(run, req.body?.log); if (r.error) return res.status(400).json({ ok: false, error: r.error });
+          if (r.n > elapsed / 1000 * 8 + 40) return res.status(400).json({ ok: false, error: "TOO_FAST_PLAY" });           // 매치3는 한 수에 연출이 있어 1초 8조작이면 충분
+          if (run.time > 0 && elapsed > (run.time + (r.g.timeBonus || 0) + 20) * 1000) return res.status(400).json({ ok: false, error: "OVER_TIME" });
+          if (run.time === 0 && r.g.alive) return res.status(400).json({ ok: false, error: "NOT_FINISHED" });            // 이동 모드는 이동을 다 써야 기록
         } else {
           r = await replayBrick(run, req.body?.log); if (r.error) return res.status(400).json({ ok: false, error: r.error });
           if (r.n > elapsed / (1000 / TPS) + 240) return res.status(400).json({ ok: false, error: "TOO_FAST_PLAY" });     // 실제 시간보다 빨리 돌림
           if (run.time > 0 && (r.g.playT || 0) > run.time * TPS + 30) return res.status(400).json({ ok: false, error: "OVER_TIME" }); // 제한 시간 넘게 플레이
         }
-        const g = r.g, board = boardOf(game, run.mode, run.time);
-        const p = game === "ttfe" ? { score: g.score, max: g.maxTile, moves: g.moves } : { score: g.score, stage: g.stage, boss: g.kills.boss, combo: g.maxCombo };
+        const g = r.g, board = (game === "jelly" && /^daily_\d{8}$/.test(run.board || "")) ? run.board : boardOf(game, run.mode, run.time);
+        const p = game === "ttfe" || game === "jelly" ? { score: g.score, max: g.maxTile, moves: g.moves } : { score: g.score, stage: g.stage, boss: g.kills.boss, combo: g.maxCombo };
         if (p.score <= 0) return res.json({ ok: true, score: 0, board });
         const [o] = await saveBest(game, board, [{ ...me, score: p.score, best: { ...extraOf(game, p), augs: g.augs.map(a => a.id).slice(0, 8), source: "solo" } }]);
         const best = o?.best ?? p.score;

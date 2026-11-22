@@ -68,6 +68,7 @@ import { registerOthello } from "./othello.js"; // 플듀 증강 오셀로 (2026
 import { registerOneCard } from "./onecard.js"; // DUO 증강 원카드 (2026-11-17)
 import { registerFlick } from "./flick.js"; // DUO 증강 알까기 (2026-11-17)
 import { registerTtfe } from "./ttfe.js"; // DUO 증강 2048 (2026-11-18)
+import { registerJelly } from "./jelly.js"; // DUO 증강 젤리 매치 (2026-11-22)
 import { registerBrick } from "./brk.js"; // DUO 증강 벽돌깨기 (2026-11-18)
 import { registerBaseball } from "./bsb.js"; // DUO 플듀 베이스볼 (2026-11-19)
 import { registerSurvival } from "./sva.js"; // DUO 증강 서바이벌 아레나 (2026-11-20)
@@ -11195,6 +11196,7 @@ registerOthello(io, supabaseAdmin); // 플듀 증강 오셀로
 registerOneCard(io, supabaseAdmin); // DUO 증강 원카드
 registerFlick(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO 증강 알까기 (스트리머 후원: 대전쟁과 같은 연결 함수, 키 "dw_fl_코드", admin 기록 contentMode "flick")
 registerTtfe(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO 증강 2048 (1~50인, 스트리머 후원 키 "dw_tt_코드", admin 기록 contentMode "ttfe")
+registerJelly(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO 증강 젤리 매치 (1~50인, 후원 키 "dw_jl_코드", admin 기록 contentMode "jelly")
 registerBrick(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO 증강 벽돌깨기 (1~50인, 후원 키 "dw_bk_코드", admin 기록 contentMode "brick")
 registerBaseball(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO 플듀 베이스볼 (홈런더비·투수VS타자·미니야구·보스레이드, 후원 키 "dw_bb_코드", admin 기록 contentMode "baseball")
 registerSurvival(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO 증강 서바이벌 아레나 (협동·개인전·팀전, 후원 키 "dw_sv_코드", admin 기록 contentMode "survival")
@@ -14845,7 +14847,7 @@ const chatBridges = new Map();
 
 // 스트리머 채팅연동 사용 로그 (운영자 admin 탭에서 확인) — 실패해도 게임 흐름엔 영향 없음
 // 콘텐츠(DB) 없이 쓰는 스트리머 모드(예: 그려봐)는 종류만 프론트가 알려 줌 — 허용 목록만 저장
-const STREAMER_LOG_MODES = { duowars: "플듀 대전쟁 스트리머 모드", sky: "증강 공중전 스트리머 모드", slot: "증강 슬롯 타워 스트리머 모드", wordchain: "플듀 끝말잇기 스트리머 모드", territory: "증강 땅따먹기 스트리머 모드", flick: "증강 알까기 스트리머 모드", ttfe: "증강 2048 스트리머 모드", brick: "증강 벽돌깨기 스트리머 모드", baseball: "플듀 베이스볼 스트리머 모드", survival: "증강 서바이벌 아레나 스트리머 모드", fish: "증강 물고기 키우기 스트리머 모드", draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", lifebc_don: "인생 방송국 후원 방송 모드", mafia: "플듀 마피아 스트리머 모드", ptest: "심리테스트 시청자 참여", bingo: "빙고 시청자 참여", raising: "플듀 키우기 스트리머 모드" };
+const STREAMER_LOG_MODES = { duowars: "플듀 대전쟁 스트리머 모드", sky: "증강 공중전 스트리머 모드", slot: "증강 슬롯 타워 스트리머 모드", wordchain: "플듀 끝말잇기 스트리머 모드", territory: "증강 땅따먹기 스트리머 모드", flick: "증강 알까기 스트리머 모드", ttfe: "증강 2048 스트리머 모드", jelly: "증강 젤리 매치 스트리머 모드", brick: "증강 벽돌깨기 스트리머 모드", baseball: "플듀 베이스볼 스트리머 모드", survival: "증강 서바이벌 아레나 스트리머 모드", fish: "증강 물고기 키우기 스트리머 모드", draw: "그려봐 스트리머 모드", omok: "오목 스트리머 모드", lifebc: "인생 방송국 스트리머 모드", lifebc_don: "인생 방송국 후원 방송 모드", mafia: "플듀 마피아 스트리머 모드", ptest: "심리테스트 시청자 참여", bingo: "빙고 시청자 참여", raising: "플듀 키우기 스트리머 모드" };
 async function _logStreamerChat({ platform, channelId, nickname, contentId, roomCode, hostUserId, hostNick, contentMode }) {
   try {
     if (!platform || !channelId) return; // 식별자 없으면 기록 안 함
