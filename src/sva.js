@@ -7,6 +7,7 @@
 // · 보내기: 20Hz, 사람마다 관심 영역(내 화면 주변)만 — 몬스터·투사체·보석은 바이너리, 나머지 JSON. 소켓 쓰기가 밀리면 그 틱은 건너뜀
 // =========================
 import { createFlight } from "./create-flight.js";
+import { logGameStreamer } from "./stream-log.js"; // 스트리머 모드 켜면 admin 기록 (11-22)
 import { typedNick } from "./nick-pref.js"; // 직접 적은 이름 우선 (2026-11-21)
 import { addPublicList } from "./public-rooms.js";
 import { parseAmount, cleanDonor } from "./duowars-stream.js";
@@ -485,6 +486,7 @@ export function registerSurvival(io, supabaseAdmin, hooks = {}) {
     socket.on("sva:stream", guard((pl, cb) => {
       const r = hostRoom(cb, { allowPlaying: true }); if (!r) return; const st = r.stream;
       if (typeof pl.on === "boolean") st.on = pl.on;
+      if (st.on) logGameStreamer("survival", r);
       if (pl.rules) { const next = { ...st.rules }; for (const k of STREAM_KINDS) if (pl.rules[k] !== undefined) { const v = parseAmount(Number(pl.rules[k])); if (v === null) return cb({ ok: false, error: "BAD_AMOUNT" }); next[k] = v; } if (new Set(Object.values(next)).size !== STREAM_KINDS.length) return cb({ ok: false, error: "DUP_AMOUNT" }); st.rules = next; }
       if (pl.targets) for (const k of STREAM_KINDS) if (STREAM_TARGETS.includes(pl.targets[k])) st.targets[k] = pl.targets[k];
       cb({ ok: true }); emitRoom(io, r);

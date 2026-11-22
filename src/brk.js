@@ -9,6 +9,7 @@
 // · 관전(아무 경기장이나 크게), 재접속(같은 아이디면 그대로), 스트리머 후원(방장이 켠 방만, admin 기록 contentMode "brick")
 // =========================
 import { createFlight } from "./create-flight.js";
+import { logGameStreamer } from "./stream-log.js"; // 스트리머 모드 켜면 admin 기록 (11-22)
 import { typedNick } from "./nick-pref.js"; // 직접 적은 이름 우선 (2026-11-21)
 import { addPublicList } from "./public-rooms.js";
 import { BrickGame, AUGS, RARITY, KIND_LABEL, SYNERGY, MAX_AUGS, CAPSULE, BOSS_NAME, TPS, seedFor } from "./brk-core.js";
@@ -408,6 +409,7 @@ export function registerBrick(io, supabaseAdmin, hooks = {}) {
     socket.on("brk:stream", guard((pl, cb) => {
       const r = hostRoom(cb, { allowPlaying: true }); if (!r) return; const st = r.stream;
       if (typeof pl.on === "boolean") st.on = pl.on;
+      if (st.on) logGameStreamer("brick", r);
       if (pl.rules) { const next = { ...st.rules }; for (const k of STREAM_KINDS) if (pl.rules[k] !== undefined) { const v = parseAmount(Number(pl.rules[k])); if (v === null) return cb({ ok: false, error: "BAD_AMOUNT" }); next[k] = v; } if (new Set(Object.values(next)).size !== STREAM_KINDS.length) return cb({ ok: false, error: "DUP_AMOUNT" }); st.rules = next; }
       if (pl.targets) for (const k of STREAM_KINDS) if (STREAM_TARGETS.includes(pl.targets[k])) st.targets[k] = pl.targets[k];
       cb({ ok: true }); emitRoom(io, r);

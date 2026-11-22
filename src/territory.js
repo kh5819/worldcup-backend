@@ -6,6 +6,7 @@
 // · 스트리머 모드: 치지직·씨미(공식)·SOOP 별풍선(비공식) 실제 후원 연동 + 방장 테스트 후원
 // =========================
 import { createFlight } from "./create-flight.js";
+import { logGameStreamer } from "./stream-log.js"; // 스트리머 모드 켜면 admin 기록 (11-22)
 import { typedNick } from "./nick-pref.js"; // 직접 적은 이름 우선 (2026-11-21)
 import { addPublicRooms } from "./public-rooms.js";
 import { TerritoryGame, HZ, PICK_MS } from "./territory-game.js";
@@ -248,6 +249,7 @@ export function registerTerritory(io, supabaseAdmin, hooks = {}) {
       if (typeof pl.share === "boolean") o.share = pl.share;
       if (typeof pl.respawn === "boolean") o.respawn = pl.respawn;
       if (typeof pl.stream === "boolean") o.stream = pl.stream;
+      if (o.stream) logGameStreamer("territory", room);
       if (DURS.includes(+pl.dur)) o.dur = +pl.dur;
       if (MAPS.includes(pl.map)) o.map = pl.map;
       if (pl.maxPlayers !== undefined) { const v = Math.min(20, Math.max(2, +pl.maxPlayers | 0)); if (v < room.members.size) return { ok: false, error: "BELOW_CURRENT" }; room.maxPlayers = v; }

@@ -9,6 +9,7 @@
 // · 스트리머 모드: 방장이 켠 방에서만 후원 효과(정확한 금액만), 서버가 대상·조건 확인. admin 기록 contentMode "ttfe"
 // =========================
 import { createFlight } from "./create-flight.js";
+import { logGameStreamer } from "./stream-log.js"; // 스트리머 모드 켜면 admin 기록 (11-22)
 import { typedNick } from "./nick-pref.js"; // 직접 적은 이름 우선 (2026-11-21)
 import { addPublicList } from "./public-rooms.js";
 import { Game2048, AUGS, AUG, RARITY, KIND_LABEL, SYNERGY, MAX_AUGS, PICK_AT, seedFor } from "./ttfe-core.js";
@@ -478,6 +479,7 @@ export function registerTtfe(io, supabaseAdmin, hooks = {}) {
       const r = hostRoom(cb, { allowPlaying: true }); if (!r) return;
       const st = r.stream;
       if (typeof pl.on === "boolean") st.on = pl.on;
+      if (st.on) logGameStreamer("ttfe", r);
       if (pl.rules) {
         const next = { ...st.rules };
         for (const k of STREAM_KINDS) if (pl.rules[k] !== undefined) { const v = parseAmount(Number(pl.rules[k])); if (v === null) return cb({ ok: false, error: "BAD_AMOUNT" }); next[k] = v; }

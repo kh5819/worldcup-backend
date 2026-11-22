@@ -15,6 +15,7 @@ import { createRank } from "./wd-rank.js";
 import { createProgress } from "./wd-progress.js";
 import { createDaily, todayKst, daySeed, seededRng, dailyRules } from "./wd-daily.js";
 import { createDictLookup } from "./wd-api.js";
+import { logGameStreamer } from "./stream-log.js";
 
 const rooms = new Map(), invites = new Map(), userRoom = new Map(), soloIpHits = new Map();
 export const WDS = { lobbyDc: 15_000, emptyTtl: 60_000, endedTtl: 10 * 60_000, maxSpect: 60, maxRoom: 8, tickMs: 100, sayRate: 8, typeGap: 70, soloPerSock: 60, soloPerIp: 200, viewerGap: 700 };
@@ -240,7 +241,7 @@ export function registerWordChain(io, supabaseAdmin, hooks = {}) {
       rooms.set(id, r); invites.set(r.inviteCode, id);
       const p = newSeat(me.id, name, { avatar, isGuest: me.isGuest, sockId: socket.id }); r.players.set(me.id, p); r.order.push(me.id);
       attach(io, socket, r, p); cb({ ok: true, code: r.inviteCode, me: me.id });
-      if (r.streamer) { r.players.set(VIEWER_ID, newSeat(VIEWER_ID, "📺 시청자", { viewer: true })); r.order.push(VIEWER_ID); r.stream.on = true; } // 스트리머 모드: 시청자 자리 켜고 시작
+      if (r.streamer) { r.players.set(VIEWER_ID, newSeat(VIEWER_ID, "📺 시청자", { viewer: true })); r.order.push(VIEWER_ID); r.stream.on = true; logGameStreamer("wordchain", r); } // 스트리머 모드: 시청자 자리 켜고 시작 (admin 기록)
       if (r.daily) { r.maxPlayers = 1; emitRoom(io, r); startGame(io, r); }
       else if (r.solo) { const n = Math.min(3, Math.max(1, Math.round(Number(pl.ai)) || 1)), lv = isAiLevel(pl.level) ? pl.level : "normal"; r.maxPlayers = n + 1; for (let k = 0; k < n; k++) addAi(r, lv); emitRoom(io, r); startGame(io, r); }
       else emitRoom(io, r);
@@ -313,7 +314,7 @@ export function registerWordChain(io, supabaseAdmin, hooks = {}) {
       const on = !!pl.on;
       if (on && !r.players.has(VIEWER_ID)) { if (seatsOf(r).length >= r.maxPlayers) return cb({ ok: false, error: "ROOM_FULL" }); r.players.set(VIEWER_ID, newSeat(VIEWER_ID, "📺 시청자", { viewer: true })); r.order.push(VIEWER_ID); }
       if (!on && r.players.has(VIEWER_ID)) removeSeat(r, VIEWER_ID);
-      r.stream.on = on; cb({ ok: true }); emitRoom(io, r);
+      r.stream.on = on; if (on) logGameStreamer("wordchain", r); cb({ ok: true }); emitRoom(io, r);
     }));
     socket.on("wd:streamLink", guard(async (pl, cb) => {
       const r = hostRoom(cb, { allowPlaying: true }); if (!r) return; if (!HOOKS.linkChat) return cb({ ok: false, error: "NO_LINKER" });

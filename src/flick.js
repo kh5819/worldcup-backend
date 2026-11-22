@@ -10,6 +10,7 @@
 // · 이벤트 prefix 'flick:*'
 // =========================
 import { createFlight } from "./create-flight.js";
+import { logGameStreamer } from "./stream-log.js"; // 스트리머 모드 켜면 admin 기록 (11-22)
 import { typedNick } from "./nick-pref.js"; // 직접 적은 이름 우선 (2026-11-21)
 import { addPublicRooms } from "./public-rooms.js";
 import { FlickGame, DEFAULT_OPTS, OPT_CHOICES, MAPS, SKINS, COLORS } from "./flick-game.js";
@@ -432,6 +433,7 @@ export function registerFlick(io, supabaseAdmin, hooks = {}) {
       if (room.soloAi) return cb({ ok: false, error: "SOLO_ROOM" });
       const st = room.stream;
       if (typeof pl.on === "boolean") st.on = pl.on;
+      if (st.on) logGameStreamer("flick", room);
       if (typeof pl.cheerShield === "boolean") st.cheerShield = pl.cheerShield;
       if (pl.rules) {
         const next = { ...st.rules };

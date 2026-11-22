@@ -7,6 +7,7 @@
 // · 50인 홈런더비: 내 타석은 나에게만, 전체 순위는 0.5초마다 가벼운 표로, 관전 대상만 자세히
 // =========================
 import { createFlight } from "./create-flight.js";
+import { logGameStreamer } from "./stream-log.js"; // 스트리머 모드 켜면 admin 기록 (11-22)
 import { typedNick } from "./nick-pref.js"; // 직접 적은 이름 우선 (2026-11-21)
 import { addPublicList } from "./public-rooms.js";
 import { parseAmount, cleanDonor } from "./duowars-stream.js";
@@ -383,6 +384,7 @@ export function registerBaseball(io, supabaseAdmin, hooks = {}) {
     socket.on("bsb:stream", guard((pl, cb) => {
       const r = hostRoom(cb, { allowPlaying: true }); if (!r) return; const st = r.stream;
       if (typeof pl.on === "boolean") st.on = pl.on;
+      if (st.on) logGameStreamer("baseball", r);
       if (pl.rules) { const next = { ...st.rules }; for (const k of STREAM_KINDS) if (pl.rules[k] !== undefined) { const v = parseAmount(Number(pl.rules[k])); if (v === null) return cb({ ok: false, error: "BAD_AMOUNT" }); next[k] = v; } if (new Set(Object.values(next)).size !== STREAM_KINDS.length) return cb({ ok: false, error: "DUP_AMOUNT" }); st.rules = next; }
       if (pl.targets) for (const k of STREAM_KINDS) if (STREAM_TARGETS.includes(pl.targets[k])) st.targets[k] = pl.targets[k];
       cb({ ok: true }); emitRoom(io, r);

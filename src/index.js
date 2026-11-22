@@ -75,6 +75,7 @@ import { registerAquarium } from "./aq.js"; // DUO 증강 물고기 키우기 (2
 import { registerSky } from "./sky.js"; // DUO 증강 공중전 (2026-11-21)
 import { registerSlot } from "./slot.js"; // DUO 증강 슬롯 타워 (2026-11-21)
 import { registerWordChain } from "./wd.js"; // 플듀 끝말잇기 (2026-11-21)
+import { setStreamLogger } from "./stream-log.js"; // 게임 스트리머 모드 켜면 admin 기록 (2026-11-22)
 import { registerTerritory } from "./territory.js"; // DUO TERRITORY 증강 땅따먹기 (2026-11-16)
 import { registerBomb } from "./bomb.js"; // DUO BOMB ARENA (2026-11-16)
 import { registerPublicRooms, addPublicList } from "./public-rooms.js";
@@ -11200,6 +11201,7 @@ registerSurvival(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkCha
 registerAquarium(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat({ ...o, contentMode: "fish" }), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO 증강 물고기 키우기 (1~50인 수조, 후원 키 "dw_aq_코드", admin 기록 contentMode "fish")
 registerSky(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat({ ...o, contentMode: "sky" }), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO 증강 공중전 (1~50인 하늘, 후원 키 "dw_sk_코드")
 registerSlot(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat({ ...o, contentMode: "slot" }), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO 증강 슬롯 타워 (혼자·오늘의 도전·1~50인 같은 씨앗 대결, 후원 키 "dw_st_코드")
+setStreamLogger((o) => _logStreamerChat(o)); // 게임 스트리머 모드: 방장이 켜는 순간 admin 「📺 스트리머」에 기록 (platform "game")
 registerWordChain(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat({ ...o, contentMode: "wordchain" }), unlinkChat: (k) => _dwUnlinkChat(k) }); // 플듀 끝말잇기 (혼자+AI·2~8인·시청자 채팅 자리, 채팅 연결 키 "dw_wd_코드")
 registerTerritory(io, supabaseAdmin, { linkChat: (o) => _dwLinkChat(o), unlinkChat: (k) => _dwUnlinkChat(k) }); // DUO TERRITORY (스트리머 후원: 대전쟁과 같은 연결 함수, 키 "dw_tr_코드")
 registerBomb(io, supabaseAdmin); // DUO BOMB ARENA
