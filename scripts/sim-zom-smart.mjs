@@ -17,6 +17,11 @@ function outVal(st, o) {
   if (e.add) v += e.add.length * 6; if (e.rm) v -= e.rm.length * 6;
   if (e.flag === "evac" || e.flag === "contact") v += 15; if (e.flag === "fort") v += 12; if (e.garden) v += 15;
   if (e.trust) v += e.trust * 0.3; if (e.leave) v -= 12;
+  // v3: 감염·겨울 (사람도 이 정도는 따짐)
+  if (e.inf) v -= st.flags.infected ? 5 : 35; if (e.cure && st.flags.infected) v += 40;
+  if (e.add?.includes("antibiotic")) v += st.flags.infected ? 30 : 8;
+  if (e.warm) v += e.warm * (st.day >= 14 ? 6 : 2); if (e.flag === "heat") v += st.day >= 12 ? 35 : 15;
+  if (e.rescued) v += 200;
   return v;
 }
 const avgOut = (st, outs) => { const t = outs.reduce((s, o) => s + (o.w || 1), 0) || 1; return outs.reduce((s, o) => s + outVal(st, o) * (o.w || 1), 0) / t; };

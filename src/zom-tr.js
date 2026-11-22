@@ -9,9 +9,10 @@ import B from "./zom-i18n-b.js";
 import C from "./zom-i18n-c.js";
 import Dd from "./zom-i18n-d.js";
 import E from "./zom-i18n-e.js";
+import { I18N3 } from "./zom-data3.js";
 
 const DICT = new Map();
-for (const d of [A, B, C, Dd, E]) for (const [k, v] of Object.entries(d)) DICT.set(k.trim(), v);
+for (const d of [A, B, C, Dd, E, I18N3]) for (const [k, v] of Object.entries(d)) DICT.set(k.trim(), v);
 const PATS = [...DICT.entries()].filter(([k]) => /\{[a-z]\}/.test(k)).map(([k, v]) => {
   const names = []; const src = k.replace(/[.*+?^$()|[\]\\]/g, "\\$&").replace(/\\?\{([a-z])\\?\}/g, (_, n) => { names.push(n); return "(.+?)"; });
   return { re: new RegExp(`^${src.replace(/\\\{|\\\}/g, "")}$`), names, v, lit: k.replace(/\{[a-z]\}/g, "").length };

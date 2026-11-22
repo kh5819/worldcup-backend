@@ -46,11 +46,12 @@ function publicRow(row, { owner = false } = {}) {
 async function percentile(mode, setKey, score) {
   if (!SB) return null;
   try {
-    let q = SB.from("zom_results").select("id", { count: "exact", head: true }).eq("mode", mode).eq("flagged", false);
+    // 11-22 CORE v3(어려워짐): 순위·상위 % 는 같은 난이도 기록끼리만 (옛 쉬운 기록은 내 기록엔 남음)
+    let q = SB.from("zom_results").select("id", { count: "exact", head: true }).eq("mode", mode).eq("flagged", false).gte("core_ver", C.CORE_VERSION);
     if (setKey) q = q.eq("set_key", setKey);
     const { count: all } = await q;
     if (!all || all < 20) return null;
-    let q2 = SB.from("zom_results").select("id", { count: "exact", head: true }).eq("mode", mode).eq("flagged", false).gt("score", score);
+    let q2 = SB.from("zom_results").select("id", { count: "exact", head: true }).eq("mode", mode).eq("flagged", false).gte("core_ver", C.CORE_VERSION).gt("score", score);
     if (setKey) q2 = q2.eq("set_key", setKey);
     const { count: better } = await q2;
     return Math.max(1, Math.round(((better || 0) / all) * 100));
@@ -352,6 +353,7 @@ export function registerZombie(io, supabaseAdmin, app, { getOptionalUser } = {})
       const hit = rankCache.get(ck); if (hit && now() - hit.at < 30000) return res.json(tx(hit.body, req.query.lang));
       let q = SB.from("zom_results").select("id, owner_key, user_id, nickname, avatar, avatar_url, days, rescued, score, cause, type_id, is_streamer, created_at").eq("mode", mode).eq("is_public", true).eq("flagged", false);
       if (setKey) q = q.eq("set_key", setKey);
+      q = q.gte("core_ver", C.CORE_VERSION); // 같은 난이도 기록끼리만
       if (board === "streamer") q = q.eq("is_streamer", true);
       const { data, error } = await q.order("score", { ascending: false }).order("created_at", { ascending: true }).limit(500);
       if (error) return res.status(500).json({ ok: false, error: "QUERY_FAIL" });

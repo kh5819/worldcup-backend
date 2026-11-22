@@ -6,9 +6,10 @@
 // =========================
 import { ITEMS, COMPS, EVENTS, FORCED, TYPES, ABIL, DEFAULT_CAUSE, STARVE_CAUSES, MAD_CAUSES } from "./zom-data.js";
 
-export const CORE_VERSION = 2;
-// 난이도 (11-21 사용자 "3명 다 30일 클리어, 너무 쉽다" → 사람처럼 고르는 봇 기준으로 맞춤, scripts/sim-zom-smart.mjs)
-export const TUNE = { dmg: 1.3, dmgDay: 0.02, heal: 1, san: 2, sanLate: 5, night: 0.7, horde: 55, hordeFort: 70, noiseDecay: 10, food: 1.1 };
+export const CORE_VERSION = 3;
+// 난이도 (11-21 사용자 "3명 다 30일 클리어, 너무 쉽다" → v2 / 11-22 "아직도 너무 쉬워"(운영 v2 11판 중 7판 구조) → v3)
+// v3: 자연 회복 없음 · 감염(매일 체력↓, 항생제·간호사) · 18일부터 겨울(장작·난로 없으면 매일 체력·정신력↓) · 마지막 날도 손 작업 시험
+export const TUNE = { dmg: 1.3, dmgDay: 0.015, heal: 1, san: 3, sanLate: 5, night: 0.72, horde: 50, hordeFort: 65, noiseDecay: 9, food: 1.1, coldDay: 18, coldHp: 2, coldSan: 1, infHp: 6, infSan: 2 };
 export const MAX_DAY = 30;
 const EV = new Map(EVENTS.map((e) => [e.id, e]));
 for (const k of Object.keys(FORCED)) EV.set(FORCED[k].id, FORCED[k]);
@@ -96,6 +97,8 @@ export function publicState(st) {
     items: Object.keys(st.items).filter((k) => st.items[k]).map((k) => ({ id: k, n: ITEMS[k].n, ic: ITEMS[k].ic, d: ITEMS[k].d })),
     comps: alive(st).map((c) => ({ id: c.id, role: c.role, n: COMPS[c.role].n, ic: COMPS[c.role].ic, d: COMPS[c.role].d, trust: Math.round(c.trust) })),
     contact: !!st.flags.contact, evac: !!st.flags.evac, fort: !!st.flags.fort,
+    hordeAt: st.flags.fort ? TUNE.hordeFort : TUNE.horde, // 화면 소음 막대 빨간 선 (서버 기준과 항상 같게)
+    infected: !!st.flags.infected, cold: st.day >= TUNE.coldDay && !st.flags.heat, coldIn: Math.max(0, TUNE.coldDay - st.day), warm: st.warm || 0, heat: !!st.flags.heat,
   };
 }
 export function publicScene(st) {
@@ -163,6 +166,9 @@ function resolve(st, outs) {
   for (const it of e.add || []) if (ITEMS[it] && !st.items[it]) st.items[it] = 1;
   for (const it of e.rm || []) delete st.items[it];
   if (e.flag) st.flags[e.flag] = 1;
+  if (e.inf && !st.flags.infected) { st.flags.infected = 1; st.infDays = 0; notes.push("🦠 감염됐다! 매일 열이 나고 체력이 줄어든다 (항생제나 간호사가 필요)"); keyEvent(st, "🦠", "감염됨"); }
+  if (e.cure && st.flags.infected) { st.flags.infected = 0; notes.push("💉 감염이 나았다"); keyEvent(st, "💉", "감염 치료"); }
+  if (e.warm) { st.warm = (st.warm || 0) + e.warm; notes.push(`🪵 장작 ${e.warm}일치를 모았다`); }
   if (e.garden) st.flags.garden = 1;
   if (e.trust) for (const c of alive(st)) c.trust = clamp(c.trust + e.trust, 0, 100);
   if (e.join) {
@@ -194,11 +200,12 @@ function resolve(st, outs) {
   if (st.hp > 0 && st.hp < 30 && st.items.medkit) { st.hp = Math.min(100, st.hp + 35); delete st.items.medkit; notes.push("🩹 구급상자로 응급처치했다 (+35)"); }
   if (!hadContact && st.flags.contact) keyEvent(st, "📻", "군 무전 교신 성공");
   if (!hadEvac && st.flags.evac) keyEvent(st, "🚁", "30일째 구조 약속을 받음");
+  if (e.flag === "heat") keyEvent(st, "🔥", "난로를 들여놓음");
   if (e.garden) keyEvent(st, "🥬", "옥상 텃밭을 가꾸기 시작");
   if (ev.id === FORCED.horde.id && st.hp > 0) keyEvent(st, "🪵", "밤새 몰려온 무리를 버텨 냄");
   if (ev.id === "m_day10") keyEvent(st, "🔟", "10일째 생존");
   if (ev.id === "m_day20") keyEvent(st, "🎖️", "20일째 생존");
-  if (e.rescued) st.over = { rescued: true };
+  if (e.rescued && st.hp > 0) st.over = { rescued: true };   // v3: 마지막 날 다쳐서 쓰러지면 구조 못 받음
   logLine(st, msg);
   const out = { m: msg, ev: ev.id, notes, d: { hp: Math.round(st.hp - before.hp), food: r1(st.food - before.food), noise: Math.round(st.noise - before.noise), san: Math.round(st.san - before.san) } };
   st.cur = null; st.n++;
@@ -240,7 +247,25 @@ export function endDay(st) {
     lines.push("😵 먹을 게 모자랐다 (체력 -10, 정신력 -5)");
     if (st.hp <= 0) st.lastCause = STARVE_CAUSES[(st.seed + st.day) % STARVE_CAUSES.length];
   }
-  if (st.flags.garden) { st.food = r1(st.food + 0.2); lines.push("🥬 옥상 텃밭에서 채소를 땄다 (+0.2일)"); }
+  if (st.flags.garden) { st.food = r1(st.food + (st.day >= TUNE.coldDay ? 0.1 : 0.2)); lines.push(st.day >= TUNE.coldDay ? "🥬 얼어 가는 텃밭에서 채소를 조금 땄다 (+0.1일)" : "🥬 옥상 텃밭에서 채소를 땄다 (+0.2일)"); }
+  // 🦠 감염: 항생제가 있으면 바로 먹음 · 간호사가 있으면 덜 아프고 3일 만에 나음 · 없으면 매일 체력·정신력↓
+  if (st.flags.infected) {
+    const med = alive(st).some((c) => c.role === "medic");
+    if (st.items.antibiotic) { delete st.items.antibiotic; st.flags.infected = 0; lines.push("💉 항생제를 먹었다. 열이 내렸다 (감염 치료)"); keyEvent(st, "💉", "항생제로 감염 치료"); }
+    else {
+      st.infDays = (st.infDays || 0) + 1; const dmg = med ? Math.ceil(TUNE.infHp / 2) : TUNE.infHp;
+      st.hp -= dmg; st.san = clamp(st.san - TUNE.infSan, 0, 100); lines.push(`🦠 감염 — 열이 펄펄 끓는다 (체력 -${dmg}, 정신력 -${TUNE.infSan})`);
+      if (st.hp <= 0) st.lastCause = "감염이 온몸에 퍼짐";
+      if (med && st.infDays >= 3) { st.flags.infected = 0; lines.push("🧑‍⚕️ 간호사 정우의 치료로 감염이 나았다"); keyEvent(st, "💉", "간호사 덕분에 감염 치료"); }
+    }
+  }
+  // ❄️ 겨울 (18일부터): 난로 있으면 괜찮음 · 장작이 있으면 하루치 씀 · 없으면 체력·정신력↓
+  if (st.day >= TUNE.coldDay) {
+    if (st.flags.heat) lines.push("🔥 난로 덕분에 따뜻한 밤이었다");
+    else if (st.warm > 0) { st.warm--; lines.push(`🪵 장작을 때서 버텼다 (남은 장작 ${st.warm}일)`); }
+    else { st.hp -= TUNE.coldHp; st.san = clamp(st.san - TUNE.coldSan, 0, 100); lines.push(`🥶 뼛속까지 춥다 (체력 -${TUNE.coldHp}, 정신력 -${TUNE.coldSan}) — 장작이나 난로가 필요해`); if (st.hp <= 0) st.lastCause = "얼어붙은 겨울밤을 넘기지 못함"; }
+  }
+  if (st.day === TUNE.coldDay - 1) lines.push("❄️ 내일부터 겨울이 온다. 장작이나 난로가 없으면 매일 몸이 상한다");
   let san = -(st.day >= 15 ? TUNE.sanLate : TUNE.san); for (const c of alive(st)) san += COMPS[c.role].san || 0;
   if (!alive(st).length) san -= 1;
   st.san = clamp(st.san + san, 0, 100);

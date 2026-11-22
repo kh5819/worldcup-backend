@@ -21,6 +21,7 @@ export const ITEMS = {
   painkiller: { n: "진통제", ic: "💊", d: "정신력 회복" },
   lighter: { n: "라이터", ic: "🔥", d: "불을 피울 수 있음" },
 };
+Object.assign(ITEMS, ITEMS3);   // 3차: 항생제·장작 (2026-11-22)
 export const ITEM_IDS = Object.keys(ITEMS);
 
 // 동료: 매일 효과 (food: 하루 먹는 양, heal: 내 체력 회복, dmg: 받는 피해 배율, san: 정신력, noise: 소음)
@@ -40,6 +41,7 @@ export const STARVE_CAUSES = ["굶주림 — 마지막 식사는 케첩 한 봉�
 export const MAD_CAUSES = ["정신이 먼저 무너졌다 — 마지막 일기: \"오늘도 문 두드리는 소리\"", "정신이 먼저 무너졌다 — 벽에 대고 하루 종일 말을 걸었다", "정신이 먼저 무너졌다 — \"구조대가 왔어!\" 외치며 문을 열었다", "정신이 먼저 무너졌다 — 좀비에게 이름을 붙여 주기 시작했다", "정신이 먼저 무너졌다 — 혼자 끝말잇기를 300판 했다"];
 
 import { EVENTS2, FX } from "./zom-data2.js";
+import { EVENTS3, ITEMS3, FORCED3 } from "./zom-data3.js";
 const D = "day", N = "night";
 export const EVENTS = [
   // ---------- 첫날 (고정) ----------
@@ -429,6 +431,7 @@ export const EVENTS = [
 ];
 
 EVENTS.push(...EVENTS2);   // 2차 추가 사건 (밤 8 · 낮 8 · 특별 2)
+EVENTS.push(...EVENTS3);   // 3차 (11-22): 감염·겨울·약탈자 등 20개
 for (const e of EVENTS) if (!e.fx && FX[e.id]) e.fx = FX[e.id];
 
 // 강제 사건 (조건이 맞으면 서버가 바로 넣음)
@@ -481,3 +484,5 @@ export const ABIL = [
   { id: "supply", n: "자원 관리", c: "#46e08a" },
   { id: "bond", n: "동료애", c: "#ff5fd2" },
 ];
+// 3차 (11-22, CORE v3): 마지막 날도 손 작업 시험 — 구조 헬기 사다리까지 달리기 / 트럭 행렬이 진짜 구조대인지 가려내기
+Object.assign(FORCED, FORCED3);

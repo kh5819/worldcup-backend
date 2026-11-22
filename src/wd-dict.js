@@ -55,7 +55,9 @@ export function createDict(list, { source = "temp", defs = null } = {}) {
   // 한방 위험 기준: 이을 수 있는 (안 쓴) 단어가 이 수 이하면 위험(2)·조심(1)
   const risk = set.size > 50000 ? [15, 60] : set.size > 3000 ? [2, 6] : [1, 3];
   return {
-    source, size: set.size, has: (w) => set.has(w), startsFor, contCount, risk,
+    source, get size() { return set.size; }, has: (w) => set.has(w), startsFor, contCount, risk,
+    /** 사전 API로 확인된 단어 더하기 (AI도 쓰고, 이을 단어 수에도 들어감) */
+    addWord: (raw) => { const w = String(raw || "").normalize("NFC"); if (w.length < 2 || w.length > 15 || !HANGUL_RE.test(w) || set.has(w)) return false; set.add(w); const f = w[0]; let a = by.get(f); if (!a) by.set(f, a = []); a.push(w); cont.clear(); return true; },
     /** 이 글자로 시작하는 사전 단어 수 */
     countStart: (s) => by.get(s)?.length || 0,
     /** 뜻 (없으면 "") */
@@ -78,7 +80,7 @@ export function getDict() {
       if (d.size >= 1000) { DICT = d; console.log(`[wd] 우리말샘 사전 ${d.size}개 단어${d.hasDefs ? " · 뜻 있음" : ""}`); return DICT; }
     }
   } catch (e) { console.error("[wd] 사전 파일 읽기 실패", e.message); }
-  DICT = createDict(TEMP_WORDS.split(/\s+/), { source: "temp" });
-  console.log(`[wd] 임시 단어 목록 ${DICT.size}개 (data/wd-words.txt 없음)`);
+  DICT = createDict(TEMP_WORDS.split(/\s+/), { source: "temp", defs: createDefs(path.join(DIR, "..", "data", "wd-defs")) }); // 임시 목록도 미리 받아 둔 뜻(wd-defs)이 있으면 씀
+  console.log(`[wd] 임시 단어 목록 ${DICT.size}개 (data/wd-words.txt 없음)${DICT.hasDefs ? " · 뜻 있음" : ""}`);
   return DICT;
 }

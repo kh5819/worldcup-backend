@@ -14,6 +14,7 @@ import { WordGame, aiPick, aiDelay, cleanWord, WD, isAiLevel, summary } from "./
 import { createRank } from "./wd-rank.js";
 import { createProgress } from "./wd-progress.js";
 import { createDaily, todayKst, daySeed, seededRng, dailyRules } from "./wd-daily.js";
+import { createDictLookup } from "./wd-api.js";
 
 const rooms = new Map(), invites = new Map(), userRoom = new Map(), soloIpHits = new Map();
 export const WDS = { lobbyDc: 15_000, emptyTtl: 60_000, endedTtl: 10 * 60_000, maxSpect: 60, maxRoom: 8, tickMs: 100, sayRate: 8, typeGap: 70, soloPerSock: 60, soloPerIp: 200, viewerGap: 700 };
@@ -30,14 +31,15 @@ const playing = (r) => r.status === "playing";
 const connectedCount = (r) => humans(r).filter(p => p.connected).length + [...r.spect.values()].filter(s => s.connected).length;
 let RANK = createRank(null), PROG = createProgress(null), DAILY = createDaily(null), HOOKS = {}, DICT = null;
 const loadCos = (id) => Promise.race([PROG.load(id).catch(() => null), new Promise(r => setTimeout(r, 1500))]);
-const defOf = (w) => { try { return dict().def(w) || ""; } catch { return ""; } };
+let LOOK = createDictLookup(null); // 우리말샘 API (서버 설정 WD_DICT_KEY 있을 때만)
+const defOf = (w) => { try { return dict().def(w) || LOOK.known(w)?.def || ""; } catch { return ""; } };
 const dict = () => DICT || (DICT = getDict());
 
 function pubRoom(r, viewer) {
-  return { id: r.id, code: r.inviteCode, hostId: r.hostUserId, status: r.status, me: viewer, spectator: !r.players.has(viewer) || !!r.players.get(viewer)?.left, solo: !!r.solo, daily: r.daily ? { day: r.daily, rules: dailyRules(r.daily) } : null, maxPlayers: r.maxPlayers, isPublic: !!r.isPublic, opts: r.opts,
+  return { id: r.id, code: r.inviteCode, hostId: r.hostUserId, status: r.status, me: viewer, spectator: !r.players.has(viewer) || !!r.players.get(viewer)?.left, solo: !!r.solo, streamer: !!r.streamer, daily: r.daily ? { day: r.daily, rules: dailyRules(r.daily) } : null, maxPlayers: r.maxPlayers, isPublic: !!r.isPublic, opts: r.opts,
     seats: r.order.map(u => { const p = r.players.get(u); return { id: p.id, name: p.name, avatar: p.avatar, isGuest: p.isGuest, connected: p.ai || p.viewer ? true : p.connected, left: !!p.left, ai: p.ai || null, viewer: !!p.viewer, cos: p.cos || null }; }),
     stream: { on: !!r.stream.on, link: viewer === r.hostUserId ? r.stream.link : { status: r.stream.link.status, platform: r.stream.link.platform } },
-    dict: { source: dict().source, size: dict().size, defs: !!dict().hasDefs }, spectators: r.spect.size, result: r.status === "ended" ? r.result : null, serverNow: now() };
+    dict: { source: dict().source, size: dict().size, defs: !!dict().hasDefs, api: !!LOOK.on }, spectators: r.spect.size, result: r.status === "ended" ? r.result : null, serverNow: now() };
 }
 function emitRoom(io, r) { for (const p of r.players.values()) if (!p.left && p.sockId) io.to(p.sockId).emit("wd:room", pubRoom(r, p.id)); for (const s of r.spect.values()) if (s.sockId) io.to(s.sockId).emit("wd:room", pubRoom(r, s.id)); }
 const sendState = (io, r) => { if (r.game) io.to(chan(r.id)).emit("wd:state", { ...r.game.pub(now()), serverNow: now() }); };
@@ -47,7 +49,7 @@ function startGame(io, r) {
   const seats = seatsOf(r); if (seats.length < 1 || (!r.solo && seats.length < 2)) return false;
   if (r.daily) { r.daily = todayKst(); r.opts = { hearts: 3, ...dailyRules(r.daily) }; } // 날짜가 바뀌었으면 새 도전
   r.game = new WordGame(dict(), seats.map(p => ({ id: p.id, name: p.name, ai: p.ai, viewer: p.viewer })), r.opts, r.daily ? seededRng(daySeed(r.daily)) : Math.random);
-  r.status = "playing"; r.result = null; r.startedAt = now(); r.viewerTries = new Map();
+  r.status = "playing"; r.result = null; r.startedAt = now(); r.viewerTries = new Map(); r.vboard = new Map(); r.apiHits = new Map();
   if (r.endTimer) { clearTimeout(r.endTimer); r.endTimer = null; }
   r.game.beginTurn(now() + 2500); // 3초 준비
   io.to(chan(r.id)).emit("wd:start", { serverNow: now(), at: now() + 2500 });
@@ -69,8 +71,26 @@ function scheduleAi(io, r) {
 }
 function say(io, r, pid, word, by) {
   const g = r.game, t = now(); if (t < g.turnAt) return { ok: false, error: "NOT_YET" };
+  if (r.pending) return { ok: false, error: "CHECKING" }; // 사전 확인 중엔 다른 시도 안 받음
   const res = g.submit(pid, word, t, by);
+  // 우리 목록에 없는 단어 → 우리말샘에 물어봄 (입력한 순간 t 기준으로 판정, 묻는 동안 시간 초과 처리 멈춤)
+  // (한도: 한 판에 사람마다 40번, 시청자 자리는 방 전체 120번 — 가짜 단어를 마구 내서 하루 API 한도를 다 쓰는 것 막기)
+  if (!res.ok && res.error === "NOT_WORD" && LOOK.on) { const k = pid, n = (r.apiHits?.get(k) || 0); if (n < (pid === VIEWER_ID ? 120 : 40)) { (r.apiHits || (r.apiHits = new Map())).set(k, n + 1); return checkByApi(io, r, pid, cleanWord(word), by, t); } }
   if (!res.ok) { if (res.error !== "NOT_YOUR_TURN" && res.error !== "NOT_PLAYING") io.to(chan(r.id)).emit("wd:fail", { id: pid, w: cleanWord(word).slice(0, 15), error: res.error, by: by || null }); return res; }
+  return said(io, r, res);
+}
+async function checkByApi(io, r, pid, w, by, t) {
+  const g = r.game, turnId = g.turnAt; r.pending = { at: now(), pid };
+  io.to(chan(r.id)).emit("wd:checking", { id: pid, w: w.slice(0, 15), by: by || null });
+  let v = null; try { v = await LOOK.lookup(w); } catch {}
+  if (r.pending?.pid === pid) r.pending = null;
+  if (rooms.get(r.id) !== r || r.game !== g || g.phase !== "play" || g.turnAt !== turnId || g.curP()?.id !== pid) return { ok: false, error: "NOT_YOUR_TURN" };
+  if (v?.noun) dict().addWord(w);
+  const res = v?.noun ? g.submit(pid, w, t, by) : { ok: false, error: v ? "NOT_WORD" : "DICT_DOWN" };
+  if (!res.ok) { io.to(chan(r.id)).emit("wd:fail", { id: pid, w: w.slice(0, 15), error: res.error, by: by || null }); return res; }
+  return said(io, r, res);
+}
+function said(io, r, res) {
   const d = defOf(res.e.w);
   io.to(chan(r.id)).emit("wd:said", d ? { ...res.e, d } : res.e); sendState(io, r); scheduleAi(io, r);
   return res;
@@ -86,7 +106,7 @@ function finishRoom(io, r, why) {
   r.status = "ended"; r.endedAt = now(); if (r.aiTimer) { clearTimeout(r.aiTimer); r.aiTimer = null; }
   const ranking = g.ranking();
   const defs = []; if (dict().hasDefs) { const seen = new Set(); for (let i = g.hist.length - 1; i >= 0 && defs.length < 40; i--) { const w = g.hist[i].w; if (seen.has(w)) continue; seen.add(w); const d = defOf(w); if (d) defs.push({ w, d }); } defs.reverse(); }
-  r.result = { why, ranking, maxChain: g.maxChain, words: g.hist.length, t: Math.round((now() - r.startedAt) / 1000), winner: g.winner, hist: g.hist.slice(-60), sum: summary(g), defs, daily: r.daily || null };
+  r.result = { why, ranking, maxChain: g.maxChain, words: g.hist.length, t: Math.round((now() - r.startedAt) / 1000), winner: g.winner, hist: g.hist.slice(-60), sum: summary(g), defs, daily: r.daily || null, vboard: r.streamer ? viewerBoard(r, 20) : null };
   io.to(chan(r.id)).emit("wd:end", r.result); emitRoom(io, r);
   try {
     const ai = g.ps.some(p => p.ai);
@@ -149,7 +169,7 @@ function addAi(r, level) {
   const used = new Set(seatsOf(r).map(p => p.name)); const name = AI_NAMES.find(n => !used.has("🤖 " + n)) || "봇";
   const id = "ai_" + Math.random().toString(36).slice(2, 8); r.players.set(id, newSeat(id, "🤖 " + name, { ai: isAiLevel(level) ? level : "normal" })); r.order.push(id); return true;
 }
-function sendStart(r, socket) { if (!playing(r)) return; socket.emit("wd:start", { serverNow: now(), at: r.game.turnAt }); socket.emit("wd:state", { ...r.game.pub(now()), serverNow: now() }); }
+function sendStart(r, socket) { if (!playing(r)) return; socket.emit("wd:start", { serverNow: now(), at: r.game.turnAt }); socket.emit("wd:state", { ...r.game.pub(now()), serverNow: now() }); if (r.streamer) socket.emit("wd:vboard", viewerBoard(r)); }
 const defaultOpts = () => ({ hearts: 3, turn: 15, noKill: false, minLen: 2 });
 function readOpts(o, pl) {
   const n = { ...o };
@@ -161,19 +181,30 @@ function readOpts(o, pl) {
 }
 
 // ---------- 시청자 채팅 ----------
+/** 시청자 순위 (퀴즈 시청자 누적 순위와 같은 방식) — 단어를 맞힌 시청자만 기억, 방마다 최대 500명 */
+function viewerBoard(r, n = 50) { const list = [...(r.vboard?.values() || [])].sort((a, b) => b.score - a.score || b.words - a.words || a.at - b.at); return { list: list.slice(0, n).map(({ name, words, score, best }) => ({ name, words, score, best })), total: list.length }; }
+function addViewerScore(io, r, who, name, e) {
+  if (!r.vboard) r.vboard = new Map(); let v = r.vboard.get(who);
+  if (!v) { if (r.vboard.size >= 500) return; r.vboard.set(who, v = { name, words: 0, score: 0, best: "", at: now() }); }
+  v.name = name; v.words++; v.score += e.pts; if (e.w.length > v.best.length) v.best = e.w;
+  io.to(chan(r.id)).emit("wd:vboard", viewerBoard(r));
+}
 function onViewerChat(io, r, msg) {
+  // ① 느낌표("!사과")가 없는 채팅은 가장 먼저 버림 — 닉네임·시간 기록도 안 남김 (일반 채팅을 모으면 메모리 낭비)
+  const raw = [msg?.content, msg?.message, msg?.msg, msg?.text, msg?.content?.message, msg?.content?.content].find(v => typeof v === "string"); if (typeof raw !== "string" || !/^\s*[!！]/.test(raw) || raw.length > 40) return;
   if (!r.stream.on || !playing(r)) return; const g = r.game; if (g.phase !== "play" || g.curP()?.id !== VIEWER_ID || now() < g.turnAt) return;
-  const text = String(msg?.content ?? msg?.message ?? msg?.text ?? "").trim(); if (!text || text.length > 20) return;
+  const text = raw.trim(); if (text.length > 20) return;
   let prof = msg?.profile; if (typeof prof === "string") { try { prof = JSON.parse(prof); } catch { prof = null; } }
   const who = String(msg?.senderChannelId ?? msg?.uid ?? prof?.nickname ?? ""), nick = String(prof?.nickname ?? msg?.nickname ?? msg?.nick ?? "시청자").slice(0, 14);
   if (!who) return; const t = now(), last = r.viewerTries.get(who) || 0; if (t - last < WDS.viewerGap) return; r.viewerTries.set(who, t); if (r.viewerTries.size > 5000) r.viewerTries.clear();
-  const w = cleanWord(text.replace(/^!/, "")); if (!g.needs().includes(w[0])) return; // 시작 글자가 맞는 것만 시도로 봄 (일반 채팅은 무시)
-  say(io, r, VIEWER_ID, w, nick);
+  const w = cleanWord(text.replace(/^[!！]+\s*/, "")); if (!g.needs().includes(w[0])) return; // 시작 글자가 맞는 것만 시도로 봄 (일반 채팅은 무시)
+  Promise.resolve(say(io, r, VIEWER_ID, w, nick)).then((res) => { if (res?.ok && rooms.get(r.id) === r) addViewerScore(io, r, who, nick, res.e); }).catch(() => {});
 }
 
 export function registerWordChain(io, supabaseAdmin, hooks = {}) {
+  LOOK = hooks.lookup || createDictLookup(process.env.WD_DICT_KEY || null); if (LOOK.on) console.log("[wd] 우리말샘 사전 API 켜짐 (목록에 없는 단어 확인)");
   HOOKS = hooks; RANK = hooks.rank || createRank(supabaseAdmin); PROG = hooks.progress || createProgress(supabaseAdmin); DAILY = hooks.daily || createDaily(supabaseAdmin); if (hooks.dict) DICT = hooks.dict;
-  setInterval(() => { const t = now(); for (const r of rooms.values()) { if (!playing(r) || !r.game || r.game.phase !== "play") continue; try { const e = r.game.tick(t); if (e) onMiss(io, r, e); } catch (err) { console.error("[wd] tick", err); } } }, WDS.tickMs).unref?.();
+  setInterval(() => { const t = now(); for (const r of rooms.values()) { if (!playing(r) || !r.game || r.game.phase !== "play") continue; try { if (r.pending && t - r.pending.at < 4000) continue; r.pending = null; const e = r.game.tick(t); if (e) onMiss(io, r, e); } catch (err) { console.error("[wd] tick", err); } } }, WDS.tickMs).unref?.();
   io.on("connection", (socket) => {
     const me = socket.user; if (!me) return;
     const myRoom = () => { const id = userRoom.get(me.id); const r = id ? rooms.get(id) : null; return r && (r.players.has(me.id) || r.spect.has(me.id)) ? r : null; };
@@ -182,8 +213,10 @@ export function registerWordChain(io, supabaseAdmin, hooks = {}) {
     socket.on("wd:ping", guard((pl, cb) => cb({ ok: true, s: now() })));
     let rankHits = [];
     socket.on("wd:rank", guard(async (pl, cb) => { const t = now(); rankHits = rankHits.filter(x => t - x < 60_000); if (rankHits.length >= 20) return cb({ ok: false, error: "TOO_FAST" }); rankHits.push(t); cb(await RANK.top(me.id)); }));
-    let checkHits = [];
-    socket.on("wd:check", guard((pl, cb) => { const t = now(); checkHits = checkHits.filter(x => t - x < 10_000); if (checkHits.length >= 30) return cb({ ok: false, error: "TOO_FAST" }); checkHits.push(t); const w = cleanWord(pl.w), has = w.length >= 2 && dict().has(w); cb({ ok: true, w, has, d: has ? defOf(w) : "", source: dict().source }); }));
+    let checkHits = [], apiHits = [];
+    socket.on("wd:check", guard(async (pl, cb) => { const t = now(); checkHits = checkHits.filter(x => t - x < 10_000); if (checkHits.length >= 30) return cb({ ok: false, error: "TOO_FAST" }); checkHits.push(t); const w = cleanWord(pl.w); let has = w.length >= 2 && dict().has(w), api = false;
+      if (!has && w.length >= 2 && LOOK.on) { apiHits = apiHits.filter(x => t - x < 3600_000); if (apiHits.length < 60) { apiHits.push(t); const v = await LOOK.lookup(w); if (v) { api = true; has = !!v.noun; } } } // 단어 찾아보기: 사람마다 한 시간 60번까지 사전에 물어봄
+      cb({ ok: true, w, has, d: has ? defOf(w) : "", source: dict().source, api }); }));
     // ---------- 업적·꾸미기 · 오늘의 도전 ----------
     let progHits = []; const progLimit = () => { const t = now(); progHits = progHits.filter(x => t - x < 60_000); if (progHits.length >= 30) return true; progHits.push(t); return false; };
     socket.on("wd:progress", guard(async (pl, cb) => { if (progLimit()) return cb({ ok: false, error: "TOO_FAST" }); const row = await PROG.load(me.id, { fresh: true }); if (row?.failed) return cb({ ok: false, error: "BUSY" }); cb({ ok: true, ready: PROG.isReady(), isGuest: !!me.isGuest, stats: row?.stats || {}, unlocked: row?.unlocked || [], equip: row ? { ...row.equip } : {} }); }));
@@ -202,11 +235,12 @@ export function registerWordChain(io, supabaseAdmin, hooks = {}) {
       const old = myRoom(); if (old) leave(io, old, me.id);
       const [{ name, avatar }] = await Promise.all([profileOf(supabaseAdmin, me, pl.nickname), loadCos(me.id)]);
       const id = `wd_${now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`, mp = Math.round(Number(pl.maxPlayers));
-      const r = { id, inviteCode: genCode(), hostUserId: me.id, status: "lobby", maxPlayers: mp >= 2 && mp <= WDS.maxRoom ? mp : 8, isPublic: false, solo: !!pl.solo, daily: pl.solo && pl.daily ? pl.daily : null, opts: readOpts(defaultOpts(), pl) || defaultOpts(),
+      const r = { id, inviteCode: genCode(), hostUserId: me.id, status: "lobby", maxPlayers: mp >= 2 && mp <= WDS.maxRoom ? mp : 8, isPublic: false, solo: !!pl.solo, streamer: !pl.solo && pl.streamer === true, daily: pl.solo && pl.daily ? pl.daily : null, opts: readOpts(defaultOpts(), pl) || defaultOpts(),
         players: new Map(), order: [], spect: new Map(), createdAt: now(), stream: { on: false, link: { status: "off", platform: null, nickname: null, error: null } } };
       rooms.set(id, r); invites.set(r.inviteCode, id);
       const p = newSeat(me.id, name, { avatar, isGuest: me.isGuest, sockId: socket.id }); r.players.set(me.id, p); r.order.push(me.id);
       attach(io, socket, r, p); cb({ ok: true, code: r.inviteCode, me: me.id });
+      if (r.streamer) { r.players.set(VIEWER_ID, newSeat(VIEWER_ID, "📺 시청자", { viewer: true })); r.order.push(VIEWER_ID); r.stream.on = true; } // 스트리머 모드: 시청자 자리 켜고 시작
       if (r.daily) { r.maxPlayers = 1; emitRoom(io, r); startGame(io, r); }
       else if (r.solo) { const n = Math.min(3, Math.max(1, Math.round(Number(pl.ai)) || 1)), lv = isAiLevel(pl.level) ? pl.level : "normal"; r.maxPlayers = n + 1; for (let k = 0; k < n; k++) addAi(r, lv); emitRoom(io, r); startGame(io, r); }
       else emitRoom(io, r);
@@ -266,16 +300,16 @@ export function registerWordChain(io, supabaseAdmin, hooks = {}) {
     socket.on("wd:toLobby", guard((pl, cb) => { const r = hostRoom(cb); if (!r) return; if (r.solo) return cb({ ok: false, error: "BAD_VALUE" }); if (r.status !== "ended") return cb({ ok: false, error: "NOT_ENDED" }); for (const u of [...r.order]) { const p = r.players.get(u); if (!p || p.left) removeSeat(r, u); } r.status = "lobby"; r.result = null; r.game = null; if (r.endTimer) { clearTimeout(r.endTimer); r.endTimer = null; } cb({ ok: true }); emitRoom(io, r); }));
     // ---------- 단어 ----------
     const mySeat = () => { const r = myRoom(); const p = r?.players.get(me.id); if (!r || !p || p.left || !playing(r) || !r.game) return null; return { r, p }; };
-    socket.on("wd:say", guard((pl, cb) => {
+    socket.on("wd:say", guard(async (pl, cb) => {
       const x = mySeat(); if (!x) return cb({ ok: false, error: "NOT_PLAYING" });
       const t = now(); if (t - x.p.sayWin > 1000) { x.p.sayWin = t; x.p.sayN = 0; } if (++x.p.sayN > WDS.sayRate) return cb({ ok: false, error: "TOO_FAST" });
-      const res = say(io, x.r, me.id, pl.w); cb(res.ok ? { ok: true, pts: res.e.pts } : { ok: false, error: res.error });
+      const res = await say(io, x.r, me.id, pl.w); cb(res.ok ? { ok: true, pts: res.e.pts } : { ok: false, error: res.error });
     }));
     socket.on("wd:typing", (pl) => { try { const x = mySeat(); if (!x || x.r.game.curP()?.id !== me.id) return; const t = now(); if (t - x.p.typeAt < WDS.typeGap) return; x.p.typeAt = t; socket.to(chan(x.r.id)).emit("wd:typing", { id: me.id, t: String(pl?.t ?? "").replace(/[<>]/g, "").slice(0, 15) }); } catch {} });
     socket.on("wd:pass", guard((pl, cb) => { const x = mySeat(); if (!x) return cb({ ok: false, error: "NOT_PLAYING" }); const g = x.r.game; if (g.curP()?.id !== me.id || now() < g.turnAt) return cb({ ok: false, error: "NOT_YOUR_TURN" }); cb({ ok: true }); onMiss(io, x.r, g.miss(me.id, now(), "pass")); }));
     // ---------- 스트리머: 시청자 자리 + 채팅 연결 ----------
     socket.on("wd:stream", guard((pl, cb) => {
-      const r = hostRoom(cb); if (!r) return; if (r.solo) return cb({ ok: false, error: "BAD_VALUE" });
+      const r = hostRoom(cb); if (!r) return; if (r.solo || !r.streamer) return cb({ ok: false, error: "STREAMER_ONLY" }); // 시청자 자리는 스트리머 모드 방에서만
       const on = !!pl.on;
       if (on && !r.players.has(VIEWER_ID)) { if (seatsOf(r).length >= r.maxPlayers) return cb({ ok: false, error: "ROOM_FULL" }); r.players.set(VIEWER_ID, newSeat(VIEWER_ID, "📺 시청자", { viewer: true })); r.order.push(VIEWER_ID); }
       if (!on && r.players.has(VIEWER_ID)) removeSeat(r, VIEWER_ID);
@@ -299,7 +333,7 @@ export function registerWordChain(io, supabaseAdmin, hooks = {}) {
     }));
     socket.on("wd:streamUnlink", guard((pl, cb) => { const r = hostRoom(cb, { allowPlaying: true }); if (!r) return; try { HOOKS.unlinkChat?.("dw_wd_" + r.inviteCode); } catch {} r.stream.link = { status: "off", platform: null, nickname: null, error: null }; emitRoom(io, r); cb({ ok: true }); }));
     // 방장 시험용: 시청자 채팅 흉내 (연결 없이 확인)
-    socket.on("wd:testChat", guard((pl, cb) => { const r = hostRoom(cb, { allowPlaying: true }); if (!r) return; if (!r.stream.on) return cb({ ok: false, error: "STREAM_OFF" }); onViewerChat(io, r, { content: String(pl.text || "").slice(0, 20), senderChannelId: "test_" + Math.floor(Math.random() * 1e6), profile: { nickname: "테스트 시청자" } }); cb({ ok: true }); }));
+    socket.on("wd:testChat", guard((pl, cb) => { const r = hostRoom(cb, { allowPlaying: true }); if (!r) return; if (!r.stream.on) return cb({ ok: false, error: "STREAM_OFF" }); onViewerChat(io, r, { content: (/^[!！]/.test(String(pl.text || "").trim()) ? "" : "!") + String(pl.text || "").trim().slice(0, 20), senderChannelId: "test_" + Math.floor(Math.random() * 1e6), profile: { nickname: "테스트 시청자" } }); cb({ ok: true }); }));
     socket.on("wd:sync", guard((pl, cb) => { const r = myRoom(); if (!r) return cb({ ok: false, error: "NOT_IN_ROOM" }); cb({ ok: true, room: pubRoom(r, me.id) }); sendStart(r, socket); }));
     socket.on("wd:emote", guard((pl, cb) => { const r = myRoom(); const p = r?.players.get(me.id) || r?.spect.get(me.id); if (!p) return cb({ ok: false }); const t = now(); if (t - (p.emoAt || 0) < 1500) return cb({ ok: false, error: "TOO_FAST" }); p.emoAt = t; const e = ["👍", "🔥", "😱", "😂", "🙏", "🤔"][Number(pl.e)]; if (!e) return cb({ ok: false }); io.to(chan(r.id)).emit("wd:emote", { id: me.id, name: p.name, e }); cb({ ok: true }); }));
     socket.on("wd:leaveRoom", guard((pl, cb) => { const r = myRoom(); if (r) leave(io, r, me.id); cb({ ok: true }); }));
