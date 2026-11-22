@@ -1069,6 +1069,15 @@ function placeStone(io, room, userId, x, y) {
     room.winnerTeam = null;
     return endGame(io, room, null, "BOARD_FULL");
   }
+  // 더 이상 아무도 N목을 만들 수 없으면 바로 무승부 (2026-11-22) — 일반 모드만 (초딩·증강은 돌을 없애고 옮기는 카드가 있어 다시 길이 열릴 수 있음)
+  if ((room.specialMode || "off") === "off") {
+    const colors = new Set(); for (const uid of room.playerOrder) { const c = room.players.get(uid)?.color; if (c) colors.add(c); }
+    if (noWinPossible(room.board, room.boardSize, room.winLength, colors)) {
+      room.winnerUserId = null;
+      room.winnerTeam = null;
+      return endGame(io, room, null, "NO_WIN");
+    }
+  }
 
   if (room.specialMode === "aug") afterAugPlace(io, room, userId, player, x, y);
 
@@ -1088,6 +1097,21 @@ function placeStone(io, room, userId, x, y) {
   return { ok: true };
 }
 
+/** 남은 승리 길이 있나: N칸 구간 중 '빈칸 + 한 색'으로만 된 구간이 하나라도 있으면 아직 이길 수 있음 */
+export function noWinPossible(board, size, winLength, colors) {
+  const need = Math.max(3, Math.min(5, winLength || 5));
+  for (const [dx, dy] of [[1, 0], [0, 1], [1, 1], [1, -1]]) {
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const ex = x + dx * (need - 1), ey = y + dy * (need - 1);
+      if (ex < 0 || ex >= size || ey < 0 || ey >= size) continue;
+      let col = 0, mixed = false;
+      for (let k = 0; k < need; k++) { const v = board[(y + dy * k) * size + (x + dx * k)]; if (!v) continue; if (!col) col = v; else if (v !== col) { mixed = true; break; } }
+      if (mixed) continue;
+      if (!col || colors.has(col)) return false; // 빈 구간이거나, 지금 두는 사람 색 하나뿐 → 아직 가능
+    }
+  }
+  return true;
+}
 function countNonZero(arr) {
   let n = 0;
   for (let i = 0; i < arr.length; i++) if (arr[i] !== 0) n++;
