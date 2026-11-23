@@ -52,6 +52,7 @@ import { registerKnowBroadcast, kbcLivePlayers } from "./know-broadcast.js";
 import { registerLifeBroadcast, lbcChatVote, lbcChatCard, CHAT_CARD, lbcExists, lbcDonation, lbcIsDon, lbcDonKeyOk } from "./lifebc-broadcast.js";
 import { registerLifeMulti } from "./lifebc-multi.js";
 import { registerLifeSave } from "./lifebc-save.js";
+import { registerLifeReborn } from "./lrb.js"; // 인생게임 REBORN 같이 태어난 친구 (2026-11-23)
 import { createFlight } from "./create-flight.js";
 import { registerDodge } from "./dodge.js";
 import { registerGolf } from "./golf.js";
@@ -11310,6 +11311,7 @@ registerKnowMulti(io, supabaseAdmin);
 registerKnowBroadcast(io, supabaseAdmin, app);
 registerLifeBroadcast(io, supabaseAdmin, app);
 registerLifeMulti(io);
+registerLifeReborn(io); // 인생게임 REBORN — 같은 해 같은 세상에 태어나는 2~15인 멀티 (lrb:*)
 registerLifeSave(io, supabaseAdmin);
 
 // ============= 그려봐 신고 admin =============
