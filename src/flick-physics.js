@@ -41,6 +41,8 @@ export const cloneDisc = (d) => ({ ...d });
  */
 export function simulate(w, shot, hooks = {}, opt = {}) {
   const L = w.L, discs = w.discs, record = opt.record !== false;
+  // 경기장 규칙 (flick-maps.js) — 없으면 기본 판
+  const env = w.env || null, envMu = env?.mu ?? 1, holes = env?.holes || [], blocks = env?.blocks || [], walls = env?.walls || null, wells = env?.wells || [], wind = env?.wind || null;
   const frames = [], events = [];
   let step = 0, waves = 0, t = 0;
   const shooter = discs.find(d => d.id === shot.id && d.alive) || null;
@@ -120,6 +122,20 @@ export function simulate(w, shot, hooks = {}, opt = {}) {
           d.vx += dx / dist * acc * h; d.vy += dy / dist * acc * h;
         }
       }
+      // 경기장: 바람·중력 소용돌이 — 움직이는 알만 (멈춘 알은 그대로)
+      if (wind || wells.length) for (const d of discs) {
+        if (!d.alive || d.iron) continue;
+        const sp = Math.hypot(d.vx, d.vy); if (sp < 30) continue;
+        const fade = Math.min(1, sp / 160);
+        if (wind) { d.vx += wind.ax * fade * h / Math.sqrt(d.m); d.vy += wind.ay * fade * h / Math.sqrt(d.m); }
+        for (const wl of wells) {
+          const dx = wl.x - d.x, dy = wl.y - d.y, dist = Math.hypot(dx, dy);
+          if (dist > wl.R || dist < 4) continue;
+          const a = wl.acc * (1 - dist / wl.R) * fade / Math.sqrt(d.m);
+          // 안쪽으로 당김 + 옆으로 돌림 (소용돌이)
+          d.vx += (dx / dist * 0.75 - dy / dist * 0.55 * wl.swirl) * a * h; d.vy += (dy / dist * 0.75 + dx / dist * 0.55 * wl.swirl) * a * h;
+        }
+      }
       for (const d of discs) {
         if (!d.alive || !d._curve) continue;
         const sp = Math.hypot(d.vx, d.vy); if (sp < 40) continue;
@@ -132,7 +148,7 @@ export function simulate(w, shot, hooks = {}, opt = {}) {
         let sp = Math.hypot(d.vx, d.vy);
         if (sp > SPEED_CAP) { d.vx *= SPEED_CAP / sp; d.vy *= SPEED_CAP / sp; sp = SPEED_CAP; }
         if (sp > 0) {
-          const dec = DECEL * d.mu * (d._ice ? 0.45 : 1) * h + sp * 0.0025;
+          const dec = DECEL * d.mu * envMu * (d._ice ? 0.45 : 1) * h + sp * 0.0025;
           const ns = Math.max(0, sp - dec);
           d.vx *= ns / sp; d.vy *= ns / sp;
         }
@@ -215,16 +231,56 @@ export function simulate(w, shot, hooks = {}, opt = {}) {
           if (shot.tags?.chain && power > 140) wave(A.x + nx * A.r, A.y + ny * A.r, BASE_R * 2.6, 320, null, "chain");
         }
       }
-      // 4) 경계 이탈
+      // 3-2) 경기장: 움직이지 않는 기둥·범퍼 (무한 질량), 레이저 벽
+      for (const b of blocks) {
+        for (const d of discs) {
+          if (!d.alive) continue;
+          const dx = d.x - b.x, dy = d.y - b.y, rr = d.r + b.r;
+          if (Math.abs(dx) > rr || Math.abs(dy) > rr) continue;
+          const dist = Math.hypot(dx, dy); if (dist >= rr) continue;
+          const nx = dist > 1e-6 ? dx / dist : 1, ny = dist > 1e-6 ? dy / dist : 0;
+          d.x = b.x + nx * (rr + 0.5); d.y = b.y + ny * (rr + 0.5);
+          const vn = d.vx * nx + d.vy * ny;
+          if (vn < 0) {
+            const e = Math.max(0.3, Math.min(1.05, (d.e + b.e) / 2));
+            d.vx -= (1 + e) * vn * nx; d.vy -= (1 + e) * vn * ny;
+            if (b.kick) { d.vx += nx * b.kick; d.vy += ny * b.kick; } // 범퍼: 튕기는 힘 추가
+            if (-vn > 40) ev({ k: "bump", kind: b.kind, x: Math.round(b.x + nx * b.r), y: Math.round(b.y + ny * b.r), bx: b.x, by: b.y, p: Math.round(-vn) });
+          }
+        }
+      }
+      if (walls) for (const d of discs) {
+        if (!d.alive) continue;
+        let hit = 0;
+        if (walls.l && d.x - d.r < 0) { d.x = d.r; if (d.vx < 0) { d.vx = -d.vx * 0.85; hit = 1; } }
+        if (walls.r && d.x + d.r > L) { d.x = L - d.r; if (d.vx > 0) { d.vx = -d.vx * 0.85; hit = 1; } }
+        if (walls.t && d.y - d.r < 0) { d.y = d.r; if (d.vy < 0) { d.vy = -d.vy * 0.85; hit = 1; } }
+        if (walls.b && d.y + d.r > L) { d.y = L - d.r; if (d.vy > 0) { d.vy = -d.vy * 0.85; hit = 1; } }
+        if (hit && Math.hypot(d.vx, d.vy) > 60) ev({ k: "wall", x: Math.round(d.x), y: Math.round(d.y) });
+      }
+      // 4) 경계 이탈 · 용암 구멍
       for (const d of discs) {
         if (!d.alive) continue;
-        if (d.x >= 0 && d.x <= L && d.y >= 0 && d.y <= L) continue;
+        const out = !(d.x >= 0 && d.x <= L && d.y >= 0 && d.y <= L);
+        const hole = out ? null : holes.find(o => Math.hypot(d.x - o.x, d.y - o.y) < o.r - d.r * 0.25);
+        if (!out && !hole) continue;
         // 반응 순서: 알 자체 보호막 → 보호막 증강 → 최후의 생존(마지막 알)
         const save = (how) => {
-          const ix = Math.max(d.r + 2, Math.min(L - d.r - 2, d.x)), iy = Math.max(d.r + 2, Math.min(L - d.r - 2, d.y));
-          if (d.x < 0 || d.x > L) d.vx = -d.vx * 0.35; if (d.y < 0 || d.y > L) d.vy = -d.vy * 0.35;
-          d.x = ix; d.y = iy;
-          ev({ k: "save", id: d.id, how, x: Math.round(d.x), y: Math.round(d.y) });
+          if (d.kind === "boss" || (hole && how !== "shield" && how !== "stone")) { // 보스: 가운데 근처로 되돌림
+            const p = hooks.safeSpot ? hooks.safeSpot(L / 2, L / 2, d.r, d) : { x: L / 2, y: L / 2 };
+            d.x = p.x; d.y = p.y; d.vx = 0; d.vy = 0;
+          } else if (hole) { // 구멍 밖으로 밀어냄
+            let nx = d.x - hole.x, ny = d.y - hole.y, n = Math.hypot(nx, ny);
+            if (n < 1e-3) { nx = -d.vx; ny = -d.vy; n = Math.hypot(nx, ny) || 1; if (n < 1e-3) { nx = 1; ny = 0; n = 1; } }
+            nx /= n; ny /= n;
+            d.x = Math.max(d.r + 2, Math.min(L - d.r - 2, hole.x + nx * (hole.r + d.r + 3))); d.y = Math.max(d.r + 2, Math.min(L - d.r - 2, hole.y + ny * (hole.r + d.r + 3)));
+            const vn = d.vx * nx + d.vy * ny; d.vx = (d.vx - 2 * vn * nx) * 0.35; d.vy = (d.vy - 2 * vn * ny) * 0.35;
+          } else {
+            const ix = Math.max(d.r + 2, Math.min(L - d.r - 2, d.x)), iy = Math.max(d.r + 2, Math.min(L - d.r - 2, d.y));
+            if (d.x < 0 || d.x > L) d.vx = -d.vx * 0.35; if (d.y < 0 || d.y > L) d.vy = -d.vy * 0.35;
+            d.x = ix; d.y = iy;
+          }
+          ev({ k: "save", id: d.id, how: d.kind === "boss" && how === "stone" ? "boss" : how, x: Math.round(d.x), y: Math.round(d.y), hp: d.kind === "boss" ? d.shield : undefined });
         };
         if (d.shield > 0) { d.shield--; save("stone"); continue; }
         if (hooks.react && hooks.react(d.owner, "shield", { id: d.id })) { save("shield"); continue; }
@@ -236,7 +292,7 @@ export function simulate(w, shot, hooks = {}, opt = {}) {
           continue;
         }
         d.alive = false; d._justFell = true;
-        ev({ k: "fall", id: d.id, owner: d.owner, x: Math.round(d.x), y: Math.round(d.y), vx: Math.round(d.vx), vy: Math.round(d.vy) });
+        ev({ k: "fall", id: d.id, owner: d.owner, x: Math.round(d.x), y: Math.round(d.y), vx: Math.round(d.vx), vy: Math.round(d.vy), hole: hole ? 1 : undefined, kind: d.kind === "stone" ? undefined : d.kind });
         hooks.onFall?.(d);
       }
     }
@@ -251,9 +307,9 @@ export function simulate(w, shot, hooks = {}, opt = {}) {
 }
 
 /** 겹치지 않는 안전한 자리 (가장자리에서 margin 이상 안쪽) — 나선으로 찾음 */
-export function findSafe(discs, L, x, y, r, { margin = 0, ignore = null } = {}) {
+export function findSafe(discs, L, x, y, r, { margin = 0, ignore = null, avoid = null } = {}) {
   const m = Math.max(r + 4, margin);
-  const ok = (px, py) => px >= m && px <= L - m && py >= m && py <= L - m && discs.every(d => !d.alive || d === ignore || Math.hypot(d.x - px, d.y - py) >= d.r + r + 2);
+  const ok = (px, py) => px >= m && px <= L - m && py >= m && py <= L - m && discs.every(d => !d.alive || d === ignore || Math.hypot(d.x - px, d.y - py) >= d.r + r + 2) && (!avoid || avoid.every(o => Math.hypot(o.x - px, o.y - py) >= o.r + r + 2));
   if (ok(x, y)) return { x, y };
   for (let rad = r; rad < L; rad += r * 0.6) {
     const n = Math.max(8, Math.floor(rad / 6));

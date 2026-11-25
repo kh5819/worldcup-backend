@@ -16,8 +16,13 @@ import { addPublicRooms } from "./public-rooms.js";
 import { FlickGame, DEFAULT_OPTS, OPT_CHOICES, MAPS, SKINS, COLORS } from "./flick-game.js";
 import { META_AUGS, RARITY, KIND_LABEL, SYNERGY, MAX_AUGS, PICK_EVERY, AUG, rollOffer } from "./flick-augs.js";
 import { parseAmount, cleanDonor } from "./duowars-stream.js";
+import { MAP_RULE } from "./flick-maps.js";
+import { STAGES, BOSSES, BOSS_IDS, SKILL_NAME, ACHS, MAX_STARS, starsOf, stageOpen, dailyCfg, dailyScore, todayKst } from "./flick-data.js";
+import { createProgress } from "./flick-progress.js";
+import { mulberry32 } from "./flick-physics.js";
 
 const rooms = new Map(), invites = new Map(), userRoom = new Map();
+const recentClear = new Map(); // 사람 → 방금 깬 가장 높은 단계 (DB 저장이 끝나기 전 '다음 단계' 눌러도 열리게)
 const MAX_PLAYERS = [2, 3, 4, 5, 6, 7, 8];
 const DIFFS = ["easy", "normal", "hard"];
 const LOBBY_DC_MS = 15_000, EMPTY_ROOM_MS = 90_000, ENDED_ROOM_MS = 10 * 60_000;
@@ -26,7 +31,7 @@ const SOOP_BALLOON_KRW = 100;
 export const STREAM_KINDS = ["shield", "quake", "revive", "giant", "randomAug"];
 const STREAM_LABEL = { shield: "🛡️ 보호막 1개", quake: "🌋 판 흔들기", revive: "💫 알 부활", giant: "🔵 다음 발사 거대 알", randomAug: "🎴 랜덤 증강" };
 const STREAM_TARGETS = ["streamer", "random", "leader", "last"];
-let HOOKS = {};
+let HOOKS = {}, PROG = createProgress(null);
 
 const chan = (id) => `flick:${id}`;
 const now = () => Date.now();
@@ -38,7 +43,9 @@ const connectedCount = (room) => humans(room).filter(p => p.connected).length + 
 function cleanOpts(src, base) {
   const o = { ...base };
   for (const k of ["stones", "turnSec", "teams"]) if (src?.[k] !== undefined && OPT_CHOICES[k].includes(Number(src[k]))) o[k] = Number(src[k]);
-  if (MAPS.includes(src?.map)) o.map = src.map;
+  if (MAPS.includes(src?.map) || src?.map === "random") o.map = src.map;
+  if (src?.raid !== undefined) o.raid = BOSS_IDS.includes(src.raid) ? src.raid : null;
+  if (o.raid) o.teams = 0; // 레이드는 모두 한 팀 (보스와 싸움)
   return o;
 }
 const defaultStream = () => ({ on: false, rules: { shield: 1000, quake: 3000, revive: 5000, giant: 2000, randomAug: 10000 }, targets: { shield: "streamer", quake: "random", revive: "streamer", giant: "streamer", randomAug: "streamer" }, cheerShield: false, link: { status: "off", platform: null, nickname: null, donation: false, error: null }, log: [], queue: [], cheer: new Map(), cheerVoters: new Map(), recent: new Map() });
@@ -51,7 +58,8 @@ function publicRoom(room, viewerId) {
   return {
     id: room.id, code: room.inviteCode, hostId: room.hostUserId, status: room.status, soloAi: !!room.soloAi,
     opts: { mode: room.mode, maxPlayers: room.maxPlayers, ...room.opts, botDiff: room.botDiff },
-    seats: room.order.map(uid => { const p = room.players.get(uid); return { id: p.id, name: p.name, avatar: p.avatar, isBot: p.isBot, diff: p.isBot ? p.diff : null, isGuest: p.isGuest, connected: p.isBot || p.connected, left: !!p.left, team: p.team ?? 0, skin: p.skin }; }),
+    seats: room.order.map(uid => { const p = room.players.get(uid); return { id: p.id, name: p.name, avatar: p.avatar, isBot: p.isBot, diff: p.isBot ? p.diff : null, isGuest: p.isGuest, connected: p.isBot || p.connected, left: !!p.left, team: p.team ?? 0, skin: p.skin, title: p.title || null }; }),
+    stage: room.stage || null, daily: room.daily || null,
     spectators: [...room.spect.values()].map(s => ({ id: s.id, name: s.name })),
     me: viewerId, spectator,
     stream: st.on ? {
@@ -83,9 +91,35 @@ function flush(io, room) {
 }
 function onEnded(io, room) {
   room.status = "ended"; room.endedAt = now();
+  try { recordEnd(io, room); } catch (e) { console.error("[flick] record", e); }
   room.stream.queue = [];
   if (room.endTimer) clearTimeout(room.endTimer);
   room.endTimer = setTimeout(() => { room.endTimer = null; if (rooms.get(room.id) !== room || room.status !== "ended") return; if (connectedCount(room)) { room.status = "lobby"; room.game = null; emitState(io, room); } else deleteRoom(io, room, "ENDED_TTL"); }, ENDED_ROOM_MS);
+}
+/** 판 끝: 사람마다 업적·별·오늘의 도전 기록 (서버가 확정한 결과로만) */
+function recordEnd(io, room) {
+  const g = room.game, res = g?.result; if (!res) return;
+  const st = room.stage ? STAGES[room.stage - 1] : null;
+  const entries = [];
+  for (const r of res.rows) {
+    const seat = room.players.get(r.id); if (!seat || seat.isBot || r.boss) continue;
+    if (r.left && !r.win) { /* 중간에 나간 사람도 판 수는 기록 */ }
+    const win = !!r.win, s = r.stats;
+    const stars = st ? starsOf(st, { win, stones: r.baseStones, start: st.my, shots: s.shots }) : 0;
+    if (st && win) { recentClear.set(seat.id, Math.max(recentClear.get(seat.id) || 0, st.n)); if (recentClear.size > 5000) recentClear.delete(recentClear.keys().next().value); }
+    const run = { win, kills: s.kills, bKill: s.bKill, perfect: win && s.lost === 0, comeback: win && r.baseStones === 1 && r.startStones > 1, holes: s.holes, bossKill: !!(res.boss?.killed && win), bossKind: res.boss?.kind, raidClear: !!(room.opts.raid && res.boss?.killed && win && !st), daily: !!room.daily, augs: s.augUsed, teamWin: win && !!(res.teams || res.boss), map: res.map, stage: st?.n || 0, stars };
+    const score = room.daily ? dailyScore({ win, kills: s.kills, stones: r.baseStones, shots: s.shots, rank: r.rank }) : null;
+    entries.push({ key: seat.id, isGuest: seat.isGuest, name: seat.name, sockId: seat.sockId, run, stars, score });
+  }
+  if (!entries.length) return;
+  PROG.record(entries).then((out) => {
+    for (const e of entries) {
+      const o = out.get(e.key); if (!e.sockId) continue;
+      const prev = st ? Number(o?.prevStg?.[st.n]) || 0 : 0;
+      io.to(e.sockId).emit("flick:ach", { newly: o?.newly || [], count: o?.count ?? null, stage: st?.n || null, stars: e.stars, prevStars: prev, starsTotal: o?.stats?.stars ?? null, saved: !!o });
+    }
+  }).catch(e => console.error("[flick] progress", e));
+  if (room.daily) for (const e of entries) PROG.dailyRecord({ key: e.key, isGuest: e.isGuest, name: e.name, best: e.score, win: e.run.win }).then((o) => { if (e.sockId) io.to(e.sockId).emit("flick:dailyBest", o ? { ...o, score: e.score } : { score: e.score, saved: false }); }).catch(() => {});
 }
 function deleteRoom(io, room, reason) {
   if (room.emptyTimer) clearTimeout(room.emptyTimer);
@@ -106,8 +140,17 @@ function checkEmpty(io, room) {
 function startGame(io, room) {
   for (const uid of [...room.order]) { const p = room.players.get(uid); if (!p || p.left || (!p.isBot && !p.connected)) removeSeat(room, uid); }
   room.status = "playing";
-  room.game = new FlickGame({ players: room.order.map(uid => { const p = room.players.get(uid); return { id: p.id, name: p.name, avatar: p.avatar, isBot: p.isBot, diff: p.diff, team: p.team, skin: p.skin }; }), mode: room.mode, opts: room.opts, now: now() });
-  for (const gp of room.game.players) gp.connected = room.players.get(gp.id).isBot || room.players.get(gp.id).connected;
+  const raid = room.opts.raid && BOSSES[room.opts.raid] ? room.opts.raid : null, st = room.stage ? STAGES[room.stage - 1] : null, dl = room.daily ? dailyCfg(room.daily) : null;
+  const bossKind = st?.boss?.kind || raid;
+  const humansN = room.order.filter(uid => !room.players.get(uid).isBot).length;
+  const players = room.order.map(uid => { const p = room.players.get(uid); return { id: p.id, name: p.name, avatar: p.avatar, isBot: p.isBot, diff: p.diff, team: bossKind ? 0 : p.team, skin: p.skin, title: p.title || null, stones: p.stones || undefined }; });
+  // 보스: 방 자리엔 없고 게임에만 (레이드 체력 = 2 + 참가자 수 × 0.8)
+  if (bossKind) players.push({ id: `flboss_${room.id}`, name: `${BOSSES[bossKind].icon} ${BOSSES[bossKind].name}`, boss: bossKind, bossHp: st?.boss?.hp || (2 + Math.ceil(room.order.length * 0.8)), team: 1 });
+  const opts = { ...room.opts, ...(bossKind ? { teams: 2 } : {}), ...(st ? { map: st.map, stones: st.my } : {}), ...(dl ? { map: dl.map, stones: dl.my } : {}) };
+  const extra = st ? { stage: st.n, name: st.name, goal: st.goal } : dl ? { daily: dl.day } : raid ? { raid: true } : null;
+  room.game = new FlickGame({ players, mode: st ? st.mode : dl ? dl.mode : room.mode, opts, now: now(), extra, ...(dl ? { rng: mulberry32(dl.seed) } : {}) });
+  room.humansAtStart = humansN;
+  for (const gp of room.game.players) { const rp = room.players.get(gp.id); gp.connected = !rp || rp.isBot || rp.connected; }
   room.stream.queue = []; room.stream.cheer = new Map(); room.stream.cheerVoters = new Map();
   if (room.endTimer) { clearTimeout(room.endTimer); room.endTimer = null; }
   io.to(chan(room.id)).emit("flick:start", { mode: room.mode });
@@ -153,6 +196,8 @@ async function profileOf(supa, me, nick) {
   if (!n || n === "게스트") { let h = 0; for (const ch of String(me.id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; n = (me.isGuest ? "게스트" : "플레이어") + String(h % 1000).padStart(3, "0"); }
   return { name: n, avatar };
 }
+/** 칭호 (DB가 느리면 1.5초만 기다리고 없이 진행) */
+async function titleFor(me) { try { await Promise.race([PROG.load(me.id), new Promise(r => setTimeout(r, 1500))]); } catch {} return PROG.titleOf(me.id); }
 function attach(io, socket, room, rec) {
   if (rec.sockId && rec.sockId !== socket.id) { const old = io.sockets.sockets.get(rec.sockId); if (old) { old.emit("flick:replaced", {}); old.leave(chan(room.id)); } }
   rec.sockId = socket.id; rec.connected = true; rec.dcAt = 0;
@@ -160,7 +205,7 @@ function attach(io, socket, room, rec) {
   const gp = room.game?.P(rec.id); if (gp && !rec.left) gp.connected = true;
   checkEmpty(io, room);
 }
-const newSeat = (id, name, o = {}) => ({ id, name, avatar: o.avatar || null, isBot: !!o.isBot, diff: o.diff || "normal", isGuest: !!o.isGuest, connected: !o.isBot, left: false, sockId: o.sockId || null, dcAt: 0, team: o.team ?? 0, skin: o.skin || null });
+const newSeat = (id, name, o = {}) => ({ id, name, avatar: o.avatar || null, isBot: !!o.isBot, diff: o.diff || "normal", isGuest: !!o.isGuest, connected: !o.isBot, left: false, sockId: o.sockId || null, dcAt: 0, team: o.team ?? 0, skin: o.skin || null, title: o.title || null, stones: o.stones || null });
 function balanceTeam(room) {
   const n = room.opts.teams || 2; const c = Array(n).fill(0);
   for (const uid of room.order) { const p = room.players.get(uid); c[(p.team || 0) % n]++; }
@@ -169,7 +214,7 @@ function balanceTeam(room) {
 
 // ---------------- 스트리머: 후원 ----------------
 function pickTarget(room, how) {
-  const g = room.game; const al = g.alivePlayers(); if (!al.length) return null;
+  const g = room.game; const al = g.alivePlayers().filter(p => !p.boss); if (!al.length) return null;
   if (how === "streamer") { const h = g.P(room.hostUserId); if (h && !h.out) return h; }
   if (how === "leader") return al.slice().sort((a, b) => g.discsOf(b.id).length - g.discsOf(a.id).length)[0];
   if (how === "last") return al.slice().sort((a, b) => g.discsOf(a.id).length - g.discsOf(b.id).length)[0];
@@ -236,7 +281,7 @@ function onViewerChat(io, room, msg) {
   const text = String(msg?.text ?? msg?.content ?? msg?.message ?? "").trim();
   const who = String(msg?.sender ?? msg?.senderChannelId ?? msg?.uid ?? msg?.nick ?? msg?.nickname ?? "");
   const m = text.match(/^!\s*([1-8])$/); if (!m || !who) return;
-  const p = g.players[Number(m[1]) - 1]; if (!p) return;
+  const p = g.players[Number(m[1]) - 1]; if (!p || p.boss) return;
   const prev = st.cheerVoters.get(who); if (prev === p.id) return;
   if (prev) st.cheer.set(prev, Math.max(0, (st.cheer.get(prev) || 1) - 1));
   st.cheerVoters.set(who, p.id); if (st.cheerVoters.size > 20000) st.cheerVoters.delete(st.cheerVoters.keys().next().value);
@@ -246,7 +291,7 @@ function onViewerChat(io, room, msg) {
 function onPickStart(io, room) {
   const st = room.stream, g = room.game;
   if (!st.on || !st.cheerShield || g.pickIdx === 0) return;
-  const top = [...st.cheer].filter(([id]) => !g.P(id)?.out).sort((a, b) => b[1] - a[1])[0];
+  const top = [...st.cheer].filter(([id]) => g.P(id) && !g.P(id).out && !g.P(id).boss).sort((a, b) => b[1] - a[1])[0];
   if (!top || top[1] <= 0) return;
   const p = g.P(top[0]); const d = g.discsOf(p.id).find(x => x.shield < 2);
   if (d) { d.shield++; io.to(chan(room.id)).emit("flick:cheerBonus", { uid: p.id, name: p.name, n: top[1] }); g.addLog(`📣 시청자 응원 1등 ${p.name}: 보호막!`, p.id); }
@@ -254,7 +299,7 @@ function onPickStart(io, room) {
 
 // ---------------- 등록 ----------------
 export function registerFlick(io, supabaseAdmin, hooks = {}) {
-  HOOKS = hooks;
+  HOOKS = hooks; PROG = hooks.progress || createProgress(supabaseAdmin);
   ensureTicker(io);
   // 응원 수가 바뀌면 1초에 한 번만 알림
   setInterval(() => { for (const room of rooms.values()) if (room.cheerDirty) { room.cheerDirty = false; io.to(chan(room.id)).emit("flick:cheer", Object.fromEntries(room.stream.cheer)); } }, 1000).unref?.();
@@ -288,11 +333,60 @@ export function registerFlick(io, supabaseAdmin, hooks = {}) {
         players: new Map(), order: [], spect: new Map(), game: null, botSeq: 0, stream: defaultStream(), createdAt: now(),
       };
       rooms.set(id, room); invites.set(room.inviteCode, id);
-      const p = newSeat(me.id, name, { avatar, isGuest: me.isGuest, sockId: socket.id, skin: SKINS.includes(pl.skin) ? pl.skin : null });
+      const p = newSeat(me.id, name, { avatar, isGuest: me.isGuest, sockId: socket.id, skin: SKINS.includes(pl.skin) ? pl.skin : null, title: await titleFor(me) });
       room.players.set(me.id, p); room.order.push(me.id);
       attach(io, socket, room, p);
       cb({ ok: true, code: room.inviteCode, me: me.id, meta: META });
       emitState(io, room);
+    }));
+    // ---------- 혼자: 도전 모드 단계 · 오늘의 도전 (바로 시작) ----------
+    let soloHits = [];
+    const soloStart = async (pl, cb, kind) => {
+      const t = now(); soloHits = soloHits.filter(x => t - x < 60_000); if (soloHits.length >= 20) return cb({ ok: false, error: "TOO_FAST" }); soloHits.push(t);
+      let st = null, dl = null;
+      if (kind === "stage") { const n = Number(pl.n); st = Number.isInteger(n) ? STAGES[n - 1] : null; if (!st) return cb({ ok: false, error: "BAD_VALUE" }); }
+      else dl = dailyCfg(todayKst());
+      const old = myRoom(); if (old) leave(io, old, me.id);
+      const { name, avatar } = await profileOf(supabaseAdmin, me, pl.nickname);
+      let prog = null; try { prog = await Promise.race([PROG.load(me.id), new Promise(r => setTimeout(() => r(null), 2500))]); } catch {}
+      // 단계 잠금: 기록을 읽을 수 있을 때만 확인 (표가 없거나 느리면 막지 않음)
+      if (st && prog && !prog.failed && PROG.isReady() && !stageOpen(prog.stats, st.n) && (recentClear.get(me.id) || 0) < st.n - 1) return cb({ ok: false, error: "STAGE_LOCKED" });
+      const cfg = st || dl;
+      const id = `fl_${now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      const room = {
+        id, inviteCode: genCode(), hostUserId: me.id, status: "lobby", mode: cfg.mode,
+        maxPlayers: Math.min(8, 1 + cfg.bots.length), opts: { ...DEFAULT_OPTS, map: cfg.map, stones: cfg.my, turnSec: 30 }, botDiff: "normal",
+        isPublic: false, soloAi: true, stage: st?.n || null, daily: dl?.day || null,
+        players: new Map(), order: [], spect: new Map(), game: null, botSeq: 0, stream: defaultStream(), createdAt: now(),
+      };
+      rooms.set(id, room); invites.set(room.inviteCode, id);
+      const p = newSeat(me.id, name, { avatar, isGuest: me.isGuest, sockId: socket.id, skin: SKINS.includes(pl.skin) ? pl.skin : null, title: PROG.titleOf(me.id), stones: cfg.my });
+      room.players.set(me.id, p); room.order.push(me.id);
+      for (const diff of cfg.bots) { room.botSeq++; const uid = `flbot_${room.id}_${room.botSeq}`; room.players.set(uid, newSeat(uid, `🤖 알봇${room.botSeq}`, { isBot: true, diff, stones: cfg.their })); room.order.push(uid); }
+      attach(io, socket, room, p);
+      cb({ ok: true, code: room.inviteCode, me: me.id, meta: META, stage: st?.n || null, daily: dl?.day || null });
+      startGame(io, room);
+    };
+    socket.on("flick:stage", guard((pl, cb) => soloStart(pl, cb, "stage")));
+    socket.on("flick:daily", guard((pl, cb) => soloStart(pl, cb, "daily")));
+    // ---------- 내 기록 · 칭호 · 랭킹 ----------
+    let infoHits = [];
+    const infoOk = () => { const t = now(); infoHits = infoHits.filter(x => t - x < 60_000); if (infoHits.length >= 40) return false; infoHits.push(t); return true; };
+    socket.on("flick:progress", guard(async (pl, cb) => {
+      if (!infoOk()) return cb({ ok: false, error: "TOO_FAST" });
+      const row = await PROG.load(me.id, { fresh: !!pl.fresh }); if (!row) return cb({ ok: false, error: "NO_PLAYER" });
+      const s = row.stats || {};
+      cb({ ok: true, ready: PROG.isReady(), stg: s.stg || {}, stars: s.stars || 0, unlocked: row.unlocked || [], equip: row.equip || {}, stats: { plays: s.plays || 0, wins: s.wins || 0, kills: s.kills || 0, bKill: s.bKill || 0, bossKills: s.bossKills || 0, raidClears: s.raidClears || 0, daily: s.daily || 0, mapsWon: s.mapsWon || 0, bossKinds: s.bossKinds || 0, stages: s.stages || 0, holes: s.holes || 0, augs: s.augs || 0, teamWins: s.teamWins || 0, perfect: s.perfect || 0, comeback: s.comeback || 0 }, today: todayKst(), dailyCfg: dailyCfg(todayKst()) });
+    }));
+    socket.on("flick:equip", guard(async (pl, cb) => {
+      if (!infoOk()) return cb({ ok: false, error: "TOO_FAST" });
+      const r = await PROG.setEquip(me.id, { t: String(pl.t || "") });
+      if (r.ok) { const room = myRoom(); const seat = room?.players.get(me.id); if (seat && room.status !== "playing") { seat.title = r.equip.t; emitState(io, room); } }
+      cb(r);
+    }));
+    socket.on("flick:rank", guard(async (pl, cb) => {
+      if (!infoOk()) return cb({ ok: false, error: "TOO_FAST" });
+      cb(pl.kind === "stars" ? await PROG.starsTop(me.id) : await PROG.dailyTop(me.id));
     }));
     socket.on("flick:joinRoom", guard(async (pl, cb) => {
       const room = rooms.get(invites.get(String(pl.code || "").trim()));
@@ -313,7 +407,7 @@ export function registerFlick(io, supabaseAdmin, hooks = {}) {
         io.to(chan(room.id)).emit("flick:notice", { k: "watch", name });
         return emitState(io, room);
       }
-      const p = newSeat(me.id, name, { avatar, isGuest: me.isGuest, sockId: socket.id, team: balanceTeam(room), skin: SKINS.includes(pl.skin) ? pl.skin : null });
+      const p = newSeat(me.id, name, { avatar, isGuest: me.isGuest, sockId: socket.id, team: balanceTeam(room), skin: SKINS.includes(pl.skin) ? pl.skin : null, title: PROG.titleOf(me.id) });
       room.players.set(me.id, p); room.order.push(me.id);
       attach(io, socket, room, p);
       cb({ ok: true, code: room.inviteCode, me: me.id, meta: META });
@@ -387,8 +481,8 @@ export function registerFlick(io, supabaseAdmin, hooks = {}) {
     socket.on("flick:start", guard((pl, cb) => {
       const room = hostRoom(cb); if (!room) return;
       const ready = room.order.filter(uid => { const p = room.players.get(uid); return p && !p.left && (p.isBot || p.connected); });
-      if (ready.length < 2) return cb({ ok: false, error: "NEED_2" });
-      if (room.opts.teams) { const used = new Set(ready.map(uid => room.players.get(uid).team)); if (used.size < 2) return cb({ ok: false, error: "NEED_2_TEAMS" }); }
+      if (ready.length < (room.opts.raid || room.stage || room.daily ? 1 : 2)) return cb({ ok: false, error: "NEED_2" });
+      if (room.opts.teams && !room.opts.raid) { const used = new Set(ready.map(uid => room.players.get(uid).team)); if (used.size < 2) return cb({ ok: false, error: "NEED_2_TEAMS" }); }
       cb({ ok: true }); startGame(io, room);
     }));
     socket.on("flick:toLobby", guard((pl, cb) => {
@@ -494,6 +588,7 @@ export function registerFlick(io, supabaseAdmin, hooks = {}) {
   });
 }
 
-const META = { augs: META_AUGS, rarity: RARITY, kindLabel: KIND_LABEL, synergy: SYNERGY, maxAugs: MAX_AUGS, pickEvery: PICK_EVERY, maps: MAPS, skins: SKINS, colors: COLORS, optChoices: OPT_CHOICES, defaultOpts: DEFAULT_OPTS, streamKinds: STREAM_KINDS, streamLabel: STREAM_LABEL, streamTargets: STREAM_TARGETS };
+const META = { augs: META_AUGS, rarity: RARITY, kindLabel: KIND_LABEL, synergy: SYNERGY, maxAugs: MAX_AUGS, pickEvery: PICK_EVERY, maps: MAPS, skins: SKINS, colors: COLORS, optChoices: OPT_CHOICES, defaultOpts: DEFAULT_OPTS, streamKinds: STREAM_KINDS, streamLabel: STREAM_LABEL, streamTargets: STREAM_TARGETS,
+  mapRules: MAP_RULE, stages: STAGES, bosses: BOSSES, skillName: SKILL_NAME, achs: ACHS, maxStars: MAX_STARS };
 addPublicRooms("flick", rooms);
 export const _flickTest = { rooms, invites, userRoom, receiveDonation, onPlatformDonation, onViewerChat };
