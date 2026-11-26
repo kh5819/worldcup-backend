@@ -200,7 +200,7 @@ function hit(run, ctx, srcRef, tgtRef, base, o = {}) {
   const blocked = Math.min(tgt.block, n); tgt.block -= blocked; const un = n - blocked;
   pushEv(ctx, { k: "hit", t: tgtRef, s: srcRef, n, un, b: blocked });
   if (un > 0) loseHp(run, ctx, tgtRef, un, srcRef);
-  if (srcRef?.k === "p") { const st = run.players[srcRef.i].st; st.dmg += un; st.maxHit = Math.max(st.maxHit, n); }
+  if (srcRef?.k === "p") { const st = run.players[srcRef.i].st; st.dmg += un; st.maxHit = Math.max(st.maxHit, n); if (un > 0) { const k = ctx.cid || "_etc"; (st.cdmg ||= {})[k] = (st.cdmg[k] || 0) + un; } }   // 카드별 준 피해 (결과 화면)
   if (src && o.attack !== false && tgt.st.thorns && srcRef) { pushEv(ctx, { k: "thorns", t: srcRef, n: tgt.st.thorns }); const b2 = Math.min(src.block, tgt.st.thorns); src.block -= b2; if (tgt.st.thorns - b2 > 0) loseHp(run, ctx, srcRef, tgt.st.thorns - b2, tgtRef); }
   const leech = o.leech || (ctx.leech && srcRef?.k === "p" ? ctx.leech : 0);
   if (leech && un > 0 && srcRef) healEnt(run, ctx, srcRef, Math.floor((un * leech) / 100));
@@ -594,7 +594,7 @@ function playCard(run, pi, a, ev) {
   if (d.tgt === "ally") { tgtP = a.tgt == null ? pi : a.tgt | 0; if (!run.players[tgtP]?.alive) return "BAD_TARGET"; }
   cp.energy -= cost; cp.hand.splice(hi, 1);
   if (d.t !== "pow") (d.ex ? cp.exh : cp.disc).push(inst);
-  const ctx = mkCtx(run, { k: "p", i: pi }, { ev, tgtE, tgtP, prevOps: cp.prevOps, prevTgt: cp.prevTgt, prevInst: cp.prevInst, selfU: inst.u });
+  const ctx = mkCtx(run, { k: "p", i: pi }, { ev, tgtE, tgtP, prevOps: cp.prevOps, prevTgt: cp.prevTgt, prevInst: cp.prevInst, selfU: inst.u, cid: inst.id });
   pushEv(ctx, { k: "play", p: pi, u: inst.u, id: inst.id, tgt: tgtE ?? tgtP, ty: d.t });
   // 각인
   let mult = 1;

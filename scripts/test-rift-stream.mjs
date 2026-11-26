@@ -61,7 +61,7 @@ while (!room.run.over && Date.now() - T0 < 150000) {
 }
 ok(room.run.over, "방송 판 끝까지 (" + room.run.phase + " " + room.run.floor + "층)");
 console.log(`  방송 결과: ${room.run.over?.win ? "클리어" : "패배"} · ${room.run.floor + 1}층 · 투표 ${votes}번 · 시청자 투표 참여 ${room.st.voters} · 후원 기록 ${room.st.log.length}`);
-ok(votes >= 4, "투표가 여러 번 열림");
+ok(votes >= 3, "투표가 여러 번 열림");   // 일찍 쓰러지는 판(12층)은 지도 칸이 적어 3번
 await sleep(400);
 ok(gotState > 0 && gotState < 2000, `시청자는 모아 받은 상태 (${gotState}번)`);
 ok(sstate && !("log" in sstate), "보내는 상태에 행동 기록 없음");

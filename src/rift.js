@@ -363,6 +363,28 @@ export function registerRift(io, supabaseAdmin, app, hooks = {}) {
   });
   // 기록 판: 클리어만, 난이도 높은 순 → 턴 적은 순
   let cache = { at: 0, body: null };
+  // 명예의 전당: 클리어 · 최고 도달 · 최고 한 방 · 덱 배틀 우승 (모두 서버가 확인한 기록만 · 사람마다 가장 좋은 하나)
+  let fame = { at: 0, body: null };
+  app.get("/rift/fame", async (_req, res) => {
+    try {
+      if (fame.body && Date.now() - fame.at < 60000) return res.json(fame.body);
+      if (!supabaseAdmin) return res.json({ ok: true, clears: [], floors: [], hits: [], battle: [] });
+      const cols = "mode, owner_key, nickname, chars, diff, win, floor, turns, players, created_at, hit:summary->players->0->st->maxHit, dmg:summary->players->0->st->dmg, regions:summary->regions";
+      const [a, c] = await Promise.all([
+        supabaseAdmin.from("rift_runs").select(cols).in("mode", ["solo", "coop", "stream"]).order("created_at", { ascending: false }).limit(3000),
+        supabaseAdmin.from("rift_runs").select("players, created_at, summary").eq("mode", "battle").order("created_at", { ascending: false }).limit(200),
+      ]);
+      const rows = a.data || [], W = { night: 3, hard: 2, normal: 1 };
+      const pub = (x, extra = {}) => ({ name: x.nickname || null, chars: x.chars || [], mode: x.mode, diff: x.diff, win: !!x.win, floor: x.floor, turns: x.turns, players: x.players, regions: x.regions ?? null, at: x.created_at, ...extra });
+      const best = (list, key, cmp, n = 100) => { const seen = new Set(), out = []; for (const x of [...list].sort(cmp)) { const k = key(x); if (seen.has(k)) continue; seen.add(k); out.push(x); if (out.length >= n) break; } return out; };
+      const who = (x) => `${x.owner_key || x.nickname}:${x.mode}`;
+      const clears = best(rows.filter((x) => x.win), (x) => `${who(x)}:${(x.chars || []).join(",")}`, (p, q) => (W[q.diff] || 0) - (W[p.diff] || 0) || p.turns - q.turns).map((x) => pub(x));
+      const floors = best(rows, who, (p, q) => q.floor - p.floor || (W[q.diff] || 0) - (W[p.diff] || 0) || p.turns - q.turns).map((x) => pub(x));
+      const hits = best(rows.filter((x) => x.mode === "solo" && Number(x.hit) > 0), who, (p, q) => Number(q.hit) - Number(p.hit)).map((x) => pub(x, { hit: Number(x.hit) || 0, dmg: Number(x.dmg) || 0 }));
+      const battle = (c.data || []).map((x) => { const st = x.summary?.standings || [], top = st.find((s) => s.rank === 1); return top && !top.ai ? { name: top.name, char: top.char, pts: top.pts, players: x.players, humans: x.summary?.humans || 0, at: x.created_at } : null; }).filter(Boolean).slice(0, 50);
+      fame = { at: Date.now(), body: { ok: true, clears, floors, hits, battle } }; res.json(fame.body);
+    } catch { res.json({ ok: true, clears: [], floors: [], hits: [], battle: [] }); }
+  });
   app.get("/rift/ranking", async (_req, res) => {
     try {
       if (cache.body && Date.now() - cache.at < 60000) return res.json(cache.body);
