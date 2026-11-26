@@ -132,7 +132,7 @@ export function registerRiftBattle(io, supabaseAdmin) {
       if (ROOMS.size >= 1000) return reply({ ok: false, error: "BUSY" });
       let code; do code = code5(); while (ROOMS.has(code));
       const r = { code, phase: "lobby", host: uid, round: 0, deadline: null, players: [{ uid, name: clean(p.name) || "모험가", char: "knight", on: true, ready: false, pts: 0, sc: 0 }], socks: new Map([[socket.id, uid]]), sb: supabaseAdmin, saved: false, lastOn: Date.now(), pairs: [], bye: null, final: null };
-      ROOMS.set(code, r); reply({ ok: true, code, me: 0 }); sendBoard(io, r, true);
+      ROOMS.set(code, r); reply({ ok: true, code, me: 0, board: { ...boardOf(r), me: 0 } }); sendBoard(io, r, true);   // 응답에도 방 정보 (이벤트 순서에 기대지 않게)
     });
     on("rfb:join", (p, reply) => {
       const r = ROOMS.get(String(p.code || "").toUpperCase()); if (!r) return reply({ ok: false, error: "NO_ROOM" });
@@ -146,7 +146,7 @@ export function registerRiftBattle(io, supabaseAdmin) {
       }
       pl.on = true; if (p.name && r.phase === "lobby") pl.name = clean(p.name) || pl.name;
       r.socks.set(socket.id, uid);
-      reply({ ok: true, code: r.code, me: r.players.indexOf(pl), run: pubRun(pl.run) }); sendBoard(io, r, true);
+      reply({ ok: true, code: r.code, me: r.players.indexOf(pl), run: pubRun(pl.run), board: { ...boardOf(r), me: r.players.indexOf(pl) } }); sendBoard(io, r, true);
     });
     on("rfb:char", (p, reply) => { const r = room(p.code), pl = r && mine(r); if (!pl || r.phase !== "lobby" || !(typeof p.char === "string" && Object.hasOwn(DATA.CHARS, p.char))) return reply({ ok: false, error: "PHASE" }); pl.char = p.char; pl.ready = false; reply({ ok: true }); sendBoard(io, r); });
     on("rfb:ready", (p, reply) => { const r = room(p.code), pl = r && mine(r); if (!pl || r.phase !== "lobby") return reply({ ok: false, error: "PHASE" }); pl.ready = !!p.ready; reply({ ok: true }); sendBoard(io, r); });
