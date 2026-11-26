@@ -27,8 +27,8 @@ async function runSolo(s, mode, pol = "good", extra = {}) {
 }
 const g1 = await conn("guest_aaaaaaaa"), g2 = await conn("guest_bbbbbbbb"), m1 = await conn("u_a");
 // 1) 빠른·정밀
-{ const { b, res, f } = await runSolo(g1, "quick"); ok(b.plan.length === 6, "빠른검사 6종"); ok(res.every((r) => r.ok && r.result.score >= 70), "잘하면 고득점 " + res.map((r) => r.result?.score)); ok(f.ok && f.id, "빠른 저장"); ok(f.result.tier && f.result.style && f.result.diag.opinion.length, "티어·유형·소견"); ok(f.result.total >= 700, "빠른 총점 " + f.result.total); }
-{ const { b, f } = await runSolo(m1, "full"); ok(b.plan.length === 15, "정밀검사 15종"); ok(f.ok && f.result.nick === "회원A", "회원 닉네임 = 프로필"); ok(f.result.total >= 800, "정밀 총점 " + f.result.total); ok(Object.keys(f.result.areas).length === 6, "6영역"); ok(f.result.rank === 1, "순위"); }
+{ const { b, res, f } = await runSolo(g1, "quick"); ok(b.plan.length === 5, "빠른검사 5종"); ok(res.every((r) => r.ok && r.result.score >= 70), "잘하면 고득점 " + res.map((r) => r.result?.score)); ok(f.ok && f.id, "빠른 저장"); ok(f.result.tier && f.result.style && f.result.diag.opinion.length, "티어·유형·소견"); ok(f.result.total >= 700, "빠른 총점 " + f.result.total); }
+{ const { b, f } = await runSolo(m1, "full"); ok(b.plan.length === 10, "정밀검사 10종"); ok(f.ok && f.result.nick === "회원A", "회원 닉네임 = 프로필"); ok(f.result.total >= 800, "정밀 총점 " + f.result.total); ok(Object.keys(f.result.areas).length === 6, "6영역"); ok(f.result.rank === 1, "순위"); }
 { const { f } = await runSolo(g2, "full", "rnd"); ok(f.ok && f.result.total < 300, "찍기는 낮은 티어 " + f.result.total + " " + f.result.tier); }
 { const { f } = await runSolo(g2, "quick", "spam"); ok(f.ok && f.result.total < 300, "연타는 낮은 티어 " + f.result.total); }
 // 2) 연습: 저장 안 됨

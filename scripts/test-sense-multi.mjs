@@ -60,7 +60,7 @@ ok(f.report.awards.some((a) => a.title === "최고의 전략가") && f.report.aw
 ok(host.room.roundResult?.titles?.length >= 1 && host.room.roundResult.overall.every((x) => Number.isFinite(x.delta)), "라운드 칭호·순위 변동");
 // 4) 재대결
 ok((await emit(P[2], "sm:rematch", {})).error === "NOT_HOST", "재대결은 방장만");
-ok((await emit(host, "sm:rematch", { mode: "full" })).ok, "재대결"); await sleep(50); ok(host.room.phase === "lobby" && host.room.tests.length === 15, "대기실로·정밀검사");
+ok((await emit(host, "sm:rematch", { mode: "full" })).ok, "재대결"); await sleep(50); ok(host.room.phase === "lobby" && host.room.tests.length === 10, "대기실로·정밀검사");
 { await emit(P[1], "sm:leave", {}); const nb = await conn("guest_newbie1"); const j = await emit(nb, "sm:join", { code, profile: PROF("새친구", 3) }); ok(j.ok, "새 참가자"); const pl = j.room.players.find((p) => p.nick === "새친구"); ok(pl && pl.best === null, "기록 없는 사람은 최고 티어 없음"); await emit(nb, "sm:leave", {}); const old = await conn("guest_p1xxxxxx"); const j2 = await emit(old, "sm:join", { code, profile: PROF("플레이어1", 1) }); ok(j2.ok && j2.room.players.find((p) => p.nick === "플레이어1")?.best?.tier, "다시 들어온 사람은 이전 최고 티어 표시"); P.push(nb, old); }
 // 5) 나가기·방장 넘김
 await emit(host, "sm:leave", {}); await sleep(50); ok(P[2].room.host !== "u_host" && P[2].room.players.length === 7, "방장 나가면 넘김");

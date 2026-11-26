@@ -1,11 +1,13 @@
 // =========================
 // 플듀 게임 센스 진단소 — 서버·화면 공용 (js/sense/sense-core.js 와 똑같아야 함: test-sense가 검사)
-// 15종 검사: 시드로 문제 생성(genSpec) → 화면은 입력만 기록(log) → 서버가 같은 규칙으로 다시 채점(scoreTest)
+// 검사(시즌 2는 10종): 시드로 문제 생성(genSpec) → 화면은 입력만 기록(log) → 서버가 같은 규칙으로 다시 채점(scoreTest)
 // 같은 시드 + 같은 입력 = 같은 점수 (결정적). 빠르게 누르기·찍기·반복으로는 점수가 안 오르게 설계
 // 점수는 플레이듀오 게임 안의 능력 지표이며 실제 게임 실력·심리 능력을 인증하지 않음
 // =========================
-export const CORE_VERSION = 1;
-export const SET_VERSION = "s1";
+// s2 (2026-11-26 리뉴얼): 고르기형(정답이 애매한) 검사 빼고 손으로 하는 검사 10종으로. 규칙 한 줄 · 30초 안팎 · 라운드 4~5번
+// 랭킹·순위·분포는 같은 SET_VERSION 기록끼리만 (예전 s1 기록은 지우지 않고 내 기록에 남음)
+export const CORE_VERSION = 2;
+export const SET_VERSION = "s2";
 
 export function rng(seed) { let a = (seed >>> 0) || 7; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 export function hashSeed(s) { let h = 2166136261; for (const c of String(s)) { h ^= c.codePointAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
@@ -25,30 +27,34 @@ export const AREA_NAME = { situ: "상황 판단력", strat: "전략적 사고력
 export const AREA_SHORT = { situ: "판단", strat: "전략", combat: "전투", info: "정보", crisis: "위기", multi: "멀티" };
 export const AREA_COL = { situ: "#3ee6f0", strat: "#9775fa", combat: "#ff6078", info: "#46e08a", crisis: "#f4c76a", multi: "#5aa8ff" };
 
-// ---------- 검사 15종 ----------
+// ---------- 검사 ----------
 const T = (name, en, icon, abil, dur, desc, how, ctl) => ({ name, en, icon, abil, dur, desc, how, ctl });
 // dur = 검사가 걸릴 수 있는 최대 시간(ms). 라운드형은 라운드 수 × (고민 제한 + 결과 연출) — 멀티 마감 시각에 씀
 export const TESTS = {
-  minimap: T("미니맵 경보", "Minimap Alert", "radar", { info: 0.5, multi: 0.3, crisis: 0.2 }, 40000, "작업하면서 미니맵 위험을 알아채요", ["가운데에서 반짝이는 광석을 눌러 캐세요.", "오른쪽 아래 미니맵에서 적(빨강)이 아군(파랑)에게 붙으면 그 라인의 경보 버튼을 누르세요.", "그냥 지나가는 적에게 경보를 누르면 감점이에요."], "광석 클릭/탭 · 경보: 1·2·3 키 또는 버튼"),
+  // ----- s2 검사 10종 (손으로 하는 검사) -----
+  boss: T("보스 패턴 피하기", "Boss Dodge", "skull", { crisis: 0.6, info: 0.4 }, 36000, "빨간 칸을 피해 안전한 칸으로", ["보스가 때릴 칸이 빨갛게 표시돼요.", "떨어지기 전에 안전한 칸으로 옮기세요. 뒤로 갈수록 빨라져요."], "←→ 키 · 칸 누르기"),
+  minimap: T("미니맵 경보", "Minimap Alert", "radar", { info: 0.6, multi: 0.4 }, 30000, "광석을 캐면서 미니맵도 보기", ["반짝이는 광석을 눌러 캐세요.", "미니맵에서 적(빨강)이 우리 타워에 붙으면 그 줄 경보를 누르세요."], "광석 누르기 · 경보: 1·2·3 키 또는 버튼"),
+  snipe: T("타깃 저격", "Target Snipe", "target", { combat: 0.5, situ: 0.3, strat: 0.2 }, 30000, "다가오는 적을 닿기 전에", ["빨간 적이 내려와요. 닿기 전에 눌러서 잡으세요.", "파란 아군은 누르면 안 돼요. 번개 표시는 빠른 적이에요."], "적 누르기 · 클릭"),
+  fake: T("페이크 간파", "Feint Read", "shield", { crisis: 0.5, situ: 0.5 }, 30000, "진짜 공격만 막아요", ["적이 칼을 휘두르는 척해요.", "무기가 빛날 때만 막기! 빛나지 않으면 가짜예요."], "스페이스 · 막기 버튼"),
+  tug: T("교전 타이밍", "Engage Timing", "sword", { situ: 0.5, strat: 0.5 }, 42000, "가장 유리한 순간에 돌격", ["가운데 힘겨루기 막대가 왔다 갔다 해요.", "파랑(우리)이 가장 넓게 밀어붙였을 때 돌격! 라운드마다 한 번만."], "돌격 버튼 · 스페이스"),
+  multitask: T("멀티태스킹 지휘관", "Multitask Commander", "grid", { multi: 0.7, crisis: 0.3 }, 30000, "세 칸을 동시에 챙겨요", ["세 칸 중 빨갛게 깜빡이는 칸을 눌러 처리하세요.", "아무 일 없는 칸을 누르면 실수예요."], "칸 누르기 · 1·2·3 키"),
+  cooldown: T("스킬 타이밍", "Skill Timing", "clock", { combat: 0.6, strat: 0.4 }, 30000, "막을 때 막고, 칠 때 치기", ["보스가 빨갛게 돌진을 준비하면 막기.", "금색 약점이 보이면 필살기! 아무 때나 누르면 감점이에요."], "막기 W · 필살기 E · 버튼"),
+  teamfight: T("한타 각 포착", "Teamfight Window", "burst", { combat: 0.4, strat: 0.4, situ: 0.2 }, 27000, "적이 가장 많이 모인 곳에 한 방", ["적들이 모였다 흩어져요.", "가장 많이 겹칠 때 그 자리를 누르세요. 라운드마다 한 번만."], "전장 누르기"),
+  overload: T("정보 과부하", "Info Overload", "bell", { info: 0.5, multi: 0.5 }, 30000, "중요한 알림만 골라 누르기", ["알림이 쏟아져요. 빨간 위험 알림만 눌러요.", "회색 알림을 누르면 감점이에요."], "알림 누르기"),
+  vision: T("시야 기억", "Vision Memory", "eye", { info: 0.5, situ: 0.5 }, 58000, "잠깐 본 적, 한 칸 뒤 어디?", ["적이 잠깐 보였다가 사라져요.", "화살표 쪽으로 1칸 간 자리를 적의 수만큼 누르세요."], "칸 누르기"),
+  // ----- s1 검사 (예전 기록 보기용 · 지금 검사에선 안 씀) -----
   engage: T("교전 판단", "Engage Call", "sword", { situ: 0.6, strat: 0.2, crisis: 0.2 }, 90000, "싸울까, 빠질까, 기다릴까", ["양쪽 인원·체력·궁극기·지형을 보고 공격·후퇴·대기를 고르세요.", "전력이 확실히 앞서면 공격, 확실히 밀리면 후퇴가 이득이에요.", "상대 궁극기만 준비됐다면 기다리는 게 나을 수 있어요."], "버튼 또는 1·2·3 키"),
   target: T("타깃 우선순위", "Target Priority", "target", { combat: 0.6, situ: 0.4 }, 90000, "누구부터 잡아야 덜 맞을까", ["적 4명을 처치할 순서를 정하세요. 나는 초당 같은 피해를 줘요.", "살아 있는 적은 계속 나를 때리고, 힐러는 다른 적을 회복시켜요.", "체력 대비 위험한 적부터 잡을수록 받는 피해가 줄어요."], "적을 순서대로 누르기"),
-  cooldown: T("쿨타임 마스터", "Cooldown Master", "clock", { combat: 0.5, strat: 0.3, crisis: 0.2 }, 42000, "스킬을 아끼고, 맞춰 쓰기", ["Q 연타(마나 15) · W 보호막(마나 25) · E 폭딜(마나 40)이 있어요.", "보스가 돌진을 준비하면 W로 막고, 약점이 드러나면 E를 쓰면 피해가 2배예요.", "Q만 연타하면 마나가 말라 정작 W·E를 못 써요."], "Q·W·E 키 또는 버튼"),
-  boss: T("보스 패턴 분석", "Boss Patterns", "skull", { crisis: 0.5, info: 0.3, situ: 0.2 }, 45000, "전조를 익히고 안전지대로", ["보스는 5가지 패턴을 써요. 공격 직전 색과 모양으로 신호를 줘요.", "신호를 보고 안전한 칸으로 옮기세요. 이동에는 시간이 걸려요.", "패턴은 반복돼요. 뒤로 갈수록 신호가 짧아지니 미리 익혀 두세요."], "←→ 키 · 칸 누르기"),
-  vision: T("시야 기억", "Vision Memory", "eye", { info: 0.6, situ: 0.4 }, 127000, "잠깐 본 적, 지금 어디 있을까", ["적의 위치와 이동 방향이 잠깐 보였다가 가려져요.", "적은 화살표 방향으로 2칸 움직여요. 벽에 닿으면 멈춰요.", "2칸 움직인 뒤 적이 있을 칸을 적의 수만큼 고르세요."], "칸 누르기 → 확인"),
   resource: T("자원 관리", "Resource Plan", "coin", { strat: 0.7, crisis: 0.3 }, 82000, "골드를 어디에 쓸까", ["웨이브 5개를 버텨요. 매 라운드 상점에서 하나를 사거나 아껴요.", "무기는 처치를 빠르게, 방어구는 받는 피해를 줄여요. 물약은 바로 회복해요.", "다음 웨이브를 보고 미리 준비하세요. 끝까지 살아남고 체력이 많을수록 좋아요."], "상점 버튼"),
-  multitask: T("멀티태스킹 지휘관", "Multitask Commander", "grid", { multi: 0.7, crisis: 0.3 }, 45000, "기지·자원·아군을 동시에", ["세 칸의 일을 동시에 챙겨요. 기지: 적이 닿기 전에 방어 · 자원: 가득 차면 수거 · 아군: 체력이 빨개지면 치료.", "할 일이 없을 때 누르면 실수로 기록돼요.", "급한 것부터 처리하세요."], "칸 누르기 · 1·2·3 키"),
   path: T("위험한 길 찾기", "Risky Route", "map", { strat: 0.6, situ: 0.4 }, 87000, "목표에 맞는 길을 골라요", ["길마다 걸리는 시간, 위험(실패 확률), 보상이 달라요.", "라운드마다 목표가 달라요: 제한 시간 안 최대 보상 · 생존 우선 · 보상 우선.", "목표에 맞춰 기대 가치가 가장 큰 길을 고르세요."], "길 누르기"),
-  teamfight: T("한타 각 포착", "Teamfight Window", "burst", { combat: 0.5, situ: 0.3, info: 0.2 }, 43000, "범위 스킬 한 방, 언제 어디에", ["적들이 움직여요. 범위 스킬은 라운드마다 한 번만 쓸 수 있어요.", "적이 가장 많이 겹치는 순간과 위치를 노려 누르세요.", "늦으면 적이 흩어져요. 너무 빨라도 손해예요."], "전장 누르기"),
-  fake: T("페이크 간파", "Feint Read", "shield", { crisis: 0.5, info: 0.3, situ: 0.2 }, 40000, "진짜 공격만 막아요", ["적이 공격 모션을 취해요. 진짜 공격만 막으세요.", "진짜는 무기가 빛나고 발을 내딛어요. 가짜는 둘 중 하나가 빠져요.", "막기는 0.7초 쿨타임이에요. 아무 때나 누르면 감점이에요."], "스페이스 · 막기 버튼"),
-  overload: T("정보 과부하", "Info Overload", "bell", { info: 0.6, multi: 0.4 }, 40000, "중요한 알림만 골라서", ["알림이 쏟아져요. 대부분은 쓸모없어요.", "‘아군 위험’은 지원, ‘오브젝트’는 집결 버튼을 누르세요.", "쓸모없는 알림에 반응하거나 버튼을 잘못 누르면 감점이에요."], "지원(A) · 집결(S)"),
   comeback: T("역전의 한 수", "Comeback Play", "crown", { strat: 0.5, situ: 0.3, crisis: 0.2 }, 89000, "불리한 판, 최선의 한 수", ["지고 있는 상황이 나와요. 할 수 있는 행동 4개 중 하나를 골라요.", "상황 정보를 보고 역전 확률이 가장 높은 수를 고르세요.", "무리한 한타가 늘 정답은 아니에요."], "선택지 누르기"),
   team: T("팀워크 지휘", "Team Command", "flag", { strat: 0.4, multi: 0.3, situ: 0.3 }, 89000, "팀원 3명에게 명령", ["팀원마다 체력·성향·상황이 달라요.", "공격·방어·지원·후퇴 중 각 팀원에게 맞는 명령을 고르세요.", "겁 많은 팀원에게 무리한 공격, 빈사 팀원에게 공격은 손해예요."], "팀원별 명령 버튼"),
   final: T("최종 종합 시뮬레이션", "Final Simulation", "trophy", { combat: 0.25, crisis: 0.2, multi: 0.25, situ: 0.15, strat: 0.15 }, 75000, "모든 센스를 한 판에", ["보스 전투를 75초 버티며 최대한 많은 피해를 줘요.", "전조 보고 이동 · 약점에 E · 쿨마다 Q · 위험할 때 물약 · 팀원 공격/방어 전환.", "팀원은 보스 약점 때 공격, 큰 공격 전조 때 방어가 좋아요."], "←→ 이동 · Q·E 스킬 · F 물약 · T 팀원 명령"),
 };
 export const TEST_IDS = Object.keys(TESTS);
 export const MODES = {
-  quick: { name: "빠른검사", tests: ["minimap", "engage", "target", "boss", "fake", "multitask"], min: 5 },
-  full: { name: "정밀검사", tests: ["minimap", "engage", "target", "cooldown", "boss", "vision", "resource", "multitask", "path", "teamfight", "fake", "overload", "comeback", "team", "final"], min: 15 },
+  quick: { name: "빠른검사", tests: ["boss", "snipe", "fake", "tug", "minimap"], min: 3 },
+  full: { name: "정밀검사", tests: ["boss", "minimap", "snipe", "fake", "tug", "multitask", "cooldown", "teamfight", "overload", "vision"], min: 7 },
 };
 export const modeName = (m) => MODES[m]?.name || (m === "practice" ? "연습" : m);
 
@@ -65,10 +71,10 @@ export const tierOf = (t) => TIERS.find((x) => t >= x.min) || TIERS[TIERS.length
 // =========================================================
 const GEN = {
   minimap(r) {
-    const ev = [], ores = []; let t = 3500;
-    while (t < 36500) { const danger = r() < 0.62; ev.push({ t: Math.round(t), lane: ri(r, 3), danger }); t += 2200 + r() * 2300; }
-    for (let k = 0, tt = 1200; tt < 38500; k++, tt += 2300 + r() * 600) ores.push({ id: k, t: Math.round(tt), x: 0.15 + r() * 0.7, y: 0.2 + r() * 0.55 });
-    return { dur: 40000, win: 2600, life: 2500, ev, ores };
+    const ev = [], ores = []; let t = 3000;
+    while (t < 27000) { const danger = r() < 0.62; ev.push({ t: Math.round(t), lane: ri(r, 3), danger }); t += 2100 + r() * 2000; }
+    for (let k = 0, tt = 1000; tt < 28500; k++, tt += 2200 + r() * 600) ores.push({ id: k, t: Math.round(tt), x: 0.15 + r() * 0.7, y: 0.2 + r() * 0.55 });
+    return { dur: 30000, win: 2600, life: 2500, ev, ores };
   },
   engage(r) {
     const sc = [];
@@ -87,25 +93,40 @@ const GEN = {
     }
     return { rounds };
   },
+  // s2: 막기(W)·필살기(E) 두 개만. 마나 없음, 버튼마다 0.9초 쿨타임
   cooldown(r) {
-    const charges = [], weak = []; let t = 4000;
-    while (t < 38000) { if (r() < 0.5) charges.push(Math.round(t)); else weak.push(Math.round(t)); t += 3300 + r() * 2200; }
-    return { dur: 42000, charges, weak, tell: 1500, weakLen: 3000, shield: 1600, mana0: 100, regen: 8, skills: { q: { cd: 2500, mana: 15, dmg: 10 }, w: { cd: 3000, mana: 25 }, e: { cd: 3500, mana: 40, dmg: 40 } } };
+    const charges = [], weak = []; let t = 2500;
+    while (t < 26500) { if (r() < 0.5) charges.push(Math.round(t)); else weak.push(Math.round(t)); t += 2600 + r() * 1600; }
+    if (!charges.length) charges.push(weak.shift()); if (!weak.length) weak.push(charges.pop());
+    return { dur: 30000, charges, weak, tell: 1300, weakLen: 2000, shield: 700, cd: 900 };
   },
+  // 가만히 한 칸에 서 있어도 잘 피해지면 검사가 안 되므로, 어느 칸에 가만히 있어도 30% 넘게 맞게 될 때까지 다시 만듦
   boss(r) {
-    const zones = 5, pats = shuffle(r, [[0, 1], [3, 4], [1, 2, 3], [0, 4], [0, 2, 4], [1, 3], [2, 3, 4], [0, 1, 2]]).slice(0, 5), cols = ["#ff6078", "#f4c76a", "#9775fa", "#3ee6f0", "#46e08a"], shapes = ["slam", "sweep", "ring", "beam", "cross"];
-    const att = []; let t = 3000, k = 0;
-    while (t < 43000) { const p = ri(r, 5), tell = Math.round(clamp(1500 - k * 35, 650, 1500)); att.push({ t: Math.round(t), p, tell }); t += tell + 900 + r() * 700; k++; }
-    return { dur: 45000, zones, start: 2, move: 170, phase2: 22500, pats: pats.map((z, i) => ({ z, col: cols[i], shape: shapes[i] })), att };
-  },
-  vision(r) {
-    const rounds = [];
-    for (let i = 0; i < 8; i++) {
-      const n = 3 + Math.min(3, Math.floor(i / 2)), used = new Set(), en = [];
-      while (en.length < n) { const x = ri(r, 6), y = ri(r, 6), k = y * 6 + x; if (used.has(k)) continue; used.add(k); en.push({ x, y, d: ri(r, 4) }); }
-      rounds.push({ en, show: Math.max(1100, 1800 - i * 80), lim: 12000 });
+    const zones = 5, cols = ["#ff6078", "#f4c76a", "#9775fa", "#3ee6f0", "#46e08a"], shapes = ["slam", "sweep", "ring", "beam", "cross"];
+    let out = null;
+    for (let tr = 0; tr < 60; tr++) {
+      const pats = shuffle(r, [[0, 1], [3, 4], [1, 2, 3], [0, 4], [0, 2, 4], [1, 3], [2, 3, 4], [0, 1, 2]]).slice(0, 5);
+      const att = []; let t = 2500, k = 0;
+      while (t < 34000) { const p = ri(r, 5), tell = Math.round(clamp(1400 - k * 40, 650, 1400)); att.push({ t: Math.round(t), p, tell }); t += tell + 800 + r() * 600; k++; }
+      out = { dur: 36000, zones, start: 2, move: 170, phase2: 18000, pats: pats.map((z, i) => ({ z, col: cols[i], shape: shapes[i] })), att };
+      const still = Math.max(...Array.from({ length: zones }, (_, z) => att.filter((a) => !pats[a.p].includes(z)).length / att.length));
+      if (still <= 0.7) break;
     }
-    return { n: 6, steps: 2, rounds };
+    return out;
+  },
+  // s2: 5×5 칸 · 적 2~3명 · 1칸 이동 · 벽 쪽을 보는 적은 없음 · 끝자리가 겹치지 않게
+  vision(r) {
+    const N = 5, D = [[0, -1], [1, 0], [0, 1], [-1, 0]], rounds = [];
+    for (let i = 0; i < 5; i++) {
+      const n = i < 2 ? 2 : 3; let en = [];
+      for (let tr = 0; tr < 60; tr++) {
+        en = []; const used = new Set();
+        while (en.length < n) { const x = ri(r, N), y = ri(r, N), k = y * N + x; if (used.has(k)) continue; const ok = [0, 1, 2, 3].filter((d) => { const nx = x + D[d][0], ny = y + D[d][1]; return nx >= 0 && ny >= 0 && nx < N && ny < N; }); used.add(k); en.push({ x, y, d: pick(r, ok) }); }
+        if (new Set(en.map((e) => visionEnd(N, e, 1))).size === n) break;
+      }
+      rounds.push({ en, show: 1600 - i * 80, lim: 8000 });
+    }
+    return { n: N, steps: 1, rounds };
   },
   resource(r) {
     let best = null;
@@ -120,8 +141,8 @@ const GEN = {
   },
   multitask(r) {
     const ev = [[], [], []];
-    for (let p = 0; p < 3; p++) { let t = 2000 + r() * 2000; while (t < 41000) { ev[p].push(Math.round(t)); t += 2600 + r() * 3200; } }
-    return { dur: 45000, win: [4000, 3000, 3500], early: [0, 1200, 0], ev };
+    for (let p = 0; p < 3; p++) { let t = 1500 + r() * 2000; while (t < 27000) { ev[p].push(Math.round(t)); t += 2600 + r() * 3000; } }
+    return { dur: 30000, win: [3000, 3000, 3000], early: [0, 0, 0], ev };
   },
   path(r) {
     const goals = shuffle(r, ["time", "time", "safe", "safe", "loot", "loot"]), rounds = [];
@@ -133,24 +154,26 @@ const GEN = {
   },
   teamfight(r) {
     const W = 100, H = 60, rounds = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 4; i++) {
       const cx = 30 + r() * 40, cy = 20 + r() * 20, tc = 1200 + r() * 1800;   // 이 시각쯤 가장 모임
       const en = Array.from({ length: 5 }, () => { const sx = r() * W, sy = r() * H, ex = cx + (r() - 0.5) * 16, ey = cy + (r() - 0.5) * 12; const k = 1 + (r() < 0.4 ? 0.6 : 0); return { sx, sy, ex, ey, k }; });
       rounds.push({ en: en.map((e) => ({ x0: e.sx, y0: e.sy, vx: ((e.ex - e.sx) / tc) * 1000 * e.k, vy: ((e.ey - e.sy) / tc) * 1000 * e.k })), dur: 4200, rad: 12 });
     }
     return { W, H, rounds };
   },
+  // s2: 단서 하나만 — 진짜는 무기가 빛남, 가짜는 빛나지 않음(발은 둘 다 내딛음)
   fake(r) {
-    const sw = []; let t = 2500;
-    while (t < 37500) { const real = r() < 0.55, wind = real ? 800 : 800, miss = real ? null : pick(r, ["glow", "step"]); sw.push({ t: Math.round(t), real, wind, miss }); t += 1150 + r() * 900; }
-    return { dur: 40000, sw, blockWin: 380, cd: 700 };
+    const sw = []; let t = 2000;
+    while (t < 27500) { const real = r() < 0.55; sw.push({ t: Math.round(t), real, wind: 800, miss: real ? null : "glow" }); t += 1150 + r() * 900; }
+    return { dur: 30000, sw, blockWin: 380, cd: 700 };
   },
+  // s2: 중요(빨강) / 쓸모없음(회색) 두 가지. 알림 카드를 직접 눌러요 — 기록은 [시각, 알림 번호]
   overload(r) {
-    const n = []; let t = 1500, k = 0;
+    const n = []; let t = 1200, k = 0;
     const NOISE = ["친구가 접속했어요", "상점 할인 중", "채팅: ㅋㅋㅋ", "업적 달성!", "새 스킨 출시", "골드 +5", "핑 32ms", "날씨 맑음", "관전자 +1", "미션 갱신"];
-    const CRIT = ["오브젝트 등장!", "드래곤 출현", "보스 부활 30초", "타워 공략 기회"], WARN = ["아군 위험!", "아군이 습격당함", "미드 아군 고립", "정글러 위험"];
-    while (t < 37500) { const x = r(); const type = x < 0.22 ? "crit" : x < 0.44 ? "warn" : "noise"; n.push({ id: k++, t: Math.round(t), type, txt: type === "crit" ? pick(r, CRIT) : type === "warn" ? pick(r, WARN) : pick(r, NOISE) }); t += 550 + r() * 700; }
-    return { dur: 40000, life: 3000, n };
+    const WARN = ["아군 위험!", "아군이 습격당함", "미드 아군 고립", "정글러 위험", "오브젝트 등장!", "드래곤 출현", "타워 공격받는 중", "기지 위험!"];
+    while (t < 27500) { const warn = r() < 0.4; n.push({ id: k++, t: Math.round(t), type: warn ? "warn" : "noise", txt: warn ? pick(r, WARN) : pick(r, NOISE) }); t += 600 + r() * 700; }
+    return { dur: 30000, life: 2800, n };
   },
   comeback(r) {
     const SC = [
@@ -178,6 +201,25 @@ const GEN = {
     while (t < 71000) { const p = ri(r, 4), tell = Math.round(clamp(1400 - k * 18, 800, 1400)); att.push({ t: Math.round(t), p, tell, big: r() < 0.3 }); t += tell + 1800 + r() * 1400; k++; }
     for (let x = 6000; x < 70000; x += 7000 + r() * 4000) weak.push(Math.round(x));
     return { dur: 75000, zones: 5, start: 2, move: 170, pats: [[0, 1], [3, 4], [1, 2, 3], [0, 4]], att, weak, weakLen: 3000, hp0: 100, pot: 3, potHeal: 35, hit: 22, bigHit: 34, q: { cd: 2000, dmg: 8 }, e: { cd: 8000, dmg: 30 } };
+  },
+  // s2 신규: 타깃 저격 — 위에서 내려오는 적을 닿기 전에 눌러 잡기 (u = 등장 시각·가로 위치·종류·내려오는 시간)
+  snipe(r) {
+    const u = []; let t = 900, k = 0;
+    while (t < 26500) { const x = r(), kind = x < 0.2 ? "ally" : x < 0.45 ? "fast" : "norm", life = kind === "ally" ? 3000 : kind === "fast" ? Math.round(1900 - Math.min(400, k * 12)) : Math.round(3200 - Math.min(700, k * 20)); u.push({ id: k++, t: Math.round(t), x: Math.round((0.08 + r() * 0.84) * 1000) / 1000, kind, life }); t += 650 + r() * 700; }
+    return { dur: 30000, u };
+  },
+  // s2 신규: 교전 타이밍 — 힘겨루기 막대가 한 번 크게 우리 쪽으로 밀렸다 돌아옴. 가장 밀린 순간에 돌격
+  tug(r) {
+    const rounds = [];
+    for (let i = 0; i < 5; i++) {
+      let rd = null;
+      for (let tr = 0; tr < 40; tr++) {
+        rd = { lim: 6000, tc: Math.round(1800 + r() * 3000), w: Math.round(600 + r() * 500), a: Math.round((0.9 + r() * 0.4) * 100) / 100, b0: Math.round((-0.35 - r() * 0.2) * 100) / 100, wa: Math.round((0.12 + r() * 0.08) * 100) / 100, wf: Math.round((0.6 + r() * 0.6) * 100) / 100, wp: Math.round(r() * 628) / 100 };
+        const st = tugStats(rd); if (st.argmax >= 1500 && st.argmax <= 5200 && tugAdv(rd, 0) < st.mid && tugAdv(rd, rd.lim) < st.mid) break;
+      }
+      rounds.push(rd);
+    }
+    return { rounds, anim: 1700 };
   },
 };
 export function genSpec(tid, seed) { const g = GEN[tid]; if (!g) throw new Error("UNKNOWN_TEST"); return { tid, seed: seed >>> 0, ...g(rng(hashSeed(`${tid}:${seed >>> 0}`))) }; }
@@ -268,6 +310,25 @@ export function pathValue(rd, p) {
 export const tfPos = (e, t) => ({ x: e.x0 + (e.vx * t) / 1000, y: e.y0 + (e.vy * t) / 1000 });
 export const tfHits = (rd, t, x, y) => rd.en.filter((e) => { const p = tfPos(e, t); return (p.x - x) ** 2 + (p.y - y) ** 2 <= rd.rad ** 2; }).length;
 export function tfBest(s, rd) { let best = 1; for (let t = 0; t <= rd.dur; t += 100) for (let x = 0; x <= s.W; x += 2) for (let y = 0; y <= s.H; y += 2) { const h = tfHits(rd, t, x, y); if (h > best) best = h; } return best; }
+/** 교전 타이밍(s2): t ms 때 힘겨루기 값(+면 우리 쪽) */
+export const tugAdv = (rd, t) => rd.b0 + rd.a * Math.exp(-(((t - rd.tc) / rd.w) ** 2)) + rd.wa * Math.sin((2 * Math.PI * rd.wf * t) / 1000 + rd.wp);
+export function tugStats(rd) { let mx = -1e9, mn = 1e9, argmax = 0, sum = 0, n = 0; for (let t = 0; t <= rd.lim; t += 20) { const v = tugAdv(rd, t); if (v > mx) { mx = v; argmax = t; } if (v < mn) mn = v; sum += v; n++; } return { mx, mn, argmax, mean: sum / n, mid: (mx + mn) / 2 }; }
+/** 교전 타이밍: 누른 순간의 질(0~1) — 가장 밀렸을 때 1, 가장 밀렸을 때 0 */
+export const tugQ = (rd, t) => { const st = tugStats(rd); return c01((tugAdv(rd, t) - st.mn) / (st.mx - st.mn || 1)); };
+/** 타깃 저격(s2): 화면 위→아래 진행도 0~1 (1 = 나에게 닿음). 범위 밖이면 null */
+export const snipeK = (u, t) => { const k = (t - u.t) / u.life; return k < 0 || k > 1 ? null : k; };
+/** 스킬 타이밍(s2): 입력 재생 — 화면 피드백과 채점이 같이 씀 */
+export function cooldownJudge(s) {
+  const ready = { w: -1e9, e: -1e9 }, bl = new Set(), wk = new Set(); let wasted = 0, fails = 0;
+  return {
+    press(t, k) {
+      if (t < ready[k]) { fails++; return "cd"; } ready[k] = t + s.cd;
+      if (k === "w") { const i = s.charges.findIndex((c, j) => !bl.has(j) && c + s.tell >= t && c + s.tell <= t + s.shield); if (i >= 0) { bl.add(i); return "block"; } wasted++; return "waste"; }
+      const i = s.weak.findIndex((w, j) => !wk.has(j) && t >= w && t <= w + s.weakLen); if (i >= 0) { wk.add(i); return "weak"; } wasted++; return "waste";
+    },
+    blocked: (j) => bl.has(j), get res() { return { blocked: bl.size, eWeak: wk.size, wasted, fails }; },
+  };
+}
 /** 팀 명령 가치 (0 공격 · 1 방어 · 2 지원 · 3 후퇴) */
 export function teamValue(m, c) {
   const low = m.hp <= 30, mid = m.hp <= 60, danger = m.near >= 2, outn = m.near > m.ally + 1;
@@ -334,10 +395,11 @@ const SCORE = {
     return { score: 100 * norm(sum / s.rounds.length, 0.5), m: { best, n: s.rounds.length }, flags: [] };
   },
   cooldown(s, log) {
-    const r = cooldownReplay(s, log.k), maxQ = s.dur / s.skills.q.cd;
-    const blockR = r.blocked / (s.charges.length || 1), eR = s.weak.length ? r.eWeak / s.weak.length : 1, eWaste = r.eTotal - r.eWeak, dmgR = c01(r.dmg / (maxQ * s.skills.q.dmg * 0.55 + s.weak.length * 80));
-    const score = 100 * c01(blockR * 0.4 + eR * 0.28 + dmgR * 0.32 - r.fails * 0.02 - eWaste * 0.05);
-    return { score, m: { blocked: r.blocked, charges: s.charges.length, eWeak: r.eWeak, weak: s.weak.length, fails: r.fails, dmg: r.dmg }, flags: [] };
+    const J = cooldownJudge(s);
+    for (const [t, k] of arr(log.k).map((k) => [num(k?.[0]), String(k?.[1])]).filter((k) => k[0] >= 0 && k[0] <= s.dur && (k[1] === "w" || k[1] === "e")).sort((a, b) => a[0] - b[0])) J.press(t, k);
+    const r = J.res, bR = r.blocked / (s.charges.length || 1), eR = r.eWeak / (s.weak.length || 1);
+    const score = 100 * c01(bR * 0.5 + eR * 0.5 - r.wasted * 0.06 - r.fails * 0.02);
+    return { score, m: { blocked: r.blocked, charges: s.charges.length, eWeak: r.eWeak, weak: s.weak.length, fails: r.wasted, dmg: r.eWeak * 80 }, flags: [] };
   },
   boss(s, log) {
     const h = bossHits(s, log), wt = (i) => (i < h.length / 2 ? 1 : 1.5); let w = 0, ok = 0;
@@ -349,7 +411,7 @@ const SCORE = {
     const got = new Map(); for (const x of arr(log.r)) { const i = num(x?.[0]); if (Number.isInteger(i) && i >= 0 && i < s.rounds.length && !got.has(i)) got.set(i, { c: [...new Set(arr(x?.[1]).map(num).filter((v) => Number.isInteger(v) && v >= 0 && v < s.n * s.n))], ms: num(x?.[2]) }); }
     let sum = 0, perfect = 0;
     s.rounds.forEach((rd, i) => { const ans = new Set(rd.en.map((e) => visionEnd(s.n, e, s.steps))), x = got.get(i); if (!x || x.ms > rd.lim + 1500) return; const c = x.c.slice(0, rd.en.length + 2), tp = c.filter((v) => ans.has(v)).length, prec = c.length ? tp / c.length : 0, rec = tp / ans.size, f = prec + rec ? (2 * prec * rec) / (prec + rec) : 0; sum += f; if (f === 1) perfect++; });
-    return { score: 100 * norm(sum / s.rounds.length, 0.08), m: { perfect, n: s.rounds.length }, flags: [] };
+    return { score: 100 * norm(sum / s.rounds.length, 0.12), m: { perfect, n: s.rounds.length }, flags: [] };
   },
   resource(s, log) {
     const plan = [3, 3, 3, 3, 3]; for (const x of arr(log.c)) { const i = num(x?.[0]), o = num(x?.[1]); if (Number.isInteger(i) && i >= 0 && i < 5 && [0, 1, 2, 3].includes(o)) plan[i] = o; }
@@ -389,9 +451,9 @@ const SCORE = {
     return { score: 100 * c01(okReal / reals - (badFake / fakes) * 0.9 - idle * 0.04), m: { okReal, reals, badFake, fakes, idle }, flags: [] };
   },
   overload(s, log) {
-    const a = arr(log.a).map((x) => [num(x?.[0]), String(x?.[1])]).filter((x) => x[0] >= 0 && x[0] <= s.dur && (x[1] === "crit" || x[1] === "warn")).sort((p, q) => p[0] - q[0]);
+    const a = arr(log.a).map((x) => [num(x?.[0]), num(x?.[1])]).filter((x) => x[0] >= 0 && x[0] <= s.dur).sort((p, q) => p[0] - q[0]);
     const done = new Set(); let ok = 0, wrong = 0;
-    for (const [t, k] of a) { const n = s.n.find((x) => !done.has(x.id) && x.type === k && t >= x.t && t <= x.t + s.life); if (n) { done.add(n.id); ok++; } else wrong++; }
+    for (const [t, id] of a) { const n = Number.isInteger(id) ? s.n[id] : null; if (n && n.type !== "noise" && !done.has(id) && t >= n.t && t <= n.t + s.life) { done.add(id); ok++; } else wrong++; }
     const need = s.n.filter((x) => x.type !== "noise").length || 1;
     return { score: 100 * c01(ok / need - wrong * 0.06), m: { ok, need, wrong }, flags: [] };
   },
@@ -406,6 +468,19 @@ const SCORE = {
     let sum = 0, best = 0, n = 0;
     s.rounds.forEach((rd, i) => { const x = c.get(i); rd.m.forEach((m, k) => { n++; if (!x || x.ms > rd.lim + 1500) return; const v = [0, 1, 2, 3].map((q) => teamValue(m, q)), mx = Math.max(...v), mn = Math.min(...v); sum += (v[x.o[k]] - mn) / (mx - mn || 1); if (v[x.o[k]] === mx) best++; }); });
     return { score: 100 * norm(sum / (n || 1), 0.45), m: { best, n }, flags: [] };
+  },
+  snipe(s, log) {
+    const a = arr(log.k).map((x) => [num(x?.[0]), num(x?.[1])]).filter((x) => x[0] >= 0 && x[0] <= s.dur).sort((p, q) => p[0] - q[0]);
+    const dead = new Set(); let kills = 0, ally = 0, miss = 0;
+    for (const [t, id] of a) { const u = Number.isInteger(id) && id >= 0 ? s.u[id] : null; if (!u || dead.has(id) || snipeK(u, t) == null) { miss++; continue; } dead.add(id); if (u.kind === "ally") ally++; else kills++; }
+    const foes = s.u.filter((u) => u.kind !== "ally").length || 1;
+    return { score: 100 * c01(kills / foes - ally * 0.12 - miss * 0.02), m: { kills, foes, ally, miss }, flags: [] };
+  },
+  tug(s, log) {
+    const c = new Map(); for (const x of arr(log.c)) { const i = num(x?.[0]), ms = num(x?.[1]); if (Number.isInteger(i) && i >= 0 && i < s.rounds.length && !c.has(i) && ms >= 0) c.set(i, ms); }
+    let sum = 0, great = 0;
+    s.rounds.forEach((rd, i) => { const ms = c.get(i); if (ms == null || ms > rd.lim) return; const st = tugStats(rd), q = tugQ(rd, ms), base = (st.mean - st.mn) / (st.mx - st.mn || 1); sum += norm(q, base); if (q >= 0.9) great++; });
+    return { score: 100 * (sum / s.rounds.length), m: { great, n: s.rounds.length }, flags: [] };
   },
   final(s, log) {
     const r = finalReplay(s, log), dmgR = c01(r.dmg / 520), surv = (r.dead ? r.deadAt / s.dur : 1) * Math.min(1, dmgR * 2), dodgeR = r.dodged / ((r.dodged + r.hits) || 1), allyR = r.allyN && arr(log.k).some((k) => k?.[1] === "t") ? r.allyOk / r.allyN : 0,
@@ -468,9 +543,9 @@ export function styleOf(areas) {
   return first || STYLES.find((s) => s.id === "instinct");
 }
 const COMMENT = {
-  situ: ["싸울 각과 빠질 각을 정확히 봤어요.", "전력 계산이 빠르고 정확해요.", "판단이 흔들리는 순간이 있었어요. 전력비부터 보세요."],
-  strat: ["한 수 앞을 내다보는 플레이였어요.", "계획은 좋은데 마지막 선택이 아쉬웠어요.", "눈앞의 이득보다 다음 라운드를 생각해 보세요."],
-  combat: ["타깃 선정과 스킬 타이밍이 깔끔했어요.", "전투 운영은 무난해요. 우선순위를 조금만 더 다듬어요.", "누구부터 잡을지, 스킬을 언제 쓸지 다시 보세요."],
+  situ: ["진짜와 가짜, 칠 때와 막을 때를 정확히 봤어요.", "판단은 좋은데 가끔 한 박자 늦었어요.", "판단이 흔들렸어요. 빛·색 같은 신호를 먼저 보고 움직여 보세요."],
+  strat: ["가장 좋은 순간과 자리를 잘 골랐어요.", "타이밍은 좋은데 마지막 선택이 아쉬웠어요.", "급하게 누르기보다 가장 좋은 순간을 기다려 보세요."],
+  combat: ["누구부터 잡을지, 언제 칠지 깔끔했어요.", "전투는 무난해요. 빠른 적부터 잡는 습관만 더!", "헛손질이 많았어요. 칠 때만 치는 연습을 해 보세요."],
   info: ["미니맵과 알림을 거의 놓치지 않았어요.", "중요한 정보는 잡는데 가끔 소음에 끌려갔어요.", "화면 구석의 정보를 더 자주 확인해 보세요."],
   crisis: ["위기에서도 침착하게 피하고 막았어요.", "위기 대응은 괜찮지만 마지막 순간이 아쉬워요.", "전조를 먼저 보고 움직이는 연습이 필요해요."],
   multi: ["여러 일을 동시에 놓치지 않았어요.", "두 가지까지는 완벽, 세 가지에서 흔들렸어요.", "급한 것부터 처리하는 순서를 정해 보세요."],

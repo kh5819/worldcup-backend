@@ -27,6 +27,8 @@ export function logSpan(tid, log) {
       case "boss": return mx(log.z, (v) => v?.[0]);
       case "final": return Math.max(mx(log.z, (v) => v?.[0]), mx(log.k, (v) => v?.[0]));
       case "fake": return mx(log.b, (v) => v);
+      case "snipe": return mx(log.k, (v) => v?.[0]);
+      case "tug": return sum(log.c, 1);
       case "engage": case "path": case "comeback": case "resource": return sum(log.c, 2);
       case "target": return sum(log.o, 2);
       case "vision": return sum(log.r, 2);
@@ -71,13 +73,13 @@ export function publicRow(row, { owner = false } = {}) {
 export const insertResults = async (sb, rows) => { const { error } = await sb.from("sense_results").insert(rows); return { error }; };
 async function prevResult(sb, key, mode) {
   if (!sb) return null;
-  try { const { data } = await sb.from("sense_results").select("total, tier, created_at").eq("owner_key", key).eq("mode", mode).order("created_at", { ascending: false }).limit(1).maybeSingle(); return data; } catch { return null; }
+  try { const { data } = await sb.from("sense_results").select("total, tier, created_at").eq("owner_key", key).eq("mode", mode).eq("set_ver", C.SET_VERSION).order("created_at", { ascending: false }).limit(1).maybeSingle(); return data; } catch { return null; }
 }
 // 같은 모드에서 내 점수보다 높은 사람 수 → 순위 (사람당 최고 기록 기준은 랭킹 화면에서)
 async function rankOf(sb, mode, total) {
   if (!sb) return { rank: null, of: null };
   try {
-    const base = () => sb.from("sense_results").select("id", { count: "exact", head: true }).eq("mode", mode).eq("flagged", false);
+    const base = () => sb.from("sense_results").select("id", { count: "exact", head: true }).eq("mode", mode).eq("set_ver", C.SET_VERSION).eq("flagged", false);
     const [{ count: of }, { count: above }] = await Promise.all([base(), base().gt("total", total)]);
     return { rank: (above || 0) + 1, of: (of || 0) + 1 };
   } catch { return { rank: null, of: null }; }
@@ -170,7 +172,7 @@ export function registerSense(io, supabaseAdmin, app, { getOptionalUser } = {}) 
     });
     on("sense:history", async (_p, reply) => {
       if (!sb) return reply({ ok: true, rows: [] });
-      const { data } = await sb.from("sense_results").select("id, mode, device, total, tier, style, areas, is_public, flagged, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(50);
+      const { data } = await sb.from("sense_results").select("id, mode, set_ver, device, total, tier, style, areas, is_public, flagged, created_at").eq("owner_key", key).order("created_at", { ascending: false }).limit(50);
       reply({ ok: true, rows: data || [] });
     });
     on("sense:me", async (p, reply) => {
@@ -214,7 +216,7 @@ export function registerSense(io, supabaseAdmin, app, { getOptionalUser } = {}) 
       res.json({ ok: true, group: data });
     } catch { res.status(500).json({ ok: false, error: "INTERNAL" }); }
   });
-  // 랭킹: 빠른·정밀은 따로, 버전이 바뀌어도 기록은 유지, 의심 기록 제외, 사람당 최고 1개
+  // 랭킹: 빠른·정밀은 따로, 시즌(SET_VERSION)별로 따로(예전 기록은 지우지 않음), 의심 기록 제외, 사람당 최고 1개
   const rankCache = new Map();
   app.get("/sense/ranking", async (req, res) => {
     try {
@@ -225,7 +227,7 @@ export function registerSense(io, supabaseAdmin, app, { getOptionalUser } = {}) 
       const dev = ["pc", "mobile"].includes(req.query.device) ? req.query.device : null;
       const ck = JSON.stringify([mode, board, area, period, dev]);
       const hit = rankCache.get(ck); if (hit && Date.now() - hit.at < 30000) return res.json(hit.body);
-      let q = sb.from("sense_results").select("id, owner_key, user_id, nickname, avatar, avatar_url, total, tier, style, areas, device, is_streamer, created_at").eq("mode", mode).eq("is_public", true).eq("flagged", false);
+      let q = sb.from("sense_results").select("id, owner_key, user_id, nickname, avatar, avatar_url, total, tier, style, areas, device, is_streamer, created_at").eq("mode", mode).eq("set_ver", C.SET_VERSION).eq("is_public", true).eq("flagged", false);
       if (board === "streamer") q = q.eq("is_streamer", true);
       if (dev) q = q.eq("device", dev);
       const since = period === "day" ? Date.now() - 864e5 : period === "week" ? Date.now() - 7 * 864e5 : null;
@@ -247,7 +249,7 @@ export function registerSense(io, supabaseAdmin, app, { getOptionalUser } = {}) 
       const mode = req.query.mode === "quick" ? "quick" : "full";
       if (distCache.body && distCache.mode === mode && Date.now() - distCache.at < 60000) return res.json(distCache.body);
       const out = {};
-      await Promise.all(C.TIERS.map(async (t) => { const { count } = await sb.from("sense_results").select("id", { count: "exact", head: true }).eq("mode", mode).eq("flagged", false).eq("tier", t.id); out[t.id] = count || 0; }));
+      await Promise.all(C.TIERS.map(async (t) => { const { count } = await sb.from("sense_results").select("id", { count: "exact", head: true }).eq("mode", mode).eq("set_ver", C.SET_VERSION).eq("flagged", false).eq("tier", t.id); out[t.id] = count || 0; }));
       const body = { ok: true, mode, dist: out };
       distCache = { at: Date.now(), body, mode }; res.json(body);
     } catch { res.status(500).json({ ok: false }); }

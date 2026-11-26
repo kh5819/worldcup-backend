@@ -72,14 +72,14 @@ function endRound(io, r) {
   r.phase = "result"; r.phaseEnd = now() + fast(RESULT_MS); emitRoom(io, r);
   schedule(r, r.phaseEnd, () => { if (r.round + 1 < r.tests.length) startRound(io, r, r.round + 1); else finish(io, r).catch((e) => console.error("[sm] finish", e)); });
 }
-const ROUND_TITLE = { minimap: "미니맵 수호자", engage: "교전 판단왕", target: "타깃 저격수", cooldown: "쿨타임 장인", boss: "보스 패턴 해독자", vision: "시야 기억왕", resource: "자원 관리의 달인", multitask: "멀티태스킹 사령관", path: "길잡이", teamfight: "한타의 지배자", fake: "페이크 간파왕", overload: "정보 필터 마스터", comeback: "역전의 한 수", team: "팀워크 마스터", final: "최종 보스 슬레이어" };
+const ROUND_TITLE = { snipe: "타깃 저격수", tug: "돌격 타이밍 장인", minimap: "미니맵 수호자", engage: "교전 판단왕", target: "타깃 저격수", cooldown: "쿨타임 장인", boss: "보스 패턴 해독자", vision: "시야 기억왕", resource: "자원 관리의 달인", multitask: "멀티태스킹 사령관", path: "길잡이", teamfight: "한타의 지배자", fake: "페이크 간파왕", overload: "정보 필터 마스터", comeback: "역전의 한 수", team: "팀워크 마스터", final: "최종 보스 슬레이어" };
 /** 시상식: MVP · 특별상(실제 검사 기록 기준) · 꾸준함 · 역전의 주인공 · 검사별 최고점 */
 export function groupReport(people, tests) {
   const ranking = [...people].sort((a, b) => b.total - a.total).map((x, i, arr) => ({ id: x.id, total: x.total, rank: arr.findIndex((y) => y.total === x.total) + 1 }));
   const awards = [];
   if (people.length) awards.push({ key: "mvp", title: "MVP", desc: "가장 높은 게임 센스", id: ranking[0].id, value: ranking[0].total });
   // 특별상: 정해진 능력·검사 점수가 가장 높은 사람 (동점이면 총점 높은 사람)
-  const SPECIAL = [["strat", "최고의 전략가", "area"], ["minimap", "미니맵 수호자", "test"], ["crisis", "위기 탈출왕", "area"], ["teamfight", "한타의 지배자", "test"], ["combat", "한타의 지배자", "area"], ["resource", "자원 관리의 달인", "test"], ["team", "팀워크 마스터", "test"], ["info", "정보 처리의 신", "area"], ["multi", "멀티태스킹 사령관", "area"], ["situ", "상황 판단의 달인", "area"]];
+  const SPECIAL = [["strat", "최고의 전략가", "area"], ["minimap", "미니맵 수호자", "test"], ["crisis", "위기 탈출왕", "area"], ["teamfight", "한타의 지배자", "test"], ["combat", "한타의 지배자", "area"], ["boss", "보스 패턴 해독자", "test"], ["snipe", "타깃 저격수", "test"], ["info", "정보 처리의 신", "area"], ["multi", "멀티태스킹 사령관", "area"], ["situ", "상황 판단의 달인", "area"]];
   const given = new Set();
   for (const [k, title, kind] of SPECIAL) {
     if (given.has(title)) continue; if (kind === "test" && !tests.includes(k)) continue;
