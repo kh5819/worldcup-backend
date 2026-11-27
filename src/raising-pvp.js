@@ -35,7 +35,12 @@ const EMOTE_GAP_MS = 1200;
 const EMOTES = ["gg", "nice", "lol", "wow", "sorry", "angry"];
 
 // 프론트 raising/moba/ordercfg.js ORDERS + timeout
-const ORDER_TYPES = new Set(["focus", "guard", "cheer", "mental", "switch", "gambit", "allout", "ace", "group", "objective", "push", "defend", "split", "retreat", "timeout"]);
+const ORDER_TYPES = new Set(["focus", "guard", "cheer", "mental", "switch", "gambit", "allout", "ace", "group", "objective", "push", "defend", "split", "retreat", "timeout", "read"]);      // read = 심리전 읽기(2026-11-27)
+// 리메이크(2026-11-27): 방식(free = 같은 레벨 자유 밴픽 / mine = 각자 키운 팀) · 세트(1판 / 3판 2선승)
+const ALLOWED_MODE = ["free", "mine"];
+const ALLOWED_BO = [1, 3];
+const NEXT_SET_MS = 8_000;                    // 3판 2선승: 다음 세트 자동 시작까지
+const ROSTER_MIN = 5, ROSTER_MAX = 8;
 const STANCES = ["atk", "bal", "def"];
 const PRE = { pace: ["early", "balanced", "late"], jungle: ["auto", "top", "bot"], objective: ["balanced", "dragon", "baron"], build: ["bal", "atk", "def"] };
 
@@ -44,6 +49,22 @@ const SPECIES_ROLE = {"embers":"fighter","blazewhelp":"mage","foxfire":"assassin
 const SPECIES_IDS = Object.keys(SPECIES_ROLE);
 // 자동 선택 시 빈 포지션부터 채운다(탑·정글·미드·원딜·서포터 순 역할 묶음)
 const POS_POOLS = [["tank", "fighter"], ["assassin", "fighter"], ["mage", "assassin"], ["ranged"], ["healer", "support"]];
+
+// 키운 팀 정리: 없는 종·범위 밖 값은 거절, 같은 종은 하나만
+function cleanRoster(raw) {
+  if (!Array.isArray(raw)) return null;
+  const out = [], seen = new Set();
+  const n = (v, lo, hi) => { const x = Math.round(Number(v)); return Number.isFinite(x) && x >= lo && x <= hi ? x : null; };
+  for (const m of raw.slice(0, ROSTER_MAX)) {
+    if (!m || !SPECIES_ROLE[m.sp] || seen.has(m.sp)) continue;
+    const lv = n(m.lv, 1, 60), star = n(m.star, 0, 5), evo = n(m.evo, 0, 2), iv = m.iv || {};
+    const ivs = { hp: n(iv.hp, 0, 30), atk: n(iv.atk, 0, 30), def: n(iv.def, 0, 30), spd: n(iv.spd, 0, 30) };
+    if (lv == null || star == null || evo == null || Object.values(ivs).some((v) => v == null)) return null;
+    const trait = typeof m.trait === "string" && /^[a-z_]{1,16}$/.test(m.trait) ? m.trait : null;
+    seen.add(m.sp); out.push({ sp: m.sp, lv, star, evo, trait, iv: ivs });
+  }
+  return out.length >= ROSTER_MIN ? out : null;
+}
 
 function genInviteCode() {
   for (let i = 0; i < 50; i++) {
@@ -79,7 +100,7 @@ function publicDraft(room) {
   const d = room.draft;
   if (!d) return null;
   const cur = d.seq[d.turn] || null;
-  return { seq: d.seq, turn: d.turn, cur, deadline: d.deadline, bans: d.bans, picks: d.picks, hover: d.hover };
+  return { seq: d.seq, turn: d.turn, cur, deadline: d.deadline, bans: d.bans, picks: d.picks, hover: d.hover, rosters: d.rosters || null };
 }
 
 function publicRoom(room) {
@@ -91,6 +112,8 @@ function publicRoom(room) {
     opts: room.opts,
     game: room.game,
     score: room.score,
+    series: room.series || null,
+    rosters: Object.fromEntries(room.playerOrder.slice(0, 2).map((uid) => [uid, room.rosters?.[uid] || null])),
     sides: Object.fromEntries(room.playerOrder.slice(0, 2).map((uid) => [uid, sideOf(room, uid)])),
     players: room.playerOrder.map((uid) => {
       const p = room.players.get(uid);
@@ -144,8 +167,20 @@ function backToLobby(io, room, reason) {
 function taken(d) {
   return new Set([...d.bans.a, ...d.bans.b, ...d.picks.a, ...d.picks.b].filter(Boolean));
 }
+// 키운 팀 모드: 픽은 내 팀에서, 밴은 상대 팀에서. 같은 종이 양쪽에 있어도 됨
+function poolOf(d, side, kind) {
+  if (!d.rosters) return null;
+  const foe = otherSide(side);
+  if (kind === "ban") return d.rosters[foe].map((m) => m.sp).filter((sp) => !d.bans[side].includes(sp));
+  return d.rosters[side].map((m) => m.sp).filter((sp) => !d.picks[side].includes(sp) && !d.bans[foe].includes(sp));
+}
+function canChoose(d, side, kind, sp) {
+  const pool = poolOf(d, side, kind);
+  if (pool) return pool.includes(sp);
+  return !!SPECIES_ROLE[sp] && !taken(d).has(sp);
+}
 function autoChoice(d, side, kind) {
-  const used = taken(d), free = SPECIES_IDS.filter((s) => !used.has(s));
+  const used = taken(d), pool = poolOf(d, side, kind), free = pool || SPECIES_IDS.filter((s) => !used.has(s));
   if (!free.length) return null;
   if (kind === "ban") return null;              // 시간 초과 밴 = 밴 없음
   // 아직 비어 있는 포지션 역할부터
@@ -162,7 +197,12 @@ function startDraft(io, room) {
   room.game += 1;
   room.status = "draft";
   room.setup = null; room.match = null; room.last = null;
-  room.draft = { seq: draftOrder(room.opts.bans), turn: 0, bans: { a: [], b: [] }, picks: { a: [], b: [] }, hover: { a: null, b: null }, deadline: 0 };
+  let rosters = null, bans = room.opts.bans;
+  if (room.opts.mode === "mine") {
+    rosters = { a: room.rosters[uidOfSide(room, "a")], b: room.rosters[uidOfSide(room, "b")] };
+    bans = Math.max(0, Math.min(bans, Math.min(rosters.a.length, rosters.b.length) - 5));      // 밴 뒤에도 5마리는 남게
+  }
+  room.draft = { seq: draftOrder(bans), turn: 0, bans: { a: [], b: [] }, picks: { a: [], b: [] }, hover: { a: null, b: null }, deadline: 0, rosters };
   startTurn(io, room);
 }
 function startTurn(io, room) {
@@ -177,7 +217,7 @@ function startTurn(io, room) {
     const r = rooms.get(room.id);
     if (!r || r.status !== "draft" || r.draft !== d) return;
     const cur = d.seq[d.turn];
-    const hv = d.hover[cur.side] && !taken(d).has(d.hover[cur.side]) ? d.hover[cur.side] : null;      // 고르던(누른) 몬스터가 있으면 그걸로
+    const hv = d.hover[cur.side] && canChoose(d, cur.side, cur.kind, d.hover[cur.side]) ? d.hover[cur.side] : null;      // 고르던(누른) 몬스터가 있으면 그걸로
     applyChoice(io, r, cur.side, hv || (cur.kind === "pick" ? autoChoice(d, cur.side, "pick") : null), true);
   }, ms + 400);
   broadcast(io, room);
@@ -186,7 +226,7 @@ function applyChoice(io, room, side, sp, auto = false) {
   const d = room.draft, cur = d.seq[d.turn];
   if (!cur || cur.side !== side) return false;
   if (cur.kind === "pick" && !sp) return false;
-  if (sp && (!SPECIES_ROLE[sp] || taken(d).has(sp))) return false;
+  if (sp && !canChoose(d, side, cur.kind, sp)) return false;
   (cur.kind === "ban" ? d.bans : d.picks)[side].push(sp || null);
   io.to(roomName(room.id)).emit("rpvp:draftEvent", { side, kind: cur.kind, sp: sp || null, auto });
   d.turn += 1;
@@ -227,7 +267,7 @@ function startLoading(io, room) {
   const names = {};
   for (const s of ["a", "b"]) { const uid = uidOfSide(room, s); names[s] = room.players.get(uid)?.name || s; }
   room.match = {
-    init: { seed, setups: { a: room.setup.a, b: room.setup.b }, names, speed: room.opts.speed, game: room.game },
+    init: { seed, setups: { a: room.setup.a, b: room.setup.b }, names, speed: room.opts.speed, game: room.game, mode: room.opts.mode, rosters: room.draft?.rosters || null },
     loaded: { a: null, b: null }, startAt: 0, granted: 0, cmds: [], pending: [], n: 0, perSide: { a: 0, b: 0 },
     sync: new Map(), desync: false, reports: { a: null, b: null }, pausedBy: null, pauseUntil: 0, pauseAt: 0,
   };
@@ -278,7 +318,25 @@ function finalize(io, room, result, why) {
   room.status = "ended";
   const winnerUid = uidOfSide(room, result);
   if (winnerUid) room.score[winnerUid] = (room.score[winnerUid] || 0) + 1;
-  room.last = { result, winnerUid, why, desync: !!M.desync, game: room.game };
+  // 3판 2선승: 세트 점수, 끝나지 않았으면 8초 뒤 진영을 바꿔 다음 세트
+  let nextAt = 0;
+  if (room.series && !room.series.done) {
+    if (winnerUid) room.series.wins[winnerUid] = (room.series.wins[winnerUid] || 0) + 1;
+    room.series.set += 1;
+    const need = Math.ceil(room.series.bo / 2);
+    if (Object.values(room.series.wins).some((w) => w >= need)) { room.series.done = true; room.series.winner = winnerUid; }
+    else {
+      nextAt = Date.now() + NEXT_SET_MS;
+      room.endTimer = setTimeout(() => {
+        room.endTimer = null;
+        const r = rooms.get(room.id);
+        if (!r || r.status !== "ended" || !r.series || r.series.done || r.playerOrder.length < 2) return;
+        if (![...r.players.values()].every((p) => p.connected)) { r.status = "lobby"; broadcast(io, r); return; }
+        r.swap = !r.swap; startDraft(io, r);
+      }, NEXT_SET_MS);
+    }
+  }
+  room.last = { result, winnerUid, why, desync: !!M.desync, game: room.game, nextAt, series: room.series || null };
   io.to(roomName(room.id)).emit("rpvp:matchEnd", { ...room.last, score: room.score });
   console.log(`[rpvp] ${room.id} game ${room.game} → ${result} (${why})${M.desync ? " DESYNC" : ""}`);
   broadcast(io, room);
@@ -343,6 +401,8 @@ function leavePlayer(io, room, uid) {
   const i = room.playerOrder.indexOf(uid);
   if (i >= 0) room.playerOrder.splice(i, 1);
   delete room.score[uid];
+  if (room.rosters) delete room.rosters[uid];
+  room.series = null;
   room.swap = false;
   if (userRoom.get(uid) === room.id) userRoom.delete(uid);
   io.to(roomName(room.id)).emit("rpvp:peerLeave", { playerId: uid });
@@ -382,7 +442,7 @@ export function registerRaisingPvp(io, supabaseAdmin) {
         const id = `rp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
         const room = {
           id, inviteCode: genInviteCode(), hostUserId: me.id, status: "lobby",
-          opts: { bans: 2, pickSec: 30, speed: 2 }, game: 0, score: {}, swap: false,
+          opts: { bans: 2, pickSec: 30, speed: 3, mode: "free", bo: 3 }, game: 0, score: {}, swap: false, rosters: {}, series: null,
           players: new Map(), playerOrder: [], draft: null, setup: null, match: null, last: null,
         };
         rooms.set(id, room);
@@ -447,6 +507,8 @@ export function registerRaisingPvp(io, supabaseAdmin) {
       if (ALLOWED_BANS.includes(b)) room.opts.bans = b;
       if (ALLOWED_PICK_SEC.includes(p)) room.opts.pickSec = p;
       if (ALLOWED_SPEED.includes(s)) room.opts.speed = s;
+      if (ALLOWED_MODE.includes(payload?.mode)) room.opts.mode = payload.mode;
+      if (ALLOWED_BO.includes(Number(payload?.bo))) room.opts.bo = Number(payload.bo);
       broadcast(io, room);
       cb?.({ ok: true });
     });
@@ -458,8 +520,27 @@ export function registerRaisingPvp(io, supabaseAdmin) {
       if (room.status !== "lobby" && room.status !== "ended") return cb?.({ ok: false, error: "ALREADY_PLAYING" });
       if (room.playerOrder.length < 2) return cb?.({ ok: false, error: "NEED_2" });
       if (![...room.players.values()].every((p) => p.connected)) return cb?.({ ok: false, error: "PEER_OFFLINE" });
+      if (room.opts.mode === "mine") {
+        const miss = room.playerOrder.slice(0, 2).filter((uid) => !room.rosters?.[uid]);
+        if (miss.length) return cb?.({ ok: false, error: "NEED_ROSTER", who: miss });
+      }
+      if (room.endTimer) { clearTimeout(room.endTimer); room.endTimer = null; }
       if (room.game > 0) room.swap = !room.swap;      // 판마다 진영·선픽 교대
+      room.series = room.opts.bo > 1 ? { bo: room.opts.bo, set: 0, wins: {}, done: false, winner: null } : null;      // 새 시리즈
       startDraft(io, room);
+      cb?.({ ok: true });
+    });
+
+    // 키운 팀 등록(대기실에서만). 클라이언트 저장 데이터라 값 범위만 검사. team = null이면 등록 취소
+    socket.on("rpvp:roster", (payload, cb) => {
+      const room = myRoom();
+      if (!room) return cb?.({ ok: false, error: "NOT_IN_ROOM" });
+      if (room.status !== "lobby" && room.status !== "ended") return cb?.({ ok: false, error: "NOT_LOBBY" });
+      const t = payload?.team == null ? null : cleanRoster(payload.team);
+      if (payload?.team != null && !t) return cb?.({ ok: false, error: "INVALID" });
+      room.rosters = room.rosters || {};
+      room.rosters[me.id] = t;
+      broadcast(io, room);
       cb?.({ ok: true });
     });
 
