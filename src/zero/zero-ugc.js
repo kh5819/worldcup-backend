@@ -48,7 +48,7 @@ function posText(condId, effId) { const C = CONDS[condId], E = EFFS[effId]; retu
 function negText(condId) { const C = CONDS[condId]; return [`기록: ${C.neg[0]} 아무 변화가 없었다 {s}`, `記録：${C.neg[1]}何も変わらなかった {s}`, `Record: ${C.neg[2]} nothing changed {s}`]; }
 
 // 검사 — 이상한 값은 null
-const str = (v, n) => typeof v === "string" ? v.replace(/[<>\r\n\t]/g, "").trim().slice(0, n) : "";
+const str = (v, n) => typeof v === "string" ? v.replace(/[<>"'`&\\\r\n\t{}]/g, "").trim().slice(0, n) : "";
 export function validate(raw) {
   if (!raw || typeof raw !== "object") return null;
   const name = str(raw.name, 20), desc = str(raw.desc, 140); if (!name) return null;

@@ -3,8 +3,8 @@
 // 상태 S는 순수 JSON. 바꾸는 길은 cmd(S, c)와 step(S) 두 개뿐 → 저장·협동(서버 판정)에 그대로 쓰임.
 // 이변체의 숨은 규칙은 zero-anoms.js의 규칙 언어를 여기서 실제로 계산하고, 실제로 일어난 일만 증거로 남김.
 // =========================
-import * as D from "./zero-data.js?v=20261127_z2";
-import * as K from "./zero-content.js?v=20261127_z2";
+import * as D from "./zero-data.js?v=20261127_z3";
+import * as K from "./zero-content.js?v=20261127_z3";
 const { T, TICK, DAY_MIN, MIN_PER_TICK } = D;
 const AN = D.ANOMS;
 const l = (ko, ja, en) => [ko, ja, en];
@@ -237,8 +237,20 @@ function pathCost(S, f, x, tf, tx) { const p = findPath(S, f, x, tf, tx); if (!p
 export function cmd(S, c) {
   const r = cmd0(S, c); if (r.ok && S.rec) S.rec.push({ t: S.tick, c }); return r;
 }
+// 명령 입구 검사: 객체 기본 속성 이름(__proto__·length 등)으로 목록 검사를 통과하는 것 막기 (협동 방 조작 방지)
+const BADKEY = new Set(["__proto__", "constructor", "prototype", "length", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString", "__defineGetter__", "__lookupGetter__"]);
+function cleanCmd(c, depth = 0) {
+  if (c == null || typeof c !== "object" || Array.isArray(c) || depth > 2) return false;
+  for (const k of Object.keys(c)) { if (BADKEY.has(k)) return false; const v = c[k];
+    if (typeof v === "string" && (BADKEY.has(v) || v.length > 40)) return false;
+    if (typeof v === "number" && !Number.isFinite(v)) return false;
+    if (v && typeof v === "object" && !cleanCmd(v, depth + 1)) return false; }
+  for (const k of ["i", "rid", "sid"]) if (c[k] != null && !Number.isInteger(c[k])) return false;
+  return true;
+}
 function cmd0(S, c) {
   const err = (e) => ({ ok: false, err: e });
+  if (!cleanCmd(c)) return err("bad");
   if (S.ending && c.k !== "endless") return err("ended");
   switch (c.k) {
     case "start": if (S.phase !== "prep") return err("phase"); S.phase = "work"; say(S, "start", { d: S.day, q: S.res.quota }); return { ok: true };

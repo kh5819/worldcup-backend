@@ -304,6 +304,7 @@ export function registerZero(io, supabaseAdmin, hooks = {}) {
       const rp = C.replayDaily(day, p.log); if (!rp.ok) return reply({ ok: false, err: "replay_" + rp.err });
       const S = rp.S, rec = { day, owner_key: me.isGuest ? `g:${uid}` : `u:${uid}`, nickname: clean(p.name) || null, score: rp.score, energy: Math.round(S.res.energy), met: S.res.energy >= S.res.quota, summary: { quota: S.res.quota, breaches: S.today.breaches, recons: S.today.recons, lost: S.today.lost, judged: S.anoms.reduce((n, a) => n + Object.keys(a.judged || {}).length, 0), mod: S.dmod }, created_at: new Date().toISOString() };
       if (!supabaseAdmin) return reply({ ok: true, score: rp.score, saved: false });
+      { const { count } = await supabaseAdmin.from("zero_daily").select("id", { count: "exact", head: true }).eq("day", day).eq("owner_key", rec.owner_key); if ((count || 0) >= 30) return reply({ ok: true, score: rp.score, saved: false, err: "limit" }); }
       const { error } = await supabaseAdmin.from("zero_daily").insert(rec); if (error) return reply({ ok: true, score: rp.score, saved: false, err: "db" });
       dailyCache.delete(day); reply({ ok: true, score: rp.score, saved: true });
     });

@@ -4,8 +4,8 @@
 // =========================
 export const VERSION = "z2";
 const l = (ko, ja, en) => [ko, ja, en];
-import { ANOMS as A2 } from "./zero-anoms.js?v=20261127_z2";
-import { BUILD, TRAITS2 } from "./zero-content.js?v=20261127_z2";
+import { ANOMS as A2 } from "./zero-anoms.js?v=20261127_z3";
+import { BUILD, TRAITS2 } from "./zero-content.js?v=20261127_z3";
 
 // ---------- 시간·크기 ----------
 export const TICK = 10;                 // 초당 시뮬레이션 횟수

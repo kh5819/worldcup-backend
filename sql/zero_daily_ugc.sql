@@ -51,3 +51,4 @@ begin
   return coalesce(n, 0);
 end $$;
 revoke all on function public.zero_ugc_mark(uuid, text, text) from public, anon, authenticated;
+grant execute on function public.zero_ugc_mark(uuid, text, text) to service_role;
