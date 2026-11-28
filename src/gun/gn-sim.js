@@ -227,6 +227,7 @@ export class World {
     }
     const ctx = { map: this.map, tick, cr: this.cr, env: this.env, P0: this.P0, P1: this.P1, fx: this.ev, bot: false };
     for (const p of this.P) {
+      if (p.st !== "alive" && p.inq.length) { p.ack = p.inq[p.inq.length - 1].s; p.inq.length = 0; p.bits = 0; } // 죽어 있는 동안 누른 키는 버림 (안 그러면 부활 뒤 늦게 재생됨)
       if (p.st === "dead") { if (tick >= p.rt) this.spawnAt(p, p.pid - 1, false); continue; }
       if (p.st !== "alive") continue;
       let bits;
